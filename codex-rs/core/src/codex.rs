@@ -2270,14 +2270,30 @@ async fn handle_custom_tool_call(
 }
 
 fn to_exec_params(params: ShellToolCallParams, turn_context: &TurnContext) -> ExecParams {
+    // Check if the command contains shell operators that need to be handled by a shell
+    let command = if contains_shell_operators(&params.command) {
+        // Convert the command array to a shell command string and run it with bash -c
+        let command_string = params.command.join(" ");
+        vec!["bash".to_string(), "-c".to_string(), command_string]
+    } else {
+        params.command
+    };
+
     ExecParams {
-        command: params.command,
+        command,
         cwd: turn_context.resolve_path(params.workdir.clone()),
         timeout_ms: params.timeout_ms,
         env: create_env(&turn_context.shell_environment_policy),
         with_escalated_permissions: params.with_escalated_permissions,
         justification: params.justification,
     }
+}
+
+/// Check if a command array contains shell operators that require shell interpretation
+fn contains_shell_operators(command: &[String]) -> bool {
+    command.iter().any(|arg| {
+        matches!(arg.as_str(), "|" | "&&" | "||" | ";" | ">" | ">>" | "<" | "&")
+    })
 }
 
 fn parse_container_exec_arguments(
@@ -3090,5 +3106,26 @@ mod tests {
         };
 
         assert_eq!(expected, got);
+    }
+
+    #[test]
+    fn test_contains_shell_operators() {
+        // Test pipe operator
+        assert!(contains_shell_operators(&["grep".to_string(), "-r".to_string(), "test".to_string(), "|".to_string(), "head".to_string()]));
+        
+        // Test logical operators
+        assert!(contains_shell_operators(&["ls".to_string(), "&&".to_string(), "echo".to_string(), "done".to_string()]));
+        assert!(contains_shell_operators(&["ls".to_string(), "||".to_string(), "echo".to_string(), "failed".to_string()]));
+        
+        // Test semicolon
+        assert!(contains_shell_operators(&["ls".to_string(), ";".to_string(), "pwd".to_string()]));
+        
+        // Test redirection
+        assert!(contains_shell_operators(&["echo".to_string(), "test".to_string(), ">".to_string(), "file.txt".to_string()]));
+        assert!(contains_shell_operators(&["echo".to_string(), "test".to_string(), ">>".to_string(), "file.txt".to_string()]));
+        
+        // Test no operators
+        assert!(!contains_shell_operators(&["ls".to_string(), "-la".to_string()]));
+        assert!(!contains_shell_operators(&["grep".to_string(), "-r".to_string(), "pattern".to_string(), "file.txt".to_string()]));
     }
 }
