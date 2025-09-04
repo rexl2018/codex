@@ -2273,7 +2273,9 @@ fn to_exec_params(params: ShellToolCallParams, turn_context: &TurnContext) -> Ex
     // Check if the command contains shell operators that need to be handled by a shell
     let command = if contains_shell_operators(&params.command) {
         // Convert the command array to a shell command string and run it with bash -c
-        let command_string = params.command.join(" ");
+        // Use shlex::try_join to properly quote arguments containing special characters
+        let command_string = shlex::try_join(params.command.iter().map(|s| s.as_str()))
+            .unwrap_or_else(|_| params.command.join(" ")); // fallback to simple join if shlex fails
         vec!["bash".to_string(), "-c".to_string(), command_string]
     } else {
         params.command
@@ -3127,5 +3129,19 @@ mod tests {
         // Test no operators
         assert!(!contains_shell_operators(&["ls".to_string(), "-la".to_string()]));
         assert!(!contains_shell_operators(&["grep".to_string(), "-r".to_string(), "pattern".to_string(), "file.txt".to_string()]));
+    }
+
+    #[test]
+    fn test_shlex_join_with_special_characters() {
+        // Test that shlex::try_join properly quotes arguments with special characters
+        let command_with_hash = vec!["echo", "# Message Queue Analysis Report", "|", "tee", "report.md"];
+        let joined = shlex::try_join(command_with_hash.iter().copied()).unwrap();
+        
+        // The # should be quoted to prevent it from being treated as a comment
+        assert!(joined.contains("'# Message Queue Analysis Report'") || 
+                joined.contains("\"# Message Queue Analysis Report\""));
+        
+        // Test that the pipe is preserved (it might be quoted as '|')
+        assert!(joined.contains("|"));
     }
 }
