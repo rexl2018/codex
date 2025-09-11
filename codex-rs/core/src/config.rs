@@ -1,6 +1,7 @@
 use crate::config_profile::ConfigProfile;
 use crate::config_types::History;
 use crate::config_types::McpServerConfig;
+use crate::config_types::ReasoningSummaryFormat;
 use crate::config_types::SandboxWorkspaceWrite;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::config_types::ShellEnvironmentPolicyToml;
@@ -19,6 +20,8 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::mcp_protocol::AuthMode;
+use codex_protocol::mcp_protocol::Tools;
+use codex_protocol::mcp_protocol::UserSavedConfig;
 use dirs::home_dir;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -35,9 +38,7 @@ const OPENAI_DEFAULT_MODEL: &str = "gpt-5";
 /// the context window.
 pub(crate) const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024; // 32 KiB
 
-const CONFIG_TOML_FILE: &str = "config.toml";
-
-const DEFAULT_RESPONSES_ORIGINATOR_HEADER: &str = "codex_cli_rs";
+pub(crate) const CONFIG_TOML_FILE: &str = "config.toml";
 
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,11 +75,6 @@ pub struct Config {
     /// When set to `true`, `AgentReasoningRawContentEvent` events will be shown in the UI/output.
     /// Defaults to `false`.
     pub show_raw_agent_reasoning: bool,
-
-    /// Disable server-side response storage (sends the full conversation
-    /// context with every request). Currently necessary for OpenAI customers
-    /// who have opted into Zero Data Retention (ZDR).
-    pub disable_response_storage: bool,
 
     /// User-provided instructions from AGENTS.md.
     pub user_instructions: Option<String>,
@@ -171,22 +167,24 @@ pub struct Config {
 
     pub tools_web_search_request: bool,
 
-    /// The value for the `originator` header included with Responses API requests.
-    pub responses_originator_header: String,
-
     /// If set to `true`, the API key will be signed with the `originator` header.
     pub preferred_auth_method: AuthMode,
 
     pub use_experimental_streamable_shell_tool: bool,
 
+    /// If set to `true`, used only the experimental unified exec tool.
+    pub use_experimental_unified_exec_tool: bool,
+
     /// Include the `view_image` tool that lets the agent attach a local image path to context.
     pub include_view_image_tool: bool,
+
+    /// The active profile name used to derive this `Config` (if any).
+    pub active_profile: Option<String>,
+
     /// When true, disables burst-paste detection for typed input entirely.
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
     pub disable_paste_burst: bool,
-
-    pub use_experimental_reasoning_summary: bool,
 }
 
 impl Config {
@@ -266,17 +264,7 @@ pub fn load_config_as_toml(codex_home: &Path) -> std::io::Result<TomlValue> {
     }
 }
 
-/// Patch `CODEX_HOME/config.toml` project state.
-/// Use with caution.
-pub fn set_project_trusted(codex_home: &Path, project_path: &Path) -> anyhow::Result<()> {
-    let config_path = codex_home.join(CONFIG_TOML_FILE);
-    // Parse existing config if present; otherwise start a new document.
-    let mut doc = match std::fs::read_to_string(config_path.clone()) {
-        Ok(s) => s.parse::<DocumentMut>()?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
-        Err(e) => return Err(e.into()),
-    };
-
+fn set_project_trusted_inner(doc: &mut DocumentMut, project_path: &Path) -> anyhow::Result<()> {
     // Ensure we render a human-friendly structure:
     //
     // [projects]
@@ -292,14 +280,26 @@ pub fn set_project_trusted(codex_home: &Path, project_path: &Path) -> anyhow::Re
     // Ensure top-level `projects` exists as a non-inline, explicit table. If it
     // exists but was previously represented as a non-table (e.g., inline),
     // replace it with an explicit table.
-    let mut created_projects_table = false;
     {
         let root = doc.as_table_mut();
-        let needs_table = !root.contains_key("projects")
-            || root.get("projects").and_then(|i| i.as_table()).is_none();
-        if needs_table {
-            root.insert("projects", toml_edit::table());
-            created_projects_table = true;
+        // If `projects` exists but isn't a standard table (e.g., it's an inline table),
+        // convert it to an explicit table while preserving existing entries.
+        let existing_projects = root.get("projects").cloned();
+        if existing_projects.as_ref().is_none_or(|i| !i.is_table()) {
+            let mut projects_tbl = toml_edit::Table::new();
+            projects_tbl.set_implicit(true);
+
+            // If there was an existing inline table, migrate its entries to explicit tables.
+            if let Some(inline_tbl) = existing_projects.as_ref().and_then(|i| i.as_inline_table()) {
+                for (k, v) in inline_tbl.iter() {
+                    if let Some(inner_tbl) = v.as_inline_table() {
+                        let new_tbl = inner_tbl.clone().into_table();
+                        projects_tbl.insert(k, toml_edit::Item::Table(new_tbl));
+                    }
+                }
+            }
+
+            root.insert("projects", toml_edit::Item::Table(projects_tbl));
         }
     }
     let Some(projects_tbl) = doc["projects"].as_table_mut() else {
@@ -307,12 +307,6 @@ pub fn set_project_trusted(codex_home: &Path, project_path: &Path) -> anyhow::Re
             "projects table missing after initialization"
         ));
     };
-
-    // If we created the `projects` table ourselves, keep it implicit so we
-    // don't render a standalone `[projects]` header.
-    if created_projects_table {
-        projects_tbl.set_implicit(true);
-    }
 
     // Ensure the per-project entry is its own explicit table. If it exists but
     // is not a table (e.g., an inline table), replace it with an explicit table.
@@ -332,6 +326,21 @@ pub fn set_project_trusted(codex_home: &Path, project_path: &Path) -> anyhow::Re
     };
     proj_tbl.set_implicit(false);
     proj_tbl["trust_level"] = toml_edit::value("trusted");
+    Ok(())
+}
+
+/// Patch `CODEX_HOME/config.toml` project state.
+/// Use with caution.
+pub fn set_project_trusted(codex_home: &Path, project_path: &Path) -> anyhow::Result<()> {
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
+    // Parse existing config if present; otherwise start a new document.
+    let mut doc = match std::fs::read_to_string(config_path.clone()) {
+        Ok(s) => s.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    set_project_trusted_inner(&mut doc, project_path)?;
 
     // ensure codex_home exists
     std::fs::create_dir_all(codex_home)?;
@@ -416,11 +425,6 @@ pub struct ConfigToml {
     /// Sandbox configuration to apply if `sandbox` is `WorkspaceWrite`.
     pub sandbox_workspace_write: Option<SandboxWorkspaceWrite>,
 
-    /// Disable server-side response storage (sends the full conversation
-    /// context with every request). Currently necessary for OpenAI customers
-    /// who have opted into Zero Data Retention (ZDR).
-    pub disable_response_storage: Option<bool>,
-
     /// Optional external command to spawn for end-user notifications.
     #[serde(default)]
     pub notify: Option<Vec<String>>,
@@ -473,6 +477,9 @@ pub struct ConfigToml {
     /// Override to force-enable reasoning summaries for the configured model.
     pub model_supports_reasoning_summaries: Option<bool>,
 
+    /// Override to force reasoning summary format for the configured model.
+    pub model_reasoning_summary_format: Option<ReasoningSummaryFormat>,
+
     /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
     pub chatgpt_base_url: Option<String>,
 
@@ -483,11 +490,7 @@ pub struct ConfigToml {
     pub experimental_instructions_file: Option<PathBuf>,
 
     pub experimental_use_exec_command_tool: Option<bool>,
-
-    pub use_experimental_reasoning_summary: Option<bool>,
-
-    /// The value for the `originator` header included with Responses API requests.
-    pub responses_originator_header_internal_override: Option<String>,
+    pub experimental_use_unified_exec_tool: Option<bool>,
 
     pub projects: Option<HashMap<String, ProjectConfig>>,
 
@@ -503,6 +506,29 @@ pub struct ConfigToml {
     pub disable_paste_burst: Option<bool>,
 }
 
+impl From<ConfigToml> for UserSavedConfig {
+    fn from(config_toml: ConfigToml) -> Self {
+        let profiles = config_toml
+            .profiles
+            .into_iter()
+            .map(|(k, v)| (k, v.into()))
+            .collect();
+
+        Self {
+            approval_policy: config_toml.approval_policy,
+            sandbox_mode: config_toml.sandbox_mode,
+            sandbox_settings: config_toml.sandbox_workspace_write.map(From::from),
+            model: config_toml.model,
+            model_reasoning_effort: config_toml.model_reasoning_effort,
+            model_reasoning_summary: config_toml.model_reasoning_summary,
+            model_verbosity: config_toml.model_verbosity,
+            tools: config_toml.tools.map(From::from),
+            profile: config_toml.profile,
+            profiles,
+        }
+    }
+}
+
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ProjectConfig {
     pub trust_level: Option<String>,
@@ -516,6 +542,15 @@ pub struct ToolsToml {
     /// Enable the `view_image` tool that lets the agent attach local images.
     #[serde(default)]
     pub view_image: Option<bool>,
+}
+
+impl From<ToolsToml> for Tools {
+    fn from(tools_toml: ToolsToml) -> Self {
+        Self {
+            web_search: tools_toml.web_search,
+            view_image: tools_toml.view_image,
+        }
+    }
 }
 
 impl ConfigToml {
@@ -606,7 +641,6 @@ pub struct ConfigOverrides {
     pub include_plan_tool: Option<bool>,
     pub include_apply_patch_tool: Option<bool>,
     pub include_view_image_tool: Option<bool>,
-    pub disable_response_storage: Option<bool>,
     pub show_raw_agent_reasoning: Option<bool>,
     pub tools_web_search_request: Option<bool>,
 }
@@ -634,12 +668,15 @@ impl Config {
             include_plan_tool,
             include_apply_patch_tool,
             include_view_image_tool,
-            disable_response_storage,
             show_raw_agent_reasoning,
             tools_web_search_request: override_tools_web_search_request,
         } = overrides;
 
-        let config_profile = match config_profile_key.as_ref().or(cfg.profile.as_ref()) {
+        let active_profile_name = config_profile_key
+            .as_ref()
+            .or(cfg.profile.as_ref())
+            .cloned();
+        let config_profile = match active_profile_name.as_ref() {
             Some(key) => cfg
                 .profiles
                 .get(key)
@@ -710,18 +747,23 @@ impl Config {
             .or(config_profile.model)
             .or(cfg.model)
             .unwrap_or_else(default_model);
-        let model_family = find_family_for_model(&model).unwrap_or_else(|| {
-            let supports_reasoning_summaries =
-                cfg.model_supports_reasoning_summaries.unwrap_or(false);
-            ModelFamily {
-                slug: model.clone(),
-                family: model.clone(),
-                needs_special_apply_patch_instructions: false,
-                supports_reasoning_summaries,
-                uses_local_shell_tool: false,
-                apply_patch_tool_type: None,
-            }
+
+        let mut model_family = find_family_for_model(&model).unwrap_or_else(|| ModelFamily {
+            slug: model.clone(),
+            family: model.clone(),
+            needs_special_apply_patch_instructions: false,
+            supports_reasoning_summaries: false,
+            reasoning_summary_format: ReasoningSummaryFormat::None,
+            uses_local_shell_tool: false,
+            apply_patch_tool_type: None,
         });
+
+        if let Some(supports_reasoning_summaries) = cfg.model_supports_reasoning_summaries {
+            model_family.supports_reasoning_summaries = supports_reasoning_summaries;
+        }
+        if let Some(model_reasoning_summary_format) = cfg.model_reasoning_summary_format {
+            model_family.reasoning_summary_format = model_reasoning_summary_format;
+        }
 
         let openai_model_info = get_model_info(&model_family);
         let model_context_window = cfg
@@ -746,10 +788,6 @@ impl Config {
             Self::get_base_instructions(experimental_instructions_path, &resolved_cwd)?;
         let base_instructions = base_instructions.or(file_base_instructions);
 
-        let responses_originator_header: String = cfg
-            .responses_originator_header_internal_override
-            .unwrap_or(DEFAULT_RESPONSES_ORIGINATOR_HEADER.to_owned());
-
         let config = Self {
             model,
             model_family,
@@ -764,11 +802,6 @@ impl Config {
                 .unwrap_or_else(AskForApproval::default),
             sandbox_policy,
             shell_environment_policy,
-            disable_response_storage: config_profile
-                .disable_response_storage
-                .or(cfg.disable_response_storage)
-                .or(disable_response_storage)
-                .unwrap_or(false),
             notify: cfg.notify,
             user_instructions,
             base_instructions,
@@ -804,16 +837,16 @@ impl Config {
             include_plan_tool: include_plan_tool.unwrap_or(false),
             include_apply_patch_tool: include_apply_patch_tool.unwrap_or(false),
             tools_web_search_request,
-            responses_originator_header,
             preferred_auth_method: cfg.preferred_auth_method.unwrap_or(AuthMode::ChatGPT),
             use_experimental_streamable_shell_tool: cfg
                 .experimental_use_exec_command_tool
                 .unwrap_or(false),
+            use_experimental_unified_exec_tool: cfg
+                .experimental_use_unified_exec_tool
+                .unwrap_or(true),
             include_view_image_tool,
+            active_profile: active_profile_name,
             disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
-            use_experimental_reasoning_summary: cfg
-                .use_experimental_reasoning_summary
-                .unwrap_or(false),
         };
         Ok(config)
     }
@@ -1036,7 +1069,6 @@ exclude_slash_tmp = true
         let toml = r#"
 model = "o3"
 approval_policy = "untrusted"
-disable_response_storage = false
 
 # Can be used to determine which profile to use if not specified by
 # `ConfigOverrides`.
@@ -1066,7 +1098,6 @@ model_provider = "openai-chat-completions"
 model = "o3"
 model_provider = "openai"
 approval_policy = "on-failure"
-disable_response_storage = true
 
 [profiles.gpt5]
 model = "gpt-5"
@@ -1164,7 +1195,6 @@ model_verbosity = "high"
                 approval_policy: AskForApproval::Never,
                 sandbox_policy: SandboxPolicy::new_read_only_policy(),
                 shell_environment_policy: ShellEnvironmentPolicy::default(),
-                disable_response_storage: false,
                 user_instructions: None,
                 notify: None,
                 cwd: fixture.cwd(),
@@ -1187,12 +1217,12 @@ model_verbosity = "high"
                 include_plan_tool: false,
                 include_apply_patch_tool: false,
                 tools_web_search_request: false,
-                responses_originator_header: "codex_cli_rs".to_string(),
                 preferred_auth_method: AuthMode::ChatGPT,
                 use_experimental_streamable_shell_tool: false,
+                use_experimental_unified_exec_tool: true,
                 include_view_image_tool: true,
+                active_profile: Some("o3".to_string()),
                 disable_paste_burst: false,
-                use_experimental_reasoning_summary: false,
             },
             o3_profile_config
         );
@@ -1223,7 +1253,6 @@ model_verbosity = "high"
             approval_policy: AskForApproval::UnlessTrusted,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             shell_environment_policy: ShellEnvironmentPolicy::default(),
-            disable_response_storage: false,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -1246,12 +1275,12 @@ model_verbosity = "high"
             include_plan_tool: false,
             include_apply_patch_tool: false,
             tools_web_search_request: false,
-            responses_originator_header: "codex_cli_rs".to_string(),
             preferred_auth_method: AuthMode::ChatGPT,
             use_experimental_streamable_shell_tool: false,
+            use_experimental_unified_exec_tool: true,
             include_view_image_tool: true,
+            active_profile: Some("gpt3".to_string()),
             disable_paste_burst: false,
-            use_experimental_reasoning_summary: false,
         };
 
         assert_eq!(expected_gpt3_profile_config, gpt3_profile_config);
@@ -1297,7 +1326,6 @@ model_verbosity = "high"
             approval_policy: AskForApproval::OnFailure,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             shell_environment_policy: ShellEnvironmentPolicy::default(),
-            disable_response_storage: true,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -1320,12 +1348,12 @@ model_verbosity = "high"
             include_plan_tool: false,
             include_apply_patch_tool: false,
             tools_web_search_request: false,
-            responses_originator_header: "codex_cli_rs".to_string(),
             preferred_auth_method: AuthMode::ChatGPT,
             use_experimental_streamable_shell_tool: false,
+            use_experimental_unified_exec_tool: true,
             include_view_image_tool: true,
+            active_profile: Some("zdr".to_string()),
             disable_paste_burst: false,
-            use_experimental_reasoning_summary: false,
         };
 
         assert_eq!(expected_zdr_profile_config, zdr_profile_config);
@@ -1350,14 +1378,13 @@ model_verbosity = "high"
         let expected_gpt5_profile_config = Config {
             model: "gpt-5".to_string(),
             model_family: find_family_for_model("gpt-5").expect("known model slug"),
-            model_context_window: Some(400_000),
+            model_context_window: Some(272_000),
             model_max_output_tokens: Some(128_000),
             model_provider_id: "openai".to_string(),
             model_provider: fixture.openai_provider.clone(),
             approval_policy: AskForApproval::OnFailure,
             sandbox_policy: SandboxPolicy::new_read_only_policy(),
             shell_environment_policy: ShellEnvironmentPolicy::default(),
-            disable_response_storage: false,
             user_instructions: None,
             notify: None,
             cwd: fixture.cwd(),
@@ -1380,12 +1407,12 @@ model_verbosity = "high"
             include_plan_tool: false,
             include_apply_patch_tool: false,
             tools_web_search_request: false,
-            responses_originator_header: "codex_cli_rs".to_string(),
             preferred_auth_method: AuthMode::ChatGPT,
             use_experimental_streamable_shell_tool: false,
+            use_experimental_unified_exec_tool: true,
             include_view_image_tool: true,
+            active_profile: Some("gpt5".to_string()),
             disable_paste_burst: false,
-            use_experimental_reasoning_summary: false,
         };
 
         assert_eq!(expected_gpt5_profile_config, gpt5_profile_config);
@@ -1395,17 +1422,14 @@ model_verbosity = "high"
 
     #[test]
     fn test_set_project_trusted_writes_explicit_tables() -> anyhow::Result<()> {
-        let codex_home = TempDir::new().unwrap();
-        let project_dir = TempDir::new().unwrap();
+        let project_dir = Path::new("/some/path");
+        let mut doc = DocumentMut::new();
 
-        // Call the function under test
-        set_project_trusted(codex_home.path(), project_dir.path())?;
+        set_project_trusted_inner(&mut doc, project_dir)?;
 
-        // Read back the generated config.toml and assert exact contents
-        let config_path = codex_home.path().join(CONFIG_TOML_FILE);
-        let contents = std::fs::read_to_string(&config_path)?;
+        let contents = doc.to_string();
 
-        let raw_path = project_dir.path().to_string_lossy();
+        let raw_path = project_dir.to_string_lossy();
         let path_str = if raw_path.contains('\\') {
             format!("'{raw_path}'")
         } else {
@@ -1423,12 +1447,10 @@ trust_level = "trusted"
 
     #[test]
     fn test_set_project_trusted_converts_inline_to_explicit() -> anyhow::Result<()> {
-        let codex_home = TempDir::new().unwrap();
-        let project_dir = TempDir::new().unwrap();
+        let project_dir = Path::new("/some/path");
 
         // Seed config.toml with an inline project entry under [projects]
-        let config_path = codex_home.path().join(CONFIG_TOML_FILE);
-        let raw_path = project_dir.path().to_string_lossy();
+        let raw_path = project_dir.to_string_lossy();
         let path_str = if raw_path.contains('\\') {
             format!("'{raw_path}'")
         } else {
@@ -1440,13 +1462,12 @@ trust_level = "trusted"
 {path_str} = {{ trust_level = "untrusted" }}
 "#
         );
-        std::fs::create_dir_all(codex_home.path())?;
-        std::fs::write(&config_path, initial)?;
+        let mut doc = initial.parse::<DocumentMut>()?;
 
         // Run the function; it should convert to explicit tables and set trusted
-        set_project_trusted(codex_home.path(), project_dir.path())?;
+        set_project_trusted_inner(&mut doc, project_dir)?;
 
-        let contents = std::fs::read_to_string(&config_path)?;
+        let contents = doc.to_string();
 
         // Assert exact output after conversion to explicit table
         let expected = format!(
@@ -1461,5 +1482,37 @@ trust_level = "trusted"
         Ok(())
     }
 
-    // No test enforcing the presence of a standalone [projects] header.
+    #[test]
+    fn test_set_project_trusted_migrates_top_level_inline_projects_preserving_entries()
+    -> anyhow::Result<()> {
+        let initial = r#"toplevel = "baz"
+projects = { "/Users/mbolin/code/codex4" = { trust_level = "trusted", foo = "bar" } , "/Users/mbolin/code/codex3" = { trust_level = "trusted" } }
+model = "foo""#;
+        let mut doc = initial.parse::<DocumentMut>()?;
+
+        // Approve a new directory
+        let new_project = Path::new("/Users/mbolin/code/codex2");
+        set_project_trusted_inner(&mut doc, new_project)?;
+
+        let contents = doc.to_string();
+
+        // Since we created the [projects] table as part of migration, it is kept implicit.
+        // Expect explicit per-project tables, preserving prior entries and appending the new one.
+        let expected = r#"toplevel = "baz"
+model = "foo"
+
+[projects."/Users/mbolin/code/codex4"]
+trust_level = "trusted"
+foo = "bar"
+
+[projects."/Users/mbolin/code/codex3"]
+trust_level = "trusted"
+
+[projects."/Users/mbolin/code/codex2"]
+trust_level = "trusted"
+"#;
+        assert_eq!(contents, expected);
+
+        Ok(())
+    }
 }
