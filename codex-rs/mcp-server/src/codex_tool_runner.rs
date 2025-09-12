@@ -279,7 +279,18 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::TurnAborted(_)
                     | EventMsg::ConversationPath(_)
                     | EventMsg::UserMessage(_)
-                    | EventMsg::ShutdownComplete => {
+                    | EventMsg::ShutdownComplete
+                    // Subagent events - currently ignored in MCP server
+                    | EventMsg::SubagentTaskCreated(_)
+                    | EventMsg::SubagentStarted(_)
+                    | EventMsg::SubagentProgress(_)
+                    | EventMsg::SubagentCompleted(_)
+                    | EventMsg::ContextStored(_)
+                    | EventMsg::ContextQueryResult(_)
+                    | EventMsg::MultiAgentStatus(_)
+                    | EventMsg::SubagentForceCompleted(_)
+                    | EventMsg::SubagentCancelled(_)
+                    | EventMsg::SubagentFallbackReport(_) => {
                         // For now, we do not do anything extra for these
                         // events. Note that
                         // send(codex_event_to_notification(&event)) above has

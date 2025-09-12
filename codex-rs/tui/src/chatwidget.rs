@@ -35,6 +35,16 @@ use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::UserMessageEvent;
 use codex_core::protocol::WebSearchBeginEvent;
 use codex_core::protocol::WebSearchEndEvent;
+use codex_core::protocol::SubagentTaskCreatedEvent;
+use codex_core::protocol::SubagentStartedEvent;
+use codex_core::protocol::SubagentProgressEvent;
+use codex_core::protocol::SubagentCompletedEvent;
+use codex_core::protocol::ContextStoredEvent;
+use codex_core::protocol::ContextQueryResultEvent;
+use codex_core::protocol::MultiAgentStatusEvent;
+use codex_core::protocol::SubagentForceCompletedEvent;
+use codex_core::protocol::SubagentCancelledEvent;
+use codex_core::protocol::SubagentFallbackReportEvent;
 use codex_protocol::parse_command::ParsedCommand;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -417,6 +427,97 @@ impl ChatWidget {
         // Show stream errors in the transcript so users see retry/backoff info.
         self.add_to_history(history_cell::new_stream_error_event(message));
         self.request_redraw();
+    }
+
+    // Subagent event handlers
+    fn on_subagent_task_created(&mut self, ev: SubagentTaskCreatedEvent) {
+        let message = format!(
+            "🤖 Subagent task created: {} ({:?}) - {} context refs, {} bootstrap paths",
+            ev.title, ev.agent_type, ev.context_refs_count, ev.bootstrap_paths_count
+        );
+        self.on_background_event(message);
+    }
+
+    fn on_subagent_started(&mut self, ev: SubagentStartedEvent) {
+        let message = format!(
+            "▶️ Subagent started: {} ({:?})",
+            ev.title, ev.agent_type
+        );
+        self.on_background_event(message);
+    }
+
+    fn on_subagent_progress(&mut self, ev: SubagentProgressEvent) {
+        let message = format!(
+            "⏳ Subagent progress: Turn {}/{} - {}",
+            ev.current_turn, ev.max_turns, ev.status_message
+        );
+        self.on_background_event(message);
+    }
+
+    fn on_subagent_completed(&mut self, ev: SubagentCompletedEvent) {
+        let status = if ev.success { "✅ completed" } else { "❌ failed" };
+        let message = format!(
+            "🏁 Subagent {}: {} contexts created, {} turns, {}ms",
+            status, ev.contexts_created, ev.metadata.num_turns, ev.metadata.duration_ms
+        );
+        self.on_background_event(message);
+        if !ev.comments.is_empty() {
+            self.on_background_event(format!("💬 Comments: {}", ev.comments));
+        }
+    }
+
+    fn on_context_stored(&mut self, ev: ContextStoredEvent) {
+        let task_info = ev.task_id
+            .map(|id| format!(" (task: {})", id))
+            .unwrap_or_default();
+        let message = format!(
+            "💾 Context stored: {} by {}{}", 
+            ev.context_id, ev.created_by, task_info
+        );
+        self.on_background_event(message);
+    }
+
+    fn on_context_query_result(&mut self, ev: ContextQueryResultEvent) {
+        let message = format!(
+            "🔍 Context query result: {} contexts found (total: {})",
+            ev.contexts.len(), ev.total_count
+        );
+        self.on_background_event(message);
+    }
+
+    fn on_multi_agent_status(&mut self, ev: MultiAgentStatusEvent) {
+        let message = format!(
+            "📊 Multi-agent status: {} active, {} completed, {} contexts - {}",
+            ev.active_tasks, ev.completed_tasks, ev.total_contexts, ev.status
+        );
+        self.on_background_event(message);
+    }
+
+    fn on_subagent_force_completed(&mut self, ev: SubagentForceCompletedEvent) {
+        let message = format!(
+            "⏹️ Subagent force completed: {} ({:?}) - {} turns, {} contexts",
+            ev.title, ev.agent_type, ev.num_turns, ev.contexts_created
+        );
+        self.on_background_event(message);
+        if !ev.comments.is_empty() {
+            self.on_background_event(format!("💬 Comments: {}", ev.comments));
+        }
+    }
+
+    fn on_subagent_cancelled(&mut self, ev: SubagentCancelledEvent) {
+        let message = format!(
+            "🚫 Subagent cancelled: {} ({:?}) at turn {} - {}",
+            ev.title, ev.agent_type, ev.cancelled_at_turn, ev.reason
+        );
+        self.on_background_event(message);
+    }
+
+    fn on_subagent_fallback_report(&mut self, ev: SubagentFallbackReportEvent) {
+        let message = format!(
+            "⚠️ Subagent fallback: {} ({:?}) - {} contexts, reason: {}",
+            ev.title, ev.agent_type, ev.contexts_created, ev.reason
+        );
+        self.on_background_event(message);
     }
     /// Periodic tick to commit at most one queued line to history with a small delay,
     /// animating the output.
@@ -1087,6 +1188,17 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(crate::app_event::AppEvent::ConversationHistory(ev));
             }
+            // Subagent events
+            EventMsg::SubagentTaskCreated(ev) => self.on_subagent_task_created(ev),
+            EventMsg::SubagentStarted(ev) => self.on_subagent_started(ev),
+            EventMsg::SubagentProgress(ev) => self.on_subagent_progress(ev),
+            EventMsg::SubagentCompleted(ev) => self.on_subagent_completed(ev),
+            EventMsg::ContextStored(ev) => self.on_context_stored(ev),
+            EventMsg::ContextQueryResult(ev) => self.on_context_query_result(ev),
+            EventMsg::MultiAgentStatus(ev) => self.on_multi_agent_status(ev),
+            EventMsg::SubagentForceCompleted(ev) => self.on_subagent_force_completed(ev),
+            EventMsg::SubagentCancelled(ev) => self.on_subagent_cancelled(ev),
+            EventMsg::SubagentFallbackReport(ev) => self.on_subagent_fallback_report(ev),
         }
     }
 

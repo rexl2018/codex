@@ -162,6 +162,82 @@ pub enum Op {
     /// The agent will use its existing context (either conversation history or previous response id)
     /// to generate a summary which will be returned as an AgentMessage event.
     Compact,
+
+    /// Create a subagent task
+    CreateSubagentTask {
+        /// Agent type
+        agent_type: SubagentType,
+        /// Task title
+        title: String,
+        /// Task description
+        description: String,
+        /// Context reference list
+        context_refs: Vec<String>,
+        /// Bootstrap file/directory list
+        bootstrap_paths: Vec<BootstrapPath>,
+    },
+
+    /// Launch subagent execution
+    LaunchSubagent {
+        /// Task ID
+        task_id: String,
+    },
+
+    /// Subagent report results
+    SubagentReport {
+        /// Task ID
+        task_id: String,
+        /// Newly discovered contexts
+        contexts: Vec<ContextItem>,
+        /// Execution summary
+        comments: String,
+        /// Execution metadata
+        metadata: SubagentMetadata,
+    },
+
+    /// Query context store
+    QueryContextStore {
+        /// Query conditions
+        query: ContextQuery,
+    },
+
+    /// Update context
+    UpdateContext {
+        /// Context ID
+        context_id: String,
+        /// New content
+        content: String,
+        /// Update reason
+        reason: String,
+    },
+
+    /// Force complete subagent task
+    ForceCompleteSubagent {
+        /// Task ID
+        task_id: String,
+    },
+
+    /// Cancel subagent task
+    CancelSubagent {
+        /// Task ID
+        task_id: String,
+    },
+
+    /// Get subagent task status
+    GetSubagentStatus {
+        /// Task ID
+        task_id: String,
+    },
+
+    /// Get subagent task report
+    GetSubagentReport {
+        /// Task ID
+        task_id: String,
+    },
+
+    /// Get all active subagent tasks
+    ListActiveSubagents,
+
     /// Request to shut down codex instance.
     Shutdown,
 }
@@ -500,6 +576,36 @@ pub enum EventMsg {
     ShutdownComplete,
 
     ConversationPath(ConversationPathResponseEvent),
+
+    /// Subagent task created
+    SubagentTaskCreated(SubagentTaskCreatedEvent),
+
+    /// Subagent started execution
+    SubagentStarted(SubagentStartedEvent),
+
+    /// Subagent execution progress update
+    SubagentProgress(SubagentProgressEvent),
+
+    /// Subagent execution completed
+    SubagentCompleted(SubagentCompletedEvent),
+
+    /// Context stored
+    ContextStored(ContextStoredEvent),
+
+    /// Context query result
+    ContextQueryResult(ContextQueryResultEvent),
+
+    /// Multi-agent coordination status
+    MultiAgentStatus(MultiAgentStatusEvent),
+
+    /// Subagent force completed event
+    SubagentForceCompleted(SubagentForceCompletedEvent),
+
+    /// Subagent task cancelled event
+    SubagentCancelled(SubagentCancelledEvent),
+
+    /// Subagent fallback report event
+    SubagentFallbackReport(SubagentFallbackReportEvent),
 }
 
 // Individual event payload types matching each `EventMsg` variant.
@@ -1133,6 +1239,176 @@ pub struct TurnAbortedEvent {
 pub enum TurnAbortReason {
     Interrupted,
     Replaced,
+}
+
+/// Subagent type
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentType {
+    /// Explorer agent - read-only investigation and analysis
+    Explorer,
+    /// Coder agent - read-write implementation and modification
+    Coder,
+}
+
+/// Bootstrap path configuration
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
+pub struct BootstrapPath {
+    /// File or directory path
+    pub path: PathBuf,
+    /// Reason for inclusion
+    pub reason: String,
+}
+
+/// Context item (lightweight data transfer object for subagent reports)
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
+pub struct ContextItem {
+    /// Context unique identifier (pure ID, like UUID or incremental number)
+    pub id: String,
+    /// Context summary (describes what this context is about)
+    pub summary: String,
+    /// Context content
+    pub content: String,
+}
+
+/// Context query conditions
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
+pub struct ContextQuery {
+    /// Query by ID
+    pub ids: Option<Vec<String>>,
+    /// Query by tags
+    pub tags: Option<Vec<String>>,
+    /// Query by creator
+    pub created_by: Option<String>,
+    /// Maximum return count
+    pub limit: Option<usize>,
+}
+
+/// Extended subagent execution metadata
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, TS)]
+pub struct SubagentMetadata {
+    /// Execution turns
+    pub num_turns: u32,
+    /// Maximum turn limit
+    pub max_turns: u32,
+    /// Input token count
+    pub input_tokens: u64,
+    /// Output token count
+    pub output_tokens: u64,
+    /// Execution duration (milliseconds)
+    pub duration_ms: u64,
+    /// Whether maximum turns limit was reached
+    pub reached_max_turns: bool,
+    /// Whether force completed
+    pub force_completed: bool,
+    /// Error message (if any)
+    pub error_message: Option<String>,
+}
+
+/// Subagent task creation event
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct SubagentTaskCreatedEvent {
+    pub task_id: String,
+    pub agent_type: SubagentType,
+    pub title: String,
+    pub context_refs_count: usize,
+    pub bootstrap_paths_count: usize,
+}
+
+/// Subagent start execution event
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct SubagentStartedEvent {
+    pub task_id: String,
+    pub agent_type: SubagentType,
+    pub title: String,
+}
+
+/// Subagent progress update event
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct SubagentProgressEvent {
+    pub task_id: String,
+    pub current_turn: u32,
+    pub max_turns: u32,
+    pub status_message: String,
+}
+
+/// Subagent completion event
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct SubagentCompletedEvent {
+    pub task_id: String,
+    pub success: bool,
+    pub contexts_created: usize,
+    pub comments: String,
+    pub metadata: SubagentMetadata,
+}
+
+/// Context storage event
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct ContextStoredEvent {
+    pub context_id: String,
+    pub created_by: String,
+    pub task_id: Option<String>,
+}
+
+/// Context query result event
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct ContextQueryResultEvent {
+    pub query_id: String,
+    pub contexts: Vec<ContextSummary>,
+    pub total_count: usize,
+}
+
+/// Multi-agent status event
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct MultiAgentStatusEvent {
+    pub active_tasks: usize,
+    pub completed_tasks: usize,
+    pub total_contexts: usize,
+    pub status: String,
+}
+
+/// Context summary
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct ContextSummary {
+    pub id: String,
+    pub summary: String,
+    pub created_by: String,
+    pub created_at: String,
+    pub size_bytes: usize,
+}
+
+/// Subagent force completion event
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct SubagentForceCompletedEvent {
+    pub task_id: String,
+    pub agent_type: SubagentType,
+    pub title: String,
+    pub num_turns: u32,
+    pub max_turns: u32,
+    pub contexts_created: usize,
+    pub comments: String,
+    pub metadata: SubagentMetadata,
+}
+
+/// Subagent task cancellation event
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct SubagentCancelledEvent {
+    pub task_id: String,
+    pub agent_type: SubagentType,
+    pub title: String,
+    pub reason: String,
+    pub cancelled_at_turn: u32,
+}
+
+/// Subagent fallback report event
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct SubagentFallbackReportEvent {
+    pub task_id: String,
+    pub agent_type: SubagentType,
+    pub title: String,
+    pub reason: String,
+    pub contexts_created: usize,
+    pub metadata: SubagentMetadata,
 }
 
 #[cfg(test)]

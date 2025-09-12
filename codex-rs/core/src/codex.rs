@@ -12,6 +12,9 @@ use crate::AuthManager;
 use crate::config_edit::CONFIG_KEY_EFFORT;
 use crate::config_edit::CONFIG_KEY_MODEL;
 use crate::config_edit::persist_non_null_overrides;
+use crate::context_store::{IContextRepository, InMemoryContextRepository};
+use crate::subagent_manager::{ISubagentManager, InMemorySubagentManager, SubagentTaskSpec};
+use crate::multi_agent_coordinator::{SubtaskCoordinator, ExecutionPlan, SharedContext};
 use crate::event_mapping::map_response_item_to_event_messages;
 use async_channel::Receiver;
 use async_channel::Sender;
@@ -106,6 +109,10 @@ use crate::protocol::TaskCompleteEvent;
 use crate::protocol::TokenUsageInfo;
 use crate::protocol::TurnDiffEvent;
 use crate::protocol::WebSearchBeginEvent;
+use codex_protocol::protocol::{
+    SubagentType, BootstrapPath, ContextItem, ContextQuery, SubagentMetadata,
+    ContextQueryResultEvent, ContextStoredEvent, ContextSummary,
+};
 use crate::rollout::RolloutRecorder;
 use crate::rollout::RolloutRecorderParams;
 use crate::safety::SafetyCheck;
@@ -295,6 +302,16 @@ pub(crate) struct Session {
     codex_linux_sandbox_exe: Option<PathBuf>,
     user_shell: shell::Shell,
     show_raw_agent_reasoning: bool,
+
+    /// Multi-agent components (optional)
+    multi_agent_components: Option<MultiAgentComponents>,
+}
+
+/// Multi-agent components container
+pub(crate) struct MultiAgentComponents {
+    pub context_repo: Arc<InMemoryContextRepository>,
+    pub subagent_manager: Arc<InMemorySubagentManager>,
+    pub subtask_coordinator: Option<SubtaskCoordinator>,
 }
 
 /// The context needed for a single turn of the conversation.
@@ -495,6 +512,7 @@ impl Session {
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
             user_shell: default_shell,
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+            multi_agent_components: None, // Initialize as None, can be enabled later
         });
 
         // Dispatch the SessionConfiguredEvent first and then report any errors.
@@ -1431,6 +1449,187 @@ async fn submission_loop(
                     }),
                 };
                 sess.send_event(event).await;
+            }
+            // Subagent operations
+            Op::CreateSubagentTask { 
+                agent_type, 
+                title, 
+                description, 
+                context_refs, 
+                bootstrap_paths 
+            } => {
+                if let Some(ref components) = sess.multi_agent_components {
+                    let spec = SubagentTaskSpec {
+                        agent_type,
+                        title,
+                        description,
+                        context_refs,
+                        bootstrap_paths,
+                        max_turns: None,
+                        timeout_ms: None,
+                    };
+                    
+                    match components.subagent_manager.create_task(spec).await {
+                        Ok(task_id) => {
+                            // Auto-launch the task
+                            if let Err(e) = components.subagent_manager.launch_subagent(&task_id).await {
+                                let event = Event {
+                                    id: sub.id,
+                                    msg: EventMsg::Error(ErrorEvent {
+                                        message: format!("Failed to launch subagent: {}", e),
+                                    }),
+                                };
+                                sess.send_event(event).await;
+                            }
+                        }
+                        Err(e) => {
+                            let event = Event {
+                                id: sub.id,
+                                msg: EventMsg::Error(ErrorEvent {
+                                    message: format!("Failed to create subagent task: {}", e),
+                                }),
+                            };
+                            sess.send_event(event).await;
+                        }
+                    }
+                } else {
+                    let event = Event {
+                        id: sub.id,
+                        msg: EventMsg::Error(ErrorEvent {
+                            message: "Multi-agent functionality not enabled".to_string(),
+                        }),
+                    };
+                    sess.send_event(event).await;
+                }
+            }
+            Op::QueryContextStore { query } => {
+                if let Some(ref components) = sess.multi_agent_components {
+                    // Convert protocol ContextQuery to context_store ContextQuery
+                    let context_query = crate::context_store::ContextQuery {
+                        ids: query.ids,
+                        tags: query.tags,
+                        created_by: query.created_by,
+                        limit: query.limit,
+                    };
+                    match components.context_repo.query_contexts(&context_query).await {
+                        Ok(contexts) => {
+                            let total_count = contexts.len();
+                            let summaries: Vec<ContextSummary> = contexts.into_iter().map(|ctx| {
+                                let size_bytes = ctx.size_bytes();
+                                ContextSummary {
+                                    id: ctx.id,
+                                    summary: ctx.summary,
+                                    created_by: ctx.created_by,
+                                    created_at: ctx.created_at.duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default().as_secs().to_string(),
+                                    size_bytes,
+                                }
+                            }).collect();
+                            
+                            let event = Event {
+                                id: sub.id,
+                                msg: EventMsg::ContextQueryResult(ContextQueryResultEvent {
+                                    query_id: uuid::Uuid::new_v4().to_string(),
+                                    contexts: summaries,
+                                    total_count,
+                                }),
+                            };
+                            sess.send_event(event).await;
+                        }
+                        Err(e) => {
+                            let event = Event {
+                                id: sub.id,
+                                msg: EventMsg::Error(ErrorEvent {
+                                    message: format!("Context query failed: {}", e),
+                                }),
+                            };
+                            sess.send_event(event).await;
+                        }
+                    }
+                } else {
+                    let event = Event {
+                        id: sub.id,
+                        msg: EventMsg::Error(ErrorEvent {
+                            message: "Multi-agent functionality not enabled".to_string(),
+                        }),
+                    };
+                    sess.send_event(event).await;
+                }
+            }
+            Op::GetSubagentStatus { task_id } => {
+                if let Some(ref components) = sess.multi_agent_components {
+                    match components.subagent_manager.get_task_status(&task_id).await {
+                        Ok(status) => {
+                            // Convert status to a simple message for now
+                            let status_msg = format!("Task {} status: {:?}", task_id, status);
+                            let event = Event {
+                                id: sub.id,
+                                msg: EventMsg::AgentMessage(AgentMessageEvent {
+                                    message: status_msg,
+                                }),
+                            };
+                            sess.send_event(event).await;
+                        }
+                        Err(e) => {
+                            let event = Event {
+                                id: sub.id,
+                                msg: EventMsg::Error(ErrorEvent {
+                                    message: format!("Failed to get task status: {}", e),
+                                }),
+                            };
+                            sess.send_event(event).await;
+                        }
+                    }
+                } else {
+                    let event = Event {
+                        id: sub.id,
+                        msg: EventMsg::Error(ErrorEvent {
+                            message: "Multi-agent functionality not enabled".to_string(),
+                        }),
+                    };
+                    sess.send_event(event).await;
+                }
+            }
+            Op::ListActiveSubagents => {
+                if let Some(ref components) = sess.multi_agent_components {
+                    match components.subagent_manager.get_active_tasks().await {
+                        Ok(tasks) => {
+                            let task_list = tasks.iter()
+                                .map(|t| format!("- {} ({:?}): {}", t.task_id, t.agent_type, t.title))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            
+                            let message = if task_list.is_empty() {
+                                "No active subagent tasks".to_string()
+                            } else {
+                                format!("Active subagent tasks:\n{}", task_list)
+                            };
+                            
+                            let event = Event {
+                                id: sub.id,
+                                msg: EventMsg::AgentMessage(AgentMessageEvent { message }),
+                            };
+                            sess.send_event(event).await;
+                        }
+                        Err(e) => {
+                            let event = Event {
+                                id: sub.id,
+                                msg: EventMsg::Error(ErrorEvent {
+                                    message: format!("Failed to list active tasks: {}", e),
+                                }),
+                            };
+                            sess.send_event(event).await;
+                        }
+                    }
+                } else {
+                    let event = Event {
+                        id: sub.id,
+                        msg: EventMsg::Error(ErrorEvent {
+                            message: "Multi-agent functionality not enabled".to_string(),
+                        }),
+                    };
+                    sess.send_event(event).await;
+                }
             }
             _ => {
                 // Ignore unknown ops; enum is non_exhaustive to allow extensions.

@@ -561,6 +561,17 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::ShutdownComplete => return CodexStatus::Shutdown,
             EventMsg::ConversationPath(_) => {}
             EventMsg::UserMessage(_) => {}
+            // Subagent events - currently ignored in exec output
+            EventMsg::SubagentTaskCreated(_) => {}
+            EventMsg::SubagentStarted(_) => {}
+            EventMsg::SubagentProgress(_) => {}
+            EventMsg::SubagentCompleted(_) => {}
+            EventMsg::ContextStored(_) => {}
+            EventMsg::ContextQueryResult(_) => {}
+            EventMsg::MultiAgentStatus(_) => {}
+            EventMsg::SubagentForceCompleted(_) => {}
+            EventMsg::SubagentCancelled(_) => {}
+            EventMsg::SubagentFallbackReport(_) => {}
         }
         CodexStatus::Running
     }
