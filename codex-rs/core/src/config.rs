@@ -178,6 +178,9 @@ pub struct Config {
     /// Include the `view_image` tool that lets the agent attach a local image path to context.
     pub include_view_image_tool: bool,
 
+    /// Include the `create_subagent_task` tool for multi-agent coordination.
+    pub include_subagent_task_tool: bool,
+
     /// The active profile name used to derive this `Config` (if any).
     pub active_profile: Option<String>,
 
@@ -845,6 +848,7 @@ impl Config {
                 .experimental_use_unified_exec_tool
                 .unwrap_or(true),
             include_view_image_tool,
+            include_subagent_task_tool: true, // Enable subagent task tool
             active_profile: active_profile_name,
             disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
         };

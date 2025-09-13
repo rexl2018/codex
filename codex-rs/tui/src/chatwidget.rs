@@ -12,6 +12,8 @@ use codex_core::protocol::AgentReasoningRawContentDeltaEvent;
 use codex_core::protocol::AgentReasoningRawContentEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::BackgroundEventEvent;
+use codex_core::protocol::ContextQueryResultEvent;
+use codex_core::protocol::ContextStoredEvent;
 use codex_core::protocol::ErrorEvent;
 use codex_core::protocol::Event;
 use codex_core::protocol::EventMsg;
@@ -24,9 +26,17 @@ use codex_core::protocol::ListCustomPromptsResponseEvent;
 use codex_core::protocol::McpListToolsResponseEvent;
 use codex_core::protocol::McpToolCallBeginEvent;
 use codex_core::protocol::McpToolCallEndEvent;
+use codex_core::protocol::MultiAgentStatusEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
 use codex_core::protocol::StreamErrorEvent;
+use codex_core::protocol::SubagentCancelledEvent;
+use codex_core::protocol::SubagentCompletedEvent;
+use codex_core::protocol::SubagentFallbackReportEvent;
+use codex_core::protocol::SubagentForceCompletedEvent;
+use codex_core::protocol::SubagentProgressEvent;
+use codex_core::protocol::SubagentStartedEvent;
+use codex_core::protocol::SubagentTaskCreatedEvent;
 use codex_core::protocol::TaskCompleteEvent;
 use codex_core::protocol::TokenUsage;
 use codex_core::protocol::TokenUsageInfo;
@@ -35,16 +45,6 @@ use codex_core::protocol::TurnDiffEvent;
 use codex_core::protocol::UserMessageEvent;
 use codex_core::protocol::WebSearchBeginEvent;
 use codex_core::protocol::WebSearchEndEvent;
-use codex_core::protocol::SubagentTaskCreatedEvent;
-use codex_core::protocol::SubagentStartedEvent;
-use codex_core::protocol::SubagentProgressEvent;
-use codex_core::protocol::SubagentCompletedEvent;
-use codex_core::protocol::ContextStoredEvent;
-use codex_core::protocol::ContextQueryResultEvent;
-use codex_core::protocol::MultiAgentStatusEvent;
-use codex_core::protocol::SubagentForceCompletedEvent;
-use codex_core::protocol::SubagentCancelledEvent;
-use codex_core::protocol::SubagentFallbackReportEvent;
 use codex_protocol::parse_command::ParsedCommand;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -439,10 +439,7 @@ impl ChatWidget {
     }
 
     fn on_subagent_started(&mut self, ev: SubagentStartedEvent) {
-        let message = format!(
-            "▶️ Subagent started: {} ({:?})",
-            ev.title, ev.agent_type
-        );
+        let message = format!("▶️ Subagent started: {} ({:?})", ev.title, ev.agent_type);
         self.on_background_event(message);
     }
 
@@ -455,7 +452,11 @@ impl ChatWidget {
     }
 
     fn on_subagent_completed(&mut self, ev: SubagentCompletedEvent) {
-        let status = if ev.success { "✅ completed" } else { "❌ failed" };
+        let status = if ev.success {
+            "✅ completed"
+        } else {
+            "❌ failed"
+        };
         let message = format!(
             "🏁 Subagent {}: {} contexts created, {} turns, {}ms",
             status, ev.contexts_created, ev.metadata.num_turns, ev.metadata.duration_ms
@@ -467,11 +468,12 @@ impl ChatWidget {
     }
 
     fn on_context_stored(&mut self, ev: ContextStoredEvent) {
-        let task_info = ev.task_id
+        let task_info = ev
+            .task_id
             .map(|id| format!(" (task: {})", id))
             .unwrap_or_default();
         let message = format!(
-            "💾 Context stored: {} by {}{}", 
+            "💾 Context stored: {} by {}{}",
             ev.context_id, ev.created_by, task_info
         );
         self.on_background_event(message);
@@ -480,7 +482,8 @@ impl ChatWidget {
     fn on_context_query_result(&mut self, ev: ContextQueryResultEvent) {
         let message = format!(
             "🔍 Context query result: {} contexts found (total: {})",
-            ev.contexts.len(), ev.total_count
+            ev.contexts.len(),
+            ev.total_count
         );
         self.on_background_event(message);
     }

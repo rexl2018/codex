@@ -65,6 +65,10 @@ pub mod seatbelt;
 pub mod shell;
 pub mod spawn;
 pub mod subagent_manager;
+pub mod subagent_executor;
+pub mod llm_subagent_executor;
+pub mod subagent_system_messages;
+pub mod function_call_handler;
 #[cfg(test)]
 mod subagent_tests;
 pub mod terminal;

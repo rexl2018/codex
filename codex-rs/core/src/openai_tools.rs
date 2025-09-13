@@ -71,6 +71,7 @@ pub(crate) struct ToolsConfig {
     pub web_search_request: bool,
     pub include_view_image_tool: bool,
     pub experimental_unified_exec_tool: bool,
+    pub include_subagent_task_tool: bool,
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
@@ -83,6 +84,7 @@ pub(crate) struct ToolsConfigParams<'a> {
     pub(crate) use_streamable_shell_tool: bool,
     pub(crate) include_view_image_tool: bool,
     pub(crate) experimental_unified_exec_tool: bool,
+    pub(crate) include_subagent_task_tool: bool,
 }
 
 impl ToolsConfig {
@@ -97,6 +99,7 @@ impl ToolsConfig {
             use_streamable_shell_tool,
             include_view_image_tool,
             experimental_unified_exec_tool,
+            include_subagent_task_tool,
         } = params;
         let mut shell_type = if *use_streamable_shell_tool {
             ConfigShellToolType::StreamableShell
@@ -130,6 +133,7 @@ impl ToolsConfig {
             web_search_request: *include_web_search_request,
             include_view_image_tool: *include_view_image_tool,
             experimental_unified_exec_tool: *experimental_unified_exec_tool,
+            include_subagent_task_tool: *include_subagent_task_tool,
         }
     }
 }
@@ -368,6 +372,102 @@ fn create_view_image_tool() -> OpenAiTool {
         parameters: JsonSchema::Object {
             properties,
             required: Some(vec!["path".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
+
+fn create_subagent_task_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+
+    properties.insert(
+        "agent_type".to_string(),
+        JsonSchema::String {
+            description: Some("Type of subagent to create: 'explorer' for investigation and analysis, 'coder' for implementation and modification tasks".to_string()),
+        },
+    );
+
+    properties.insert(
+        "title".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "A concise title for the subagent task (max 50 characters)".to_string(),
+            ),
+        },
+    );
+
+    properties.insert(
+        "description".to_string(),
+        JsonSchema::String {
+            description: Some("Detailed description of what the subagent should accomplish. Be specific about the expected outcomes and deliverables.".to_string()),
+        },
+    );
+
+    properties.insert(
+        "context_refs".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String { description: None }),
+            description: Some(
+                "List of context reference IDs that the subagent should have access to".to_string(),
+            ),
+        },
+    );
+
+    properties.insert(
+        "bootstrap_paths".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::Object {
+                properties: {
+                    let mut bootstrap_props = BTreeMap::new();
+                    bootstrap_props.insert(
+                        "path".to_string(),
+                        JsonSchema::String {
+                            description: Some(
+                                "File or directory path to include in subagent context".to_string(),
+                            ),
+                        },
+                    );
+                    bootstrap_props.insert(
+                        "reason".to_string(),
+                        JsonSchema::String {
+                            description: Some(
+                                "Explanation of why this path is relevant to the task".to_string(),
+                            ),
+                        },
+                    );
+                    bootstrap_props
+                },
+                required: Some(vec!["path".to_string(), "reason".to_string()]),
+                additional_properties: Some(false),
+            }),
+            description: Some(
+                "List of files or directories to bootstrap the subagent with relevant context"
+                    .to_string(),
+            ),
+        },
+    );
+
+    properties.insert(
+        "auto_launch".to_string(),
+        JsonSchema::Boolean {
+            description: Some(
+                "When true, automatically launches the subagent after creation. Default: true"
+                    .to_string(),
+            ),
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "create_subagent_task".to_string(),
+        description: "Create a specialized subagent task for complex analysis or implementation work. Use 'explorer' agents for investigation, understanding codebases, and verification. Use 'coder' agents for implementation, bug fixes, and code modifications.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec![
+                "agent_type".to_string(),
+                "title".to_string(),
+                "description".to_string(),
+            ]),
             additional_properties: Some(false),
         },
     })
@@ -629,6 +729,52 @@ pub(crate) fn get_openai_tools(
     if config.include_view_image_tool {
         tools.push(create_view_image_tool());
     }
+
+    // Include the create_subagent_task tool for multi-agent coordination.
+    if config.include_subagent_task_tool {
+        tools.push(create_subagent_task_tool());
+    }
+
+    // Add store_context tool for main agent to store context items
+    let mut context_properties = BTreeMap::new();
+    context_properties.insert(
+        "id".to_string(),
+        JsonSchema::String {
+            description: Some(
+                "Unique identifier for the context item (use snake_case)".to_string(),
+            ),
+        },
+    );
+    context_properties.insert(
+        "summary".to_string(),
+        JsonSchema::String {
+            description: Some("Brief summary of the context content".to_string()),
+        },
+    );
+    context_properties.insert(
+        "content".to_string(),
+        JsonSchema::String {
+            description: Some("Detailed content of the context item".to_string()),
+        },
+    );
+
+    tools.push(OpenAiTool::Function(ResponsesApiTool {
+        name: "store_context".to_string(),
+        description:
+            "Store a context item containing important findings or analysis for future use"
+                .to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties: context_properties,
+            required: Some(vec![
+                "id".to_string(),
+                "summary".to_string(),
+                "content".to_string(),
+            ]),
+            additional_properties: Some(false),
+        },
+    }));
+
     if let Some(mcp_tools) = mcp_tools {
         // Ensure deterministic ordering to maximize prompt cache hits.
         let mut entries: Vec<(String, mcp_types::Tool)> = mcp_tools.into_iter().collect();

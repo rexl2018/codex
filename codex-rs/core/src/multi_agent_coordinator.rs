@@ -164,8 +164,7 @@ impl SubtaskCoordinator {
             completed_subtasks,
             failed_subtasks,
             consolidated_results,
-            summary: format!("Sequential execution completed. {} succeeded, {} failed", 
-                           completed_count, failed_count),
+            summary: format!("Sequential execution completed. {completed_count} succeeded, {failed_count} failed"),
         })
     }
     
@@ -214,8 +213,7 @@ impl SubtaskCoordinator {
             completed_subtasks,
             failed_subtasks,
             consolidated_results,
-            summary: format!("Parallel execution completed. {} succeeded, {} failed", 
-                           completed_count, failed_count),
+            summary: format!("Parallel execution completed. {completed_count} succeeded, {failed_count} failed"),
         })
     }
     
@@ -294,8 +292,7 @@ impl SubtaskCoordinator {
             completed_subtasks,
             failed_subtasks,
             consolidated_results,
-            summary: format!("Mixed execution completed. {} succeeded, {} failed", 
-                           completed_count, failed_count),
+            summary: format!("Mixed execution completed. {completed_count} succeeded, {failed_count} failed"),
         })
     }
     
@@ -308,7 +305,7 @@ impl SubtaskCoordinator {
         // 4. Return the result
         
         // For now, return a mock result
-        Ok(format!("Mock result for task {}", task_id))
+        Ok(format!("Mock result for task {task_id}"))
     }
     
     /// Evaluate a condition for conditional execution
@@ -431,7 +428,7 @@ impl TaskPlanner {
             SubtaskSpec {
                 agent_type: SubagentType::Explorer,
                 title: "Analyze request".to_string(),
-                description: format!("Analyze the user request: {}", request),
+                description: format!("Analyze the user request: {request}"),
                 priority: TaskPriority::High,
             }
         ]

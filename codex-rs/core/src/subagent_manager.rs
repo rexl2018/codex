@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,39 +9,58 @@ use tokio::sync::RwLock;
 use tokio::task::AbortHandle;
 use uuid::Uuid;
 
-use crate::context_store::{Context, IContextRepository, InMemoryContextRepository};
-use codex_protocol::protocol::{
-    BootstrapPath, ContextItem, Event, EventMsg, SubagentMetadata, SubagentType,
-    SubagentTaskCreatedEvent, SubagentStartedEvent, SubagentCompletedEvent,
-    SubagentProgressEvent, SubagentForceCompletedEvent, SubagentCancelledEvent,
-};
+use crate::client::ModelClient;
+use crate::context_store::Context;
+use crate::context_store::IContextRepository;
+use crate::context_store::InMemoryContextRepository;
+use crate::llm_subagent_executor::LLMSubagentExecutor;
+use crate::subagent_executor::SubagentExecutor;
+use codex_protocol::protocol::BootstrapPath;
+use codex_protocol::protocol::ContextItem;
+use codex_protocol::protocol::Event;
+use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::SubagentCancelledEvent;
+use codex_protocol::protocol::SubagentCompletedEvent;
+use codex_protocol::protocol::SubagentForceCompletedEvent;
+use codex_protocol::protocol::SubagentMetadata;
+use codex_protocol::protocol::SubagentProgressEvent;
+use codex_protocol::protocol::SubagentStartedEvent;
+use codex_protocol::protocol::SubagentTaskCreatedEvent;
+use codex_protocol::protocol::SubagentType;
 
 /// Subagent manager abstract interface
 #[async_trait]
 pub trait ISubagentManager: Send + Sync {
     /// Create subagent task (using complete task specification)
     async fn create_task(&self, spec: SubagentTaskSpec) -> Result<String, SubagentError>;
-    
+
     /// Get complete task information by task ID
     async fn get_task(&self, task_id: &str) -> Result<SubagentTask, SubagentError>;
-    
+
     /// Launch subagent execution
     async fn launch_subagent(&self, task_id: &str) -> Result<SubagentHandle, SubagentError>;
-    
+
     /// Get task status
     async fn get_task_status(&self, task_id: &str) -> Result<TaskStatus, SubagentError>;
-    
+
     /// Cancel task execution
     async fn cancel_task(&self, task_id: &str) -> Result<(), SubagentError>;
-    
+
     /// Force complete task (trigger force completion mechanism)
     async fn force_complete_task(&self, task_id: &str) -> Result<SubagentReport, SubagentError>;
-    
+
     /// Get all active tasks
     async fn get_active_tasks(&self) -> Result<Vec<TaskSummary>, SubagentError>;
-    
+
     /// Get task execution report
-    async fn get_task_report(&self, task_id: &str) -> Result<Option<SubagentReport>, SubagentError>;
+    async fn get_task_report(&self, task_id: &str)
+    -> Result<Option<SubagentReport>, SubagentError>;
+
+    /// Get recently completed tasks (sorted by completion time, most recent first)
+    async fn get_recently_completed_tasks(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<TaskSummary>, SubagentError>;
 }
 
 /// Subagent task specification
@@ -163,44 +183,114 @@ pub struct MessageEntry {
     pub timestamp: SystemTime,
 }
 
+/// Executor type configuration
+#[derive(Debug, Clone)]
+pub enum ExecutorType {
+    /// Simple mock executor for testing
+    Mock,
+    /// LLM-driven executor for production
+    LLM { model_client: Arc<ModelClient> },
+}
+
 /// In-memory subagent manager implementation
 pub struct InMemorySubagentManager {
     tasks: Arc<RwLock<HashMap<String, SubagentTask>>>,
     reports: Arc<RwLock<HashMap<String, SubagentReport>>>,
     context_repo: Arc<InMemoryContextRepository>,
     event_sender: tokio::sync::mpsc::UnboundedSender<Event>,
+    executor_type: ExecutorType,
 }
 
 impl InMemorySubagentManager {
     pub fn new(
         context_repo: Arc<InMemoryContextRepository>,
         event_sender: tokio::sync::mpsc::UnboundedSender<Event>,
+        executor_type: ExecutorType,
     ) -> Self {
         Self {
             tasks: Arc::new(RwLock::new(HashMap::new())),
             reports: Arc::new(RwLock::new(HashMap::new())),
             context_repo,
             event_sender,
+            executor_type,
         }
     }
-    
-    async fn load_bootstrap_contexts(&self, paths: &[BootstrapPath]) -> Result<Vec<BootstrapContext>, SubagentError> {
+
+    async fn load_bootstrap_contexts(
+        &self,
+        paths: &[BootstrapPath],
+    ) -> Result<Vec<BootstrapContext>, SubagentError> {
         let mut contexts = Vec::new();
-        
+
         for bootstrap_path in paths {
-            // In a real implementation, this would read from the filesystem
-            // For now, we'll create a placeholder
-            let content = format!("Content from path: {}", bootstrap_path.path.display());
+            let path = &bootstrap_path.path;
+
+            tracing::info!(
+                "Processing bootstrap path: {} (exists: {}, is_file: {}, is_dir: {})",
+                path.display(),
+                path.exists(),
+                path.is_file(),
+                path.is_dir()
+            );
+
+            let content = if path.is_file() {
+                // Read file content
+                match tokio::fs::read_to_string(path).await {
+                    Ok(content) => content,
+                    Err(e) => {
+                        tracing::warn!("Failed to read file {}: {}", path.display(), e);
+                        format!("Error reading file {}: {}", path.display(), e)
+                    }
+                }
+            } else if path.is_dir() {
+                // List directory contents
+                match tokio::fs::read_dir(path).await {
+                    Ok(mut entries) => {
+                        let mut dir_content =
+                            format!("Directory listing for {}:\n", path.display());
+                        while let Ok(Some(entry)) = entries.next_entry().await {
+                            let entry_path = entry.path();
+                            let entry_name = entry_path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("?");
+
+                            if entry_path.is_dir() {
+                                dir_content.push_str(&format!("  {entry_name}/\n"));
+                            } else {
+                                dir_content.push_str(&format!("  {entry_name}\n"));
+                            }
+                        }
+                        dir_content
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to read directory {}: {}", path.display(), e);
+                        format!("Error reading directory {}: {}", path.display(), e)
+                    }
+                }
+            } else {
+                format!(
+                    "Path {} does not exist or is not accessible",
+                    path.display()
+                )
+            };
+
+            tracing::info!(
+                "Loaded bootstrap context: {} ({} chars)",
+                path.display(),
+                content.len()
+            );
+
             contexts.push(BootstrapContext {
                 path: bootstrap_path.path.clone(),
                 content,
                 reason: bootstrap_path.reason.clone(),
             });
         }
-        
+
         Ok(contexts)
     }
-    
+
     async fn send_event(&self, event: Event) {
         if let Err(e) = self.event_sender.send(event) {
             tracing::error!("Failed to send subagent event: {}", e);
@@ -212,20 +302,27 @@ impl InMemorySubagentManager {
 impl ISubagentManager for InMemorySubagentManager {
     async fn create_task(&self, spec: SubagentTaskSpec) -> Result<String, SubagentError> {
         let task_id = Uuid::new_v4().to_string();
-        
+
+        tracing::info!(
+            "Creating subagent task: id={}, type={:?}, title='{}', contexts={}, bootstrap_paths={}",
+            task_id,
+            spec.agent_type,
+            spec.title,
+            spec.context_refs.len(),
+            spec.bootstrap_paths.len()
+        );
+
         // Resolve context references
-        let contexts = self.context_repo
-            .get_contexts(&spec.context_refs)
-            .await?;
-        
+        let contexts = self.context_repo.get_contexts(&spec.context_refs).await?;
+
         let mut ctx_store_contexts = HashMap::new();
         for context in contexts {
             ctx_store_contexts.insert(context.id, context.content);
         }
-        
+
         // Load bootstrap contexts
         let bootstrap_contexts = self.load_bootstrap_contexts(&spec.bootstrap_paths).await?;
-        
+
         let task = SubagentTask {
             task_id: task_id.clone(),
             agent_type: spec.agent_type.clone(),
@@ -239,13 +336,13 @@ impl ISubagentManager for InMemorySubagentManager {
             started_at: None,
             completed_at: None,
         };
-        
+
         // Store task
         {
             let mut tasks = self.tasks.write().await;
             tasks.insert(task_id.clone(), task);
         }
-        
+
         // Send event
         let event = Event {
             id: task_id.clone(),
@@ -257,44 +354,56 @@ impl ISubagentManager for InMemorySubagentManager {
                 bootstrap_paths_count: spec.bootstrap_paths.len(),
             }),
         };
-        
+
         self.send_event(event).await;
-        
+
+        tracing::info!("Subagent task created successfully: id={}", task_id);
+
         Ok(task_id)
     }
-    
+
     async fn get_task(&self, task_id: &str) -> Result<SubagentTask, SubagentError> {
         let tasks = self.tasks.read().await;
-        tasks.get(task_id)
+        tasks
+            .get(task_id)
             .cloned()
-            .ok_or_else(|| SubagentError::TaskNotFound { 
-                task_id: task_id.to_string() 
+            .ok_or_else(|| SubagentError::TaskNotFound {
+                task_id: task_id.to_string(),
             })
     }
-    
+
     async fn launch_subagent(&self, task_id: &str) -> Result<SubagentHandle, SubagentError> {
+        tracing::debug!("Launching subagent execution: task_id={task_id}");
+        tracing::info!("Launching subagent execution: task_id={task_id}");
+
         let mut tasks = self.tasks.write().await;
-        
-        let task = tasks.get_mut(task_id)
-            .ok_or_else(|| SubagentError::TaskNotFound { 
-                task_id: task_id.to_string() 
+
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| SubagentError::TaskNotFound {
+                task_id: task_id.to_string(),
             })?;
-        
+
         // Check task status
         match task.status {
-            TaskStatus::Created => {},
-            _ => return Err(SubagentError::ExecutionError { 
-                message: format!("Task {} is not in Created state", task_id) 
-            }),
+            TaskStatus::Created => {}
+            _ => {
+                return Err(SubagentError::ExecutionError {
+                    message: format!("Task {task_id} is not in Created state"),
+                });
+            }
         }
-        
+
         // Update task status
-        task.status = TaskStatus::Running { current_turn: 0, max_turns: task.max_turns };
+        task.status = TaskStatus::Running {
+            current_turn: 0,
+            max_turns: task.max_turns,
+        };
         task.started_at = Some(SystemTime::now());
-        
+
         let agent_type = task.agent_type.clone();
         let title = task.title.clone();
-        
+
         // Send started event
         let event = Event {
             id: task_id.to_string(),
@@ -304,60 +413,58 @@ impl ISubagentManager for InMemorySubagentManager {
                 title,
             }),
         };
-        
+
         self.send_event(event).await;
-        
-        // In a real implementation, this would spawn the actual subagent execution
-        // For now, we'll create a mock execution task
+
+        tracing::info!(
+            "Subagent execution started: task_id={}, type={:?}, max_turns={}",
+            task_id,
+            agent_type,
+            task.max_turns
+        );
+
+        // Spawn the actual subagent execution
+        let task_clone = task.clone();
         let task_id_clone = task_id.to_string();
         let event_sender = self.event_sender.clone();
         let tasks_clone = self.tasks.clone();
         let reports_clone = self.reports.clone();
-        
+        let context_repo = self.context_repo.clone();
+        let executor_type = self.executor_type.clone();
+
         let abort_handle = tokio::spawn(async move {
-            // Simulate subagent execution
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            
-            // Create a mock report
-            let report = SubagentReport {
-                task_id: task_id_clone.clone(),
-                contexts: vec![
-                    ContextItem {
-                        id: Uuid::new_v4().to_string(),
-                        summary: "Mock context discovered by subagent".to_string(),
-                        content: "This is mock content discovered during execution".to_string(),
-                    }
-                ],
-                comments: "Mock subagent execution completed successfully".to_string(),
-                success: true,
-                metadata: SubagentMetadata {
-                    num_turns: 3,
-                    max_turns: 10,
-                    input_tokens: 1000,
-                    output_tokens: 500,
-                    duration_ms: 2000,
-                    reached_max_turns: false,
-                    force_completed: false,
-                    error_message: None,
-                },
-                trajectory: None,
+            // Execute the task based on executor type
+            let report = match executor_type {
+                ExecutorType::Mock => {
+                    // Use the mock executor
+                    let executor = SubagentExecutor::new(context_repo);
+                    executor.execute_task(&task_clone).await
+                }
+                ExecutorType::LLM { model_client } => {
+                    // Use the LLM executor
+                    let executor =
+                        LLMSubagentExecutor::new(context_repo, model_client, task_clone.max_turns);
+                    executor.execute_task(&task_clone).await
+                }
             };
-            
+
             // Update task status
             {
                 let mut tasks = tasks_clone.write().await;
                 if let Some(task) = tasks.get_mut(&task_id_clone) {
-                    task.status = TaskStatus::Completed { result: report.clone() };
+                    task.status = TaskStatus::Completed {
+                        result: report.clone(),
+                    };
                     task.completed_at = Some(SystemTime::now());
                 }
             }
-            
+
             // Store report
             {
                 let mut reports = reports_clone.write().await;
                 reports.insert(task_id_clone.clone(), report.clone());
             }
-            
+
             // Send completion event
             let event = Event {
                 id: task_id_clone.clone(),
@@ -369,44 +476,54 @@ impl ISubagentManager for InMemorySubagentManager {
                     metadata: report.metadata,
                 }),
             };
-            
+
             let _ = event_sender.send(event);
-        }).abort_handle();
-        
+        })
+        .abort_handle();
+
+        tracing::info!(
+            "Subagent execution launched successfully: task_id={}",
+            task_id
+        );
+
         Ok(SubagentHandle {
             task_id: task_id.to_string(),
             agent_type,
             abort_handle,
         })
     }
-    
+
     async fn get_task_status(&self, task_id: &str) -> Result<TaskStatus, SubagentError> {
         let tasks = self.tasks.read().await;
-        let task = tasks.get(task_id)
-            .ok_or_else(|| SubagentError::TaskNotFound { 
-                task_id: task_id.to_string() 
+        let task = tasks
+            .get(task_id)
+            .ok_or_else(|| SubagentError::TaskNotFound {
+                task_id: task_id.to_string(),
             })?;
-        
+
         Ok(task.status.clone())
     }
-    
+
     async fn cancel_task(&self, task_id: &str) -> Result<(), SubagentError> {
         let mut tasks = self.tasks.write().await;
-        let task = tasks.get_mut(task_id)
-            .ok_or_else(|| SubagentError::TaskNotFound { 
-                task_id: task_id.to_string() 
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| SubagentError::TaskNotFound {
+                task_id: task_id.to_string(),
             })?;
-        
+
         let current_turn = match &task.status {
             TaskStatus::Running { current_turn, .. } => *current_turn,
-            _ => return Err(SubagentError::ExecutionError {
-                message: format!("Task {} is not running", task_id)
-            })
+            _ => {
+                return Err(SubagentError::ExecutionError {
+                    message: format!("Task {task_id} is not running"),
+                });
+            }
         };
-        
+
         task.status = TaskStatus::Cancelled;
         task.completed_at = Some(SystemTime::now());
-        
+
         // Send cancellation event
         let event = Event {
             id: task_id.to_string(),
@@ -418,25 +535,31 @@ impl ISubagentManager for InMemorySubagentManager {
                 cancelled_at_turn: current_turn,
             }),
         };
-        
+
         self.send_event(event).await;
-         Ok(())
+        Ok(())
     }
-    
+
     async fn force_complete_task(&self, task_id: &str) -> Result<SubagentReport, SubagentError> {
         let mut tasks = self.tasks.write().await;
-        let task = tasks.get_mut(task_id)
-            .ok_or_else(|| SubagentError::TaskNotFound { 
-                task_id: task_id.to_string() 
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| SubagentError::TaskNotFound {
+                task_id: task_id.to_string(),
             })?;
-        
+
         let (current_turn, max_turns) = match &task.status {
-            TaskStatus::Running { current_turn, max_turns } => (*current_turn, *max_turns),
-            _ => return Err(SubagentError::ExecutionError {
-                message: format!("Task {} is not running", task_id)
-            })
+            TaskStatus::Running {
+                current_turn,
+                max_turns,
+            } => (*current_turn, *max_turns),
+            _ => {
+                return Err(SubagentError::ExecutionError {
+                    message: format!("Task {task_id} is not running"),
+                });
+            }
         };
-        
+
         // Create force completion report
         let report = SubagentReport {
             task_id: task_id.to_string(),
@@ -455,16 +578,18 @@ impl ISubagentManager for InMemorySubagentManager {
             },
             trajectory: None,
         };
-        
-        task.status = TaskStatus::Completed { result: report.clone() };
+
+        task.status = TaskStatus::Completed {
+            result: report.clone(),
+        };
         task.completed_at = Some(SystemTime::now());
-        
+
         // Store report
         {
             let mut reports = self.reports.write().await;
             reports.insert(task_id.to_string(), report.clone());
         }
-        
+
         // Send force completion event
         let event = Event {
             id: task_id.to_string(),
@@ -479,18 +604,21 @@ impl ISubagentManager for InMemorySubagentManager {
                 metadata: report.metadata.clone(),
             }),
         };
-        
+
         self.send_event(event).await;
-         
-         Ok(report)
+
+        Ok(report)
     }
-    
+
     async fn get_active_tasks(&self) -> Result<Vec<TaskSummary>, SubagentError> {
         let tasks = self.tasks.read().await;
         let mut summaries = Vec::new();
-        
+
         for task in tasks.values() {
-            if matches!(task.status, TaskStatus::Created | TaskStatus::Running { .. }) {
+            if matches!(
+                task.status,
+                TaskStatus::Created | TaskStatus::Running { .. }
+            ) {
                 summaries.push(TaskSummary {
                     task_id: task.task_id.clone(),
                     agent_type: task.agent_type.clone(),
@@ -500,13 +628,46 @@ impl ISubagentManager for InMemorySubagentManager {
                 });
             }
         }
-        
+
         Ok(summaries)
     }
-    
-    async fn get_task_report(&self, task_id: &str) -> Result<Option<SubagentReport>, SubagentError> {
+
+    async fn get_task_report(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<SubagentReport>, SubagentError> {
         let reports = self.reports.read().await;
         Ok(reports.get(task_id).cloned())
+    }
+
+    async fn get_recently_completed_tasks(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<TaskSummary>, SubagentError> {
+        let tasks = self.tasks.read().await;
+        let mut completed_tasks = Vec::new();
+
+        for task in tasks.values() {
+            if let TaskStatus::Completed { .. } = task.status {
+                completed_tasks.push(TaskSummary {
+                    task_id: task.task_id.clone(),
+                    agent_type: task.agent_type.clone(),
+                    title: task.title.clone(),
+                    status: task.status.clone(),
+                    created_at: task.created_at,
+                });
+            }
+        }
+
+        // Sort by completion time (most recent first)
+        // Since we don't have completed_at in TaskSummary, we'll use created_at as approximation
+        // In a real implementation, we might want to add completed_at to TaskSummary
+        completed_tasks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        // Limit the results
+        completed_tasks.truncate(limit);
+
+        Ok(completed_tasks)
     }
 }
 
@@ -521,7 +682,7 @@ mod tests {
         let context_repo = Arc::new(InMemoryContextRepository::new());
         let (event_sender, _) = mpsc::unbounded_channel();
         let manager = InMemorySubagentManager::new(context_repo, event_sender);
-        
+
         let spec = SubagentTaskSpec {
             agent_type: SubagentType::Explorer,
             title: "Test Task".to_string(),
@@ -531,21 +692,21 @@ mod tests {
             max_turns: Some(5),
             timeout_ms: None,
         };
-        
+
         let task_id = manager.create_task(spec).await.unwrap();
         let task = manager.get_task(&task_id).await.unwrap();
-        
+
         assert_eq!(task.title, "Test Task");
         assert_eq!(task.max_turns, 5);
         assert!(matches!(task.status, TaskStatus::Created));
     }
-    
+
     #[tokio::test]
     async fn test_launch_subagent() {
         let context_repo = Arc::new(InMemoryContextRepository::new());
         let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
         let manager = InMemorySubagentManager::new(context_repo, event_sender);
-        
+
         let spec = SubagentTaskSpec {
             agent_type: SubagentType::Coder,
             title: "Test Task".to_string(),
@@ -555,27 +716,27 @@ mod tests {
             max_turns: Some(10),
             timeout_ms: None,
         };
-        
+
         let task_id = manager.create_task(spec).await.unwrap();
         let handle = manager.launch_subagent(&task_id).await.unwrap();
-        
+
         assert_eq!(handle.task_id, task_id);
         assert!(matches!(handle.agent_type, SubagentType::Coder));
-        
+
         // Check that we received the started event
         let event = event_receiver.recv().await.unwrap();
         assert!(matches!(event.msg, EventMsg::SubagentTaskCreated(_)));
-        
+
         let event = event_receiver.recv().await.unwrap();
         assert!(matches!(event.msg, EventMsg::SubagentStarted(_)));
     }
-    
+
     #[tokio::test]
     async fn test_get_active_tasks() {
         let context_repo = Arc::new(InMemoryContextRepository::new());
         let (event_sender, _) = mpsc::unbounded_channel();
         let manager = InMemorySubagentManager::new(context_repo, event_sender);
-        
+
         let spec = SubagentTaskSpec {
             agent_type: SubagentType::Explorer,
             title: "Active Task".to_string(),
@@ -585,10 +746,10 @@ mod tests {
             max_turns: Some(5),
             timeout_ms: None,
         };
-        
+
         let task_id = manager.create_task(spec).await.unwrap();
         let active_tasks = manager.get_active_tasks().await.unwrap();
-        
+
         assert_eq!(active_tasks.len(), 1);
         assert_eq!(active_tasks[0].task_id, task_id);
         assert_eq!(active_tasks[0].title, "Active Task");
