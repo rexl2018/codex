@@ -694,6 +694,10 @@ impl Session {
             shell_environment_policy: config.shell_environment_policy.clone(),
             cwd,
         };
+        
+        // Create Arc for mcp_connection_manager to be used in both subagent and main session
+        let mcp_connection_manager_arc = Arc::new(mcp_connection_manager);
+        
         // Initialize multi-agent components if subagent task tool is enabled
         let multi_agent_components = if config.include_subagent_task_tool {
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -708,13 +712,13 @@ impl Session {
                 model_reasoning_summary,
                 conversation_id,
             ));
-
             let subagent_manager = Arc::new(InMemorySubagentManager::new(
                 context_repo.clone(),
                 event_tx,
                 ExecutorType::LLM {
                     model_client,
-                    mcp_tools: Some(mcp_connection_manager.list_all_tools()),
+                    mcp_tools: Some(mcp_connection_manager_arc.list_all_tools()),
+                    mcp_connection_manager: Some(mcp_connection_manager_arc.clone()),
                 }, // Use LLM executor for production with MCP tools
             ));
 
@@ -741,7 +745,7 @@ impl Session {
         let sess = Arc::new(Session {
             conversation_id,
             tx_event: tx_event.clone(),
-            mcp_connection_manager,
+            mcp_connection_manager: (*mcp_connection_manager_arc).clone(),
             session_manager: ExecSessionManager::default(),
             unified_exec_manager: UnifiedExecSessionManager::default(),
             mcp_clients: Arc::new(TokioMutex::new(Vec::new())),

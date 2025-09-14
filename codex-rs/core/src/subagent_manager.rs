@@ -14,6 +14,7 @@ use crate::context_store::Context;
 use crate::context_store::IContextRepository;
 use crate::context_store::InMemoryContextRepository;
 use crate::llm_subagent_executor::LLMSubagentExecutor;
+use crate::mcp_connection_manager::McpConnectionManager;
 use crate::mock_subagent_executor::MockSubagentExecutor;
 use codex_protocol::protocol::BootstrapPath;
 use codex_protocol::protocol::ContextItem;
@@ -192,6 +193,7 @@ pub enum ExecutorType {
     LLM { 
         model_client: Arc<ModelClient>,
         mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
+        mcp_connection_manager: Option<Arc<McpConnectionManager>>,
     },
 }
 
@@ -451,14 +453,14 @@ impl ISubagentManager for InMemorySubagentManager {
                     let executor = MockSubagentExecutor::new(context_repo);
                     executor.execute_task(&task_clone).await
                 }
-                ExecutorType::LLM { model_client, mcp_tools } => {
+                ExecutorType::LLM { model_client, mcp_tools, mcp_connection_manager } => {
                     // Use the LLM executor
                     tracing::info!("Using LLMSubagentExecutor for task: {}, MCP tools available: {}", 
                         task_clone.task_id, 
                         mcp_tools.as_ref().map(|t| t.len()).unwrap_or(0)
                     );
                     let executor =
-                        LLMSubagentExecutor::new(context_repo, model_client, task_clone.max_turns, mcp_tools, event_sender.clone());
+                        LLMSubagentExecutor::new(context_repo, model_client, task_clone.max_turns, mcp_tools, mcp_connection_manager, event_sender.clone());
                     executor.execute_task(&task_clone).await
                 }
             };

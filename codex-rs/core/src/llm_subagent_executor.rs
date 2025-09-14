@@ -11,6 +11,7 @@ use crate::context_store::InMemoryContextRepository;
 use crate::function_call_handler::FunctionCallContext;
 use crate::function_call_handler::FunctionCallHandler;
 use crate::function_call_handler::SubagentExecutor;
+use crate::mcp_connection_manager::McpConnectionManager;
 use crate::subagent_manager::MessageEntry;
 use crate::subagent_manager::SubagentReport;
 use crate::subagent_manager::SubagentTask;
@@ -27,6 +28,7 @@ pub struct LLMSubagentExecutor {
     max_turns: u32,
     function_handler: FunctionCallHandler<SubagentExecutor>,
     mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
+    mcp_connection_manager: Option<Arc<McpConnectionManager>>,
     event_sender: tokio::sync::mpsc::UnboundedSender<codex_protocol::protocol::Event>,
 }
 
@@ -64,6 +66,7 @@ impl LLMSubagentExecutor {
         model_client: Arc<ModelClient>,
         max_turns: u32,
         mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
+        mcp_connection_manager: Option<Arc<McpConnectionManager>>,
         event_sender: tokio::sync::mpsc::UnboundedSender<codex_protocol::protocol::Event>,
     ) -> Self {
         let executor = Arc::new(SubagentExecutor);
@@ -75,6 +78,7 @@ impl LLMSubagentExecutor {
             max_turns,
             function_handler,
             mcp_tools,
+            mcp_connection_manager,
             event_sender,
         }
     }
@@ -600,6 +604,25 @@ impl LLMSubagentExecutor {
         tracing::info!("DEBUG - Full LLM response content:\n{}", full_response);
         tracing::info!("DEBUG - Function calls received: {}", function_calls.len());
 
+        // Send final AgentMessage event to properly close the message in TUI
+        if !full_response.is_empty() || prefix_sent {
+            let final_message = if !full_response.is_empty() {
+                format!("{}{}", agent_prefix, full_response)
+            } else {
+                agent_prefix.to_string()
+            };
+            
+            tracing::info!("Sending final subagent message event");
+            self.send_event(codex_protocol::protocol::Event {
+                id: task.task_id.clone(),
+                msg: codex_protocol::protocol::EventMsg::AgentMessage(
+                    codex_protocol::protocol::AgentMessageEvent {
+                        message: final_message,
+                    }
+                ),
+            }).await;
+        }
+
         Ok(LLMResponse {
             text: full_response,
             function_calls,
@@ -662,28 +685,12 @@ impl LLMSubagentExecutor {
                     )
                     .await
                 } else {
-                    // Handle other function calls normally
-                    let context = crate::function_call_handler::FunctionCallContext {
-                        cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-                        sub_id: task.task_id.clone(),
-                        call_id: func_call.call_id.clone(),
-                    };
-
-                    self.function_handler
-                        .handle_function_call(func_call.name.clone(), func_call.arguments.clone(), context)
-                        .await
+                    // Handle other function calls and send events to TUI
+                    self.handle_regular_function_call(&func_call, task).await
                 }
             } else {
                 // No MCP tools available, handle normally
-                let context = crate::function_call_handler::FunctionCallContext {
-                    cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-                    sub_id: task.task_id.clone(),
-                    call_id: func_call.call_id.clone(),
-                };
-
-                self.function_handler
-                    .handle_function_call(func_call.name.clone(), func_call.arguments.clone(), context)
-                    .await
+                self.handle_regular_function_call(&func_call, task).await
             };
 
             // Convert result to message format
@@ -943,8 +950,53 @@ impl LLMSubagentExecutor {
         None
     }
 
-    /// Handle MCP tool call - this is a placeholder that indicates the tool should be executed
-    /// The actual execution will be handled by the main agent's MCP connection manager
+    /// Handle regular function calls (shell, read_file, write_file, etc.) and send events to TUI
+    async fn handle_regular_function_call(
+        &self,
+        func_call: &FunctionCall,
+        task: &SubagentTask,
+    ) -> codex_protocol::models::ResponseInputItem {
+        tracing::info!("Subagent executing function call: {} with args: {}", func_call.name, func_call.arguments);
+
+        // Execute the function call
+        let context = crate::function_call_handler::FunctionCallContext {
+            cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            sub_id: task.task_id.clone(),
+            call_id: func_call.call_id.clone(),
+        };
+
+        let result = self.function_handler
+            .handle_function_call(func_call.name.clone(), func_call.arguments.clone(), context)
+            .await;
+
+        // Send single completion event to TUI with compact format including arguments
+        let completion_message = match &result {
+            codex_protocol::models::ResponseInputItem::FunctionCallOutput { output, .. } => {
+                if output.success.unwrap_or(false) {
+                    format!("Subagent completed: {}({}) ✓", func_call.name, func_call.arguments)
+                } else {
+                    format!("Subagent completed: {}({}) ✗", func_call.name, func_call.arguments)
+                }
+            }
+            _ => format!("Subagent completed: {}({})", func_call.name, func_call.arguments),
+        };
+
+        let event = codex_protocol::protocol::EventMsg::BackgroundEvent(
+            codex_protocol::protocol::BackgroundEventEvent {
+                message: completion_message,
+            }
+        );
+
+        self.send_event(codex_protocol::protocol::Event {
+            id: "subagent".to_string(),
+            msg: event,
+        }).await;
+
+        result
+    }
+
+    /// Handle MCP tool call - execute the tool directly if available
+    /// Subagents can execute MCP tools if they have access to the tool definitions
     async fn handle_mcp_tool_call(
         &self,
         server_name: &str,
@@ -952,9 +1004,9 @@ impl LLMSubagentExecutor {
         arguments: &str,
         call_id: &str,
     ) -> codex_protocol::models::ResponseInputItem {
-        tracing::info!("MCP tool call: {}::{} with args: {}", server_name, tool_name, arguments);
+        tracing::info!("Subagent executing MCP tool: {}::{} with args: {}", server_name, tool_name, arguments);
         
-        // Parse arguments as JSON
+        // Parse arguments as JSON to validate format
         let arguments_value = if arguments.trim().is_empty() {
             None
         } else {
@@ -973,20 +1025,87 @@ impl LLMSubagentExecutor {
             }
         };
 
-        // Return an MCP tool call output that will be handled by the main system
-         codex_protocol::models::ResponseInputItem::McpToolCallOutput {
-             call_id: call_id.to_string(),
-             result: Ok(mcp_types::CallToolResult {
-                 content: vec![mcp_types::ContentBlock::TextContent(mcp_types::TextContent {
-                     text: format!("MCP tool call to {server_name}::{tool_name} - this should be handled by the main agent"),
-                     r#type: "text".to_string(),
-                     annotations: None,
-                 })],
-                 is_error: Some(false),
-                 structured_content: None,
-             }),
-         }
+        // Send MCP tool call begin event to show in TUI
+        let invocation = codex_protocol::protocol::McpInvocation {
+            server: server_name.to_string(),
+            tool: tool_name.to_string(),
+            arguments: arguments_value.clone(),
+        };
+
+        let tool_call_begin_event = codex_protocol::protocol::EventMsg::McpToolCallBegin(
+            codex_protocol::protocol::McpToolCallBeginEvent {
+                call_id: call_id.to_string(),
+                invocation: invocation.clone(),
+            }
+        );
+
+        self.send_event(codex_protocol::protocol::Event {
+            id: "subagent".to_string(),
+            msg: tool_call_begin_event,
+        }).await;
+
+        // Try to execute the MCP tool directly
+        let result = self.execute_mcp_tool_directly(server_name, tool_name, arguments_value.as_ref()).await;
+
+        // Send MCP tool call end event
+        let tool_call_end_event = codex_protocol::protocol::EventMsg::McpToolCallEnd(
+            codex_protocol::protocol::McpToolCallEndEvent {
+                call_id: call_id.to_string(),
+                invocation: invocation.clone(),
+                duration: std::time::Duration::from_millis(100), // Approximate duration
+                result: result.clone(),
+            }
+        );
+
+        self.send_event(codex_protocol::protocol::Event {
+            id: "subagent".to_string(),
+            msg: tool_call_end_event,
+        }).await;
+
+        // Return the MCP tool call output
+        codex_protocol::models::ResponseInputItem::McpToolCallOutput {
+            call_id: call_id.to_string(),
+            result,
+        }
     }
+
+    /// Execute MCP tool directly using the MCP connection manager
+    async fn execute_mcp_tool_directly(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        arguments: Option<&serde_json::Value>,
+    ) -> Result<mcp_types::CallToolResult, String> {
+        // Check if we have MCP connection manager available
+        if let Some(mcp_manager) = &self.mcp_connection_manager {
+            let full_tool_name = format!("{}__{}", server_name, tool_name);
+            
+            // Check if the tool is available in our tool definitions
+            if let Some(mcp_tools) = &self.mcp_tools {
+                if mcp_tools.contains_key(&full_tool_name) {
+                    // Use the MCP connection manager to call the tool
+                    let arguments_value = arguments.cloned();
+                     
+                     match mcp_manager.call_tool(server_name, tool_name, arguments_value, None).await {
+                         Ok(result) => return Ok(result),
+                         Err(e) => {
+                             return Err(format!(
+                                 "Failed to execute MCP tool {server_name}::{tool_name}: {e}"
+                             ));
+                         }
+                     }
+                }
+            }
+        }
+
+        // Tool not found or MCP manager not available
+        Err(format!(
+            "MCP tool {}::{} is not available or MCP connection manager is not configured.",
+            server_name, tool_name
+        ))
+    }
+
+
 
     async fn handle_store_context_call(
         &self,

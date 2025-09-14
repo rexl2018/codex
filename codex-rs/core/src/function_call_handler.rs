@@ -83,6 +83,13 @@ impl<E: FunctionExecutor> FunctionCallHandler<E> {
             "read_file" => self.handle_read_file_call(arguments, &context).await,
             "write_file" => self.handle_write_file_call(arguments, &context).await,
             "store_context" => self.handle_store_context_call(arguments, &context).await,
+            "create_subagent_task" => {
+                warn!("Subagent attempted to call create_subagent_task: {name}");
+                FunctionCallOutputPayload {
+                    content: "Error: Subagents cannot create other subagents. Only the main agent can use the create_subagent_task function. Please complete your current task and report your findings instead.".to_string(),
+                    success: Some(false),
+                }
+            }
             _ => {
                 warn!("Unsupported function call: {name}");
                 FunctionCallOutputPayload {
@@ -224,10 +231,25 @@ impl FunctionExecutor for SubagentExecutor {
     async fn execute_shell(
         &self,
         command: String,
-        _context: &FunctionCallContext,
+        context: &FunctionCallContext,
     ) -> FunctionCallOutputPayload {
-        // For subagents, we simulate shell execution
-        let output = format!("Command executed: {command}\nOutput: [simulated shell output]");
+        // For subagents, provide meaningful responses for common commands
+        let output = match command.trim() {
+            "pwd" => {
+                // Return the actual current working directory
+                context.cwd.to_string_lossy().to_string()
+            }
+            cmd if cmd.starts_with("ls") || cmd.starts_with("dir") => {
+                format!("Shell command '{}' is not available for subagents.\nTo list directory contents, use the filesystem MCP tool: filesystem.list_directory", cmd)
+            }
+            cmd if cmd.starts_with("cd ") => {
+                "Shell command 'cd' is not available for subagents.\nSubagents operate in a fixed working directory. Use filesystem MCP tools with absolute paths.".to_string()
+            }
+            _ => {
+                format!("Shell command '{}' is not available for subagents.\nSubagents have limited shell access. Use MCP tools for file operations.", command)
+            }
+        };
+        
         FunctionCallOutputPayload {
             content: output,
             success: Some(true),
@@ -292,20 +314,23 @@ impl FunctionExecutor for SubagentExecutor {
         content: String,
         context: &FunctionCallContext,
     ) -> FunctionCallOutputPayload {
-        // This is a placeholder implementation for the SubagentExecutor
-        // The actual context storage will be handled by the LLMSubagentExecutor
-        // which has access to the context repository
+        // SubagentExecutor cannot directly store contexts as it lacks access to the context repository.
+        // Context storage is handled by the LLMSubagentExecutor which has proper access.
+        // This method logs the request for debugging purposes.
 
-        tracing::info!(
-            "Context storage requested: id='{}', summary='{}', content_length={}",
+        tracing::warn!(
+            "SubagentExecutor cannot store contexts directly. Context storage request: id='{}', summary='{}', content_length={}",
             id,
             summary,
             content.len()
         );
 
         FunctionCallOutputPayload {
-            content: format!("Context '{}' stored successfully", id),
-            success: Some(true),
+            content: format!(
+                "Note: Context storage '{}' was requested but SubagentExecutor cannot store contexts directly. Use LLMSubagentExecutor for actual context storage.",
+                id
+            ),
+            success: Some(false),
         }
     }
 }

@@ -695,8 +695,15 @@ fn spinner(start_time: Option<Instant>) -> Span<'static> {
     ch.to_string().into()
 }
 
-pub(crate) fn new_active_mcp_tool_call(invocation: McpInvocation) -> PlainHistoryCell {
-    let title_line = Line::from(vec!["tool".magenta(), " running...".dim()]);
+pub(crate) fn new_active_mcp_tool_call(invocation: McpInvocation, executor: Option<&str>) -> PlainHistoryCell {
+    let executor_info = match executor {
+        Some("main") => " (main agent)".dim(),
+        Some(id) if id.starts_with("subagent") => " (subagent)".dim(),
+        Some(other) => format!(" ({})", other).dim(),
+        None => "".dim(),
+    };
+    
+    let title_line = Line::from(vec!["tool".magenta(), " running...".dim(), executor_info]);
     let lines: Vec<Line> = vec![title_line, format_mcp_invocation(invocation.clone())];
 
     PlainHistoryCell { lines }
@@ -754,12 +761,31 @@ pub(crate) fn new_completed_mcp_tool_call(
     success: bool,
     result: Result<mcp_types::CallToolResult, String>,
 ) -> Box<dyn HistoryCell> {
+    new_completed_mcp_tool_call_with_executor(num_cols, invocation, duration, success, result, None)
+}
+
+pub(crate) fn new_completed_mcp_tool_call_with_executor(
+    num_cols: usize,
+    invocation: McpInvocation,
+    duration: Duration,
+    success: bool,
+    result: Result<mcp_types::CallToolResult, String>,
+    executor: Option<&str>,
+) -> Box<dyn HistoryCell> {
     if let Some(cell) = try_new_completed_mcp_tool_call_with_image_output(&result) {
         return Box::new(cell);
     }
 
     let duration = format_duration(duration);
     let status_str = if success { "success" } else { "failed" };
+    
+    let executor_info = match executor {
+        Some("main") => " (main agent)".dim(),
+        Some(id) if id.starts_with("subagent") => " (subagent)".dim(),
+        Some(other) => format!(" ({})", other).dim(),
+        None => "".dim(),
+    };
+    
     let title_line = Line::from(vec![
         "tool".magenta(),
         " ".into(),
@@ -769,6 +795,7 @@ pub(crate) fn new_completed_mcp_tool_call(
             status_str.red()
         },
         format!(", duration: {duration}").dim(),
+        executor_info,
     ]);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -1063,6 +1090,11 @@ pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {
 
 pub(crate) fn new_stream_error_event(message: String) -> PlainHistoryCell {
     let lines: Vec<Line<'static>> = vec![vec![padded_emoji("⚠️").into(), message.dim()].into()];
+    PlainHistoryCell { lines }
+}
+
+pub(crate) fn new_background_event(message: String) -> PlainHistoryCell {
+    let lines: Vec<Line<'static>> = vec![vec![padded_emoji("ℹ️").into(), message.dim()].into()];
     PlainHistoryCell { lines }
 }
 

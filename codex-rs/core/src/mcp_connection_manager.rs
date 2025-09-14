@@ -76,19 +76,30 @@ fn qualify_tools(tools: Vec<ToolInfo>) -> HashMap<String, ToolInfo> {
     qualified_tools
 }
 
+#[derive(Debug, Clone)]
 struct ToolInfo {
     server_name: String,
     tool_name: String,
     tool: Tool,
 }
 
+#[derive(Clone)]
 struct ManagedClient {
     client: Arc<McpClient>,
     startup_timeout: Duration,
 }
 
+impl std::fmt::Debug for ManagedClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManagedClient")
+            .field("startup_timeout", &self.startup_timeout)
+            .field("client", &"<McpClient>")
+            .finish()
+    }
+}
+
 /// A thin wrapper around a set of running [`McpClient`] instances.
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub(crate) struct McpConnectionManager {
     /// Server-name -> client instance.
     ///

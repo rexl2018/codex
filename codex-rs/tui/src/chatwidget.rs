@@ -140,6 +140,8 @@ pub(crate) struct ChatWidget {
     suppress_session_configured_redraw: bool,
     // User messages queued while a turn is in progress
     queued_user_messages: VecDeque<UserMessage>,
+    // Current executor ID for tracking who is performing actions
+    current_executor_id: Option<String>,
 }
 
 struct UserMessage {
@@ -421,6 +423,8 @@ impl ChatWidget {
 
     fn on_background_event(&mut self, message: String) {
         debug!("BackgroundEvent: {message}");
+        // Add background events to history so they're visible in TUI
+        self.add_to_history(history_cell::new_background_event(message));
     }
 
     fn on_stream_error(&mut self, message: String) {
@@ -693,13 +697,16 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    pub(crate) fn handle_mcp_begin_now(&mut self, ev: McpToolCallBeginEvent) {
+    pub(crate) fn handle_mcp_begin_now(&mut self, _ev: McpToolCallBeginEvent) {
+        // Don't display the begin event - we'll show everything in the end event
+        // Just flush the stream to ensure proper separation
         self.flush_answer_stream_with_separator();
-        self.add_to_history(history_cell::new_active_mcp_tool_call(ev.invocation));
     }
     pub(crate) fn handle_mcp_end_now(&mut self, ev: McpToolCallEndEvent) {
         self.flush_answer_stream_with_separator();
-        self.add_boxed_history(history_cell::new_completed_mcp_tool_call(
+        // Use the stored executor ID to determine who is executing the tool
+        let executor = self.current_executor_id.as_deref();
+        self.add_boxed_history(history_cell::new_completed_mcp_tool_call_with_executor(
             80,
             ev.invocation,
             ev.duration,
@@ -708,6 +715,7 @@ impl ChatWidget {
                 .map(|r| !r.is_error.unwrap_or(false))
                 .unwrap_or(false),
             ev.result,
+            executor,
         ));
     }
 
@@ -768,6 +776,7 @@ impl ChatWidget {
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: true,
             suppress_session_configured_redraw: false,
+            current_executor_id: None,
         }
     }
 
@@ -820,6 +829,7 @@ impl ChatWidget {
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: false,
             suppress_session_configured_redraw: true,
+            current_executor_id: None,
         }
     }
 
@@ -1169,7 +1179,11 @@ impl ChatWidget {
             EventMsg::PatchApplyBegin(ev) => self.on_patch_apply_begin(ev),
             EventMsg::PatchApplyEnd(ev) => self.on_patch_apply_end(ev),
             EventMsg::ExecCommandEnd(ev) => self.on_exec_command_end(ev),
-            EventMsg::McpToolCallBegin(ev) => self.on_mcp_tool_call_begin(ev),
+            EventMsg::McpToolCallBegin(ev) => {
+                // Store the executor ID for use in the handler
+                self.current_executor_id = id.clone();
+                self.on_mcp_tool_call_begin(ev);
+            }
             EventMsg::McpToolCallEnd(ev) => self.on_mcp_tool_call_end(ev),
             EventMsg::WebSearchBegin(ev) => self.on_web_search_begin(ev),
             EventMsg::WebSearchEnd(ev) => self.on_web_search_end(ev),
