@@ -1,16 +1,19 @@
 /// Universal Function Call Handler
-/// 
+///
 /// This module provides a unified interface for handling function calls
 /// that can be used by both the main agent and subagents.
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use codex_protocol::models::{FunctionCallOutputPayload, ResponseInputItem};
+use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ResponseInputItem;
 use serde::Deserialize;
 use serde_json;
-use tracing::{debug, error, info, warn};
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
 use crate::exec::ExecParams;
 
@@ -25,16 +28,35 @@ pub struct FunctionCallContext {
 #[async_trait::async_trait]
 pub trait FunctionExecutor {
     /// Execute a shell command
-    async fn execute_shell(&self, command: String, context: &FunctionCallContext) -> FunctionCallOutputPayload;
-    
+    async fn execute_shell(
+        &self,
+        command: String,
+        context: &FunctionCallContext,
+    ) -> FunctionCallOutputPayload;
+
     /// Read a file
-    async fn execute_read_file(&self, file_path: String, context: &FunctionCallContext) -> FunctionCallOutputPayload;
-    
+    async fn execute_read_file(
+        &self,
+        file_path: String,
+        context: &FunctionCallContext,
+    ) -> FunctionCallOutputPayload;
+
     /// Write a file
-    async fn execute_write_file(&self, file_path: String, content: String, context: &FunctionCallContext) -> FunctionCallOutputPayload;
-    
+    async fn execute_write_file(
+        &self,
+        file_path: String,
+        content: String,
+        context: &FunctionCallContext,
+    ) -> FunctionCallOutputPayload;
+
     /// Store a context item
-    async fn execute_store_context(&self, id: String, summary: String, content: String, context: &FunctionCallContext) -> FunctionCallOutputPayload;
+    async fn execute_store_context(
+        &self,
+        id: String,
+        summary: String,
+        content: String,
+        context: &FunctionCallContext,
+    ) -> FunctionCallOutputPayload;
 }
 
 /// Universal function call handler
@@ -55,7 +77,7 @@ impl<E: FunctionExecutor> FunctionCallHandler<E> {
         context: FunctionCallContext,
     ) -> ResponseInputItem {
         info!("FunctionCall: {}({})", name, arguments);
-        
+
         let output = match name.as_str() {
             "shell" => self.handle_shell_call(arguments, &context).await,
             "read_file" => self.handle_read_file_call(arguments, &context).await,
@@ -124,7 +146,9 @@ impl<E: FunctionExecutor> FunctionCallHandler<E> {
         };
 
         debug!("Reading file: {}", args.file_path);
-        self.executor.execute_read_file(args.file_path, context).await
+        self.executor
+            .execute_read_file(args.file_path, context)
+            .await
     }
 
     async fn handle_write_file_call(
@@ -149,8 +173,14 @@ impl<E: FunctionExecutor> FunctionCallHandler<E> {
             }
         };
 
-        debug!("Writing file: {} (content length: {})", args.file_path, args.content.len());
-        self.executor.execute_write_file(args.file_path, args.content, context).await
+        debug!(
+            "Writing file: {} (content length: {})",
+            args.file_path,
+            args.content.len()
+        );
+        self.executor
+            .execute_write_file(args.file_path, args.content, context)
+            .await
     }
 
     async fn handle_store_context_call(
@@ -176,8 +206,13 @@ impl<E: FunctionExecutor> FunctionCallHandler<E> {
             }
         };
 
-        debug!("Storing context: id='{}', summary='{}'", args.id, args.summary);
-        self.executor.execute_store_context(args.id, args.summary, args.content, context).await
+        debug!(
+            "Storing context: id='{}', summary='{}'",
+            args.id, args.summary
+        );
+        self.executor
+            .execute_store_context(args.id, args.summary, args.content, context)
+            .await
     }
 }
 
@@ -186,7 +221,11 @@ pub struct SubagentExecutor;
 
 #[async_trait::async_trait]
 impl FunctionExecutor for SubagentExecutor {
-    async fn execute_shell(&self, command: String, _context: &FunctionCallContext) -> FunctionCallOutputPayload {
+    async fn execute_shell(
+        &self,
+        command: String,
+        _context: &FunctionCallContext,
+    ) -> FunctionCallOutputPayload {
         // For subagents, we simulate shell execution
         let output = format!("Command executed: {command}\nOutput: [simulated shell output]");
         FunctionCallOutputPayload {
@@ -195,7 +234,11 @@ impl FunctionExecutor for SubagentExecutor {
         }
     }
 
-    async fn execute_read_file(&self, file_path: String, context: &FunctionCallContext) -> FunctionCallOutputPayload {
+    async fn execute_read_file(
+        &self,
+        file_path: String,
+        context: &FunctionCallContext,
+    ) -> FunctionCallOutputPayload {
         // For subagents, we simulate file reading
         let abs_path = if file_path.starts_with('/') {
             PathBuf::from(file_path)
@@ -216,7 +259,12 @@ impl FunctionExecutor for SubagentExecutor {
         }
     }
 
-    async fn execute_write_file(&self, file_path: String, content: String, context: &FunctionCallContext) -> FunctionCallOutputPayload {
+    async fn execute_write_file(
+        &self,
+        file_path: String,
+        content: String,
+        context: &FunctionCallContext,
+    ) -> FunctionCallOutputPayload {
         // For subagents, we simulate file writing
         let abs_path = if file_path.starts_with('/') {
             PathBuf::from(file_path)
@@ -237,16 +285,24 @@ impl FunctionExecutor for SubagentExecutor {
         }
     }
 
-    async fn execute_store_context(&self, id: String, summary: String, content: String, context: &FunctionCallContext) -> FunctionCallOutputPayload {
+    async fn execute_store_context(
+        &self,
+        id: String,
+        summary: String,
+        content: String,
+        context: &FunctionCallContext,
+    ) -> FunctionCallOutputPayload {
         // This is a placeholder implementation for the SubagentExecutor
         // The actual context storage will be handled by the LLMSubagentExecutor
         // which has access to the context repository
-        
+
         tracing::info!(
             "Context storage requested: id='{}', summary='{}', content_length={}",
-            id, summary, content.len()
+            id,
+            summary,
+            content.len()
         );
-        
+
         FunctionCallOutputPayload {
             content: format!("Context '{}' stored successfully", id),
             success: Some(true),

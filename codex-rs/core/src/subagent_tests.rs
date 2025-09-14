@@ -111,7 +111,7 @@ mod tests {
     async fn test_subagent_manager_task_lifecycle() {
         let context_repo = Arc::new(InMemoryContextRepository::new());
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let manager = InMemorySubagentManager::new(context_repo.clone(), tx);
+        let manager = InMemorySubagentManager::new(context_repo.clone(), tx, crate::subagent_manager::ExecutorType::Mock);
         
         // Create a task
         let spec = SubagentTaskSpec {
@@ -162,7 +162,7 @@ mod tests {
     async fn test_subagent_manager_force_complete() {
         let context_repo = Arc::new(InMemoryContextRepository::new());
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let manager = InMemorySubagentManager::new(context_repo.clone(), tx);
+        let manager = InMemorySubagentManager::new(context_repo.clone(), tx, crate::subagent_manager::ExecutorType::Mock);
         
         // Create and start a task
         let spec = SubagentTaskSpec {
@@ -193,7 +193,7 @@ mod tests {
     async fn test_subagent_manager_list_active_tasks() {
         let context_repo = Arc::new(InMemoryContextRepository::new());
         let (tx, _rx) = mpsc::unbounded_channel();
-        let manager = InMemorySubagentManager::new(context_repo.clone(), tx);
+        let manager = InMemorySubagentManager::new(context_repo.clone(), tx, crate::subagent_manager::ExecutorType::Mock);
         
         // Initially no tasks
         let tasks = manager.get_active_tasks().await.unwrap();
@@ -242,6 +242,7 @@ mod tests {
         let subagent_manager = Arc::new(InMemorySubagentManager::new(
             context_repo.clone(),
             mpsc::unbounded_channel().0,
+            crate::subagent_manager::ExecutorType::Mock,
         ));
         let (tx, _rx) = mpsc::unbounded_channel();
         
@@ -288,7 +289,7 @@ mod tests {
     async fn test_end_to_end_context_flow() {
         let context_repo = Arc::new(InMemoryContextRepository::new());
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let manager = InMemorySubagentManager::new(context_repo.clone(), tx);
+        let manager = InMemorySubagentManager::new(context_repo.clone(), tx, crate::subagent_manager::ExecutorType::Mock);
         
         // Create a task
         let spec = SubagentTaskSpec {
@@ -340,7 +341,7 @@ mod tests {
     async fn test_concurrent_task_management() {
         let context_repo = Arc::new(InMemoryContextRepository::new());
         let (tx, _rx) = mpsc::unbounded_channel();
-        let manager = Arc::new(InMemorySubagentManager::new(context_repo.clone(), tx));
+        let manager = Arc::new(InMemorySubagentManager::new(context_repo.clone(), tx, crate::subagent_manager::ExecutorType::Mock));
         
         // Create multiple tasks concurrently
         let mut handles = vec![];

@@ -14,7 +14,7 @@ use crate::context_store::Context;
 use crate::context_store::IContextRepository;
 use crate::context_store::InMemoryContextRepository;
 use crate::llm_subagent_executor::LLMSubagentExecutor;
-use crate::subagent_executor::SubagentExecutor;
+use crate::mock_subagent_executor::MockSubagentExecutor;
 use codex_protocol::protocol::BootstrapPath;
 use codex_protocol::protocol::ContextItem;
 use codex_protocol::protocol::Event;
@@ -189,7 +189,10 @@ pub enum ExecutorType {
     /// Simple mock executor for testing
     Mock,
     /// LLM-driven executor for production
-    LLM { model_client: Arc<ModelClient> },
+    LLM { 
+        model_client: Arc<ModelClient>,
+        mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
+    },
 }
 
 /// In-memory subagent manager implementation
@@ -434,16 +437,28 @@ impl ISubagentManager for InMemorySubagentManager {
 
         let abort_handle = tokio::spawn(async move {
             // Execute the task based on executor type
+            tracing::info!("Starting subagent execution with executor type: {:?}", 
+                match &executor_type {
+                    ExecutorType::Mock => "Mock",
+                    ExecutorType::LLM { .. } => "LLM",
+                }
+            );
+            
             let report = match executor_type {
                 ExecutorType::Mock => {
                     // Use the mock executor
-                    let executor = SubagentExecutor::new(context_repo);
+                    tracing::info!("Using MockSubagentExecutor for task: {}", task_clone.task_id);
+                    let executor = MockSubagentExecutor::new(context_repo);
                     executor.execute_task(&task_clone).await
                 }
-                ExecutorType::LLM { model_client } => {
+                ExecutorType::LLM { model_client, mcp_tools } => {
                     // Use the LLM executor
+                    tracing::info!("Using LLMSubagentExecutor for task: {}, MCP tools available: {}", 
+                        task_clone.task_id, 
+                        mcp_tools.as_ref().map(|t| t.len()).unwrap_or(0)
+                    );
                     let executor =
-                        LLMSubagentExecutor::new(context_repo, model_client, task_clone.max_turns);
+                        LLMSubagentExecutor::new(context_repo, model_client, task_clone.max_turns, mcp_tools, event_sender.clone());
                     executor.execute_task(&task_clone).await
                 }
             };
@@ -681,7 +696,7 @@ mod tests {
     async fn test_create_and_get_task() {
         let context_repo = Arc::new(InMemoryContextRepository::new());
         let (event_sender, _) = mpsc::unbounded_channel();
-        let manager = InMemorySubagentManager::new(context_repo, event_sender);
+        let manager = InMemorySubagentManager::new(context_repo, event_sender, ExecutorType::Mock);
 
         let spec = SubagentTaskSpec {
             agent_type: SubagentType::Explorer,
@@ -705,7 +720,7 @@ mod tests {
     async fn test_launch_subagent() {
         let context_repo = Arc::new(InMemoryContextRepository::new());
         let (event_sender, mut event_receiver) = mpsc::unbounded_channel();
-        let manager = InMemorySubagentManager::new(context_repo, event_sender);
+        let manager = InMemorySubagentManager::new(context_repo, event_sender, ExecutorType::Mock);
 
         let spec = SubagentTaskSpec {
             agent_type: SubagentType::Coder,
@@ -735,7 +750,7 @@ mod tests {
     async fn test_get_active_tasks() {
         let context_repo = Arc::new(InMemoryContextRepository::new());
         let (event_sender, _) = mpsc::unbounded_channel();
-        let manager = InMemorySubagentManager::new(context_repo, event_sender);
+        let manager = InMemorySubagentManager::new(context_repo, event_sender, ExecutorType::Mock);
 
         let spec = SubagentTaskSpec {
             agent_type: SubagentType::Explorer,

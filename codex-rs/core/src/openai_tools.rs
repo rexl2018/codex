@@ -696,7 +696,7 @@ fn sanitize_json_schema(value: &mut JsonValue) {
 /// Returns a list of OpenAiTools based on the provided config and MCP tools.
 /// Note that the keys of mcp_tools should be fully qualified names. See
 /// [`McpConnectionManager`] for more details.
-/// 
+///
 /// Different agent types have different tool access:
 /// - Main: `list_contexts`, `multi_retrieve_contexts`, and `create_subagent_task`.
 /// - Explorer: All tools except file_write, plus MCP tools
@@ -711,8 +711,6 @@ pub(crate) fn get_openai_tools(
     match agent_type {
         AgentType::Main => {
             // Main agent can use store_context and create_subagent_task tools
-            
-
 
             // Add list_contexts tool
             tools.push(OpenAiTool::Function(ResponsesApiTool {
@@ -804,10 +802,7 @@ pub(crate) fn get_openai_tools(
                 tools.push(create_view_image_tool());
             }
 
-            // Include the create_subagent_task tool for multi-agent coordination.
-            if config.include_subagent_task_tool {
-                tools.push(create_subagent_task_tool());
-            }
+            // Note: create_subagent_task tool is only available to Main agent, not subagents
 
             // Add read_file tool for both Explorer and Coder agents
             let mut read_properties = BTreeMap::new();
@@ -907,7 +902,9 @@ pub(crate) fn get_openai_tools(
                     match mcp_tool_to_openai_tool(name.clone(), tool.clone()) {
                         Ok(converted_tool) => tools.push(OpenAiTool::Function(converted_tool)),
                         Err(e) => {
-                            tracing::error!("Failed to convert {name:?} MCP tool to OpenAI tool: {e:?}");
+                            tracing::error!(
+                                "Failed to convert {name:?} MCP tool to OpenAI tool: {e:?}"
+                            );
                         }
                     }
                 }

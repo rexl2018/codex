@@ -26,6 +26,8 @@ pub struct LLMSubagentExecutor {
     model_client: Arc<ModelClient>,
     max_turns: u32,
     function_handler: FunctionCallHandler<SubagentExecutor>,
+    mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
+    event_sender: tokio::sync::mpsc::UnboundedSender<codex_protocol::protocol::Event>,
 }
 
 /// Represents a conversation message
@@ -61,6 +63,8 @@ impl LLMSubagentExecutor {
         context_repo: Arc<InMemoryContextRepository>,
         model_client: Arc<ModelClient>,
         max_turns: u32,
+        mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
+        event_sender: tokio::sync::mpsc::UnboundedSender<codex_protocol::protocol::Event>,
     ) -> Self {
         let executor = Arc::new(SubagentExecutor);
         let function_handler = FunctionCallHandler::new(executor);
@@ -70,6 +74,8 @@ impl LLMSubagentExecutor {
             model_client,
             max_turns,
             function_handler,
+            mcp_tools,
+            event_sender,
         }
     }
 
@@ -95,9 +101,16 @@ impl LLMSubagentExecutor {
         // Use the unified get_openai_tools function
         crate::openai_tools::get_openai_tools(
             &tools_config,
-            None, // Subagents don't need MCP tools for now
+            self.mcp_tools.clone(), // Subagents can use MCP tools
             unified_agent_type,
         )
+    }
+
+    /// Send an event to the UI
+    async fn send_event(&self, event: codex_protocol::protocol::Event) {
+        if let Err(e) = self.event_sender.send(event) {
+            tracing::error!("Failed to send subagent event: {}", e);
+        }
     }
 
     /// Try to parse function calls from LLM response
@@ -168,10 +181,11 @@ impl LLMSubagentExecutor {
         let mut turn_count = 0;
 
         tracing::info!(
-            "Starting LLM subagent execution: task_id={}, type={:?}, title='{}'",
+            "Starting LLM subagent execution: task_id={}, type={:?}, title='{}', max_turns={}",
             task.task_id,
             task.agent_type,
-            task.title
+            task.title,
+            self.max_turns
         );
 
         // Main execution loop
@@ -373,6 +387,15 @@ impl LLMSubagentExecutor {
         let mut reasoning_events = 0;
         let mut other_events = 0;
 
+        // Create agent prefix for subagent messages
+        let agent_prefix = match task.agent_type {
+            SubagentType::Explorer => "[Explorer]: ",
+            SubagentType::Coder => "[Coder]: ",
+        };
+        
+        // Send initial prefix if this is the first message
+        let mut prefix_sent = false;
+
         // Collect the streaming response
         while let Some(event) = response_stream.next().await {
             event_count += 1;
@@ -383,6 +406,34 @@ impl LLMSubagentExecutor {
                         ResponseEvent::OutputTextDelta(delta) => {
                             text_delta_count += 1;
                             tracing::trace!("OutputTextDelta #{}: '{}'", text_delta_count, &delta);
+                            
+                            // Send prefix before first delta
+                            if !prefix_sent && !delta.trim().is_empty() {
+                                tracing::info!("Sending subagent prefix: '{}'", agent_prefix);
+                                self.send_event(codex_protocol::protocol::Event {
+                                    id: task.task_id.clone(),
+                                    msg: codex_protocol::protocol::EventMsg::AgentMessageDelta(
+                                        codex_protocol::protocol::AgentMessageDeltaEvent {
+                                            delta: agent_prefix.to_string(),
+                                        }
+                                    ),
+                                }).await;
+                                prefix_sent = true;
+                            }
+                            
+                            // Send the actual delta
+                            if !delta.trim().is_empty() {
+                                tracing::info!("Sending subagent delta: '{}'", &delta[..delta.len().min(50)]);
+                                self.send_event(codex_protocol::protocol::Event {
+                                    id: task.task_id.clone(),
+                                    msg: codex_protocol::protocol::EventMsg::AgentMessageDelta(
+                                        codex_protocol::protocol::AgentMessageDeltaEvent {
+                                            delta: delta.clone(),
+                                        }
+                                    ),
+                                }).await;
+                            }
+                            
                             full_response.push_str(&delta);
                         }
                         ResponseEvent::OutputItemDone(item) => {
@@ -598,17 +649,42 @@ impl LLMSubagentExecutor {
                 continue;
             }
 
-            // Handle other function calls normally
-            let context = crate::function_call_handler::FunctionCallContext {
-                cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-                sub_id: task.task_id.clone(),
-                call_id: func_call.call_id.clone(),
-            };
+            // Check if this is an MCP tool call first
+            let result = if let Some(mcp_tools) = &self.mcp_tools {
+                if let Some((server_name, tool_name)) = self.parse_mcp_tool_name(&func_call.name) {
+                    // This is an MCP tool call
+                    tracing::info!("Executing MCP tool call: {}::{}", server_name, tool_name);
+                    self.handle_mcp_tool_call(
+                        &server_name,
+                        &tool_name,
+                        &func_call.arguments,
+                        &func_call.call_id,
+                    )
+                    .await
+                } else {
+                    // Handle other function calls normally
+                    let context = crate::function_call_handler::FunctionCallContext {
+                        cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                        sub_id: task.task_id.clone(),
+                        call_id: func_call.call_id.clone(),
+                    };
 
-            let result = self
-                .function_handler
-                .handle_function_call(func_call.name.clone(), func_call.arguments.clone(), context)
-                .await;
+                    self.function_handler
+                        .handle_function_call(func_call.name.clone(), func_call.arguments.clone(), context)
+                        .await
+                }
+            } else {
+                // No MCP tools available, handle normally
+                let context = crate::function_call_handler::FunctionCallContext {
+                    cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                    sub_id: task.task_id.clone(),
+                    call_id: func_call.call_id.clone(),
+                };
+
+                self.function_handler
+                    .handle_function_call(func_call.name.clone(), func_call.arguments.clone(), context)
+                    .await
+            };
 
             // Convert result to message format
             let result_content = match result {
@@ -851,6 +927,67 @@ impl LLMSubagentExecutor {
     }
 
     /// Handle store_context function call and actually store the context
+    /// Parse MCP tool name in format "server__tool" into (server, tool)
+    fn parse_mcp_tool_name(&self, tool_name: &str) -> Option<(String, String)> {
+        if let Some(mcp_tools) = &self.mcp_tools {
+            // Check if this tool name exists in our MCP tools
+            if mcp_tools.contains_key(tool_name) {
+                // Split by "__" delimiter
+                if let Some(pos) = tool_name.find("__") {
+                    let server_name = tool_name[..pos].to_string();
+                    let actual_tool_name = tool_name[pos + 2..].to_string();
+                    return Some((server_name, actual_tool_name));
+                }
+            }
+        }
+        None
+    }
+
+    /// Handle MCP tool call - this is a placeholder that indicates the tool should be executed
+    /// The actual execution will be handled by the main agent's MCP connection manager
+    async fn handle_mcp_tool_call(
+        &self,
+        server_name: &str,
+        tool_name: &str,
+        arguments: &str,
+        call_id: &str,
+    ) -> codex_protocol::models::ResponseInputItem {
+        tracing::info!("MCP tool call: {}::{} with args: {}", server_name, tool_name, arguments);
+        
+        // Parse arguments as JSON
+        let arguments_value = if arguments.trim().is_empty() {
+            None
+        } else {
+            match serde_json::from_str::<serde_json::Value>(arguments) {
+                Ok(value) => Some(value),
+                Err(e) => {
+                    tracing::error!("Failed to parse MCP tool arguments: {}", e);
+                    return codex_protocol::models::ResponseInputItem::FunctionCallOutput {
+                        call_id: call_id.to_string(),
+                        output: codex_protocol::models::FunctionCallOutputPayload {
+                            content: format!("Failed to parse arguments: {}", e),
+                            success: Some(false),
+                        },
+                    };
+                }
+            }
+        };
+
+        // Return an MCP tool call output that will be handled by the main system
+         codex_protocol::models::ResponseInputItem::McpToolCallOutput {
+             call_id: call_id.to_string(),
+             result: Ok(mcp_types::CallToolResult {
+                 content: vec![mcp_types::ContentBlock::TextContent(mcp_types::TextContent {
+                     text: format!("MCP tool call to {server_name}::{tool_name} - this should be handled by the main agent"),
+                     r#type: "text".to_string(),
+                     annotations: None,
+                 })],
+                 is_error: Some(false),
+                 structured_content: None,
+             }),
+         }
+    }
+
     async fn handle_store_context_call(
         &self,
         arguments: &str,

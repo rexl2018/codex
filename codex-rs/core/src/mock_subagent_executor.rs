@@ -7,12 +7,12 @@ use crate::subagent_manager::{SubagentTask, SubagentReport, MessageEntry};
 use crate::subagent_system_messages::{get_explorer_system_message, get_coder_system_message};
 use codex_protocol::protocol::{ContextItem, SubagentMetadata, SubagentType};
 
-/// Simplified subagent executor for demonstration purposes
-pub struct SubagentExecutor {
+/// Mock subagent executor for testing and demonstration purposes
+pub struct MockSubagentExecutor {
     context_repo: std::sync::Arc<InMemoryContextRepository>,
 }
 
-impl SubagentExecutor {
+impl MockSubagentExecutor {
     pub fn new(context_repo: std::sync::Arc<InMemoryContextRepository>) -> Self {
         Self { context_repo }
     }

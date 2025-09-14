@@ -39,6 +39,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json;
 use tokio::sync::oneshot;
+use tokio::sync::Mutex as TokioMutex;
 use tokio::task::AbortHandle;
 use tracing::debug;
 use tracing::error;
@@ -77,6 +78,7 @@ use crate::exec_command::WriteStdinParams;
 use crate::exec_env::create_env;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::mcp_tool_call::handle_mcp_tool_call;
+use codex_mcp_client::McpClient;
 use crate::model_family::find_family_for_model;
 use crate::openai_model_info::get_model_info;
 use crate::openai_tools::ApplyPatchToolArgs;
@@ -165,10 +167,18 @@ impl AgentState {
     pub fn description(&self) -> &'static str {
         match self {
             AgentState::Initialization => "Initialization - No subagent execution history",
-            AgentState::ExplorerNormalCompletion => "Explorer Normal Completion - Last Explorer subagent completed successfully",
-            AgentState::ExplorerForcedCompletion => "Explorer Forced Completion - Last Explorer subagent reached turn limit",
-            AgentState::CoderNormalCompletion => "Coder Normal Completion - Last Coder subagent completed successfully",
-            AgentState::CoderForcedCompletion => "Coder Forced Completion - Last Coder subagent reached turn limit",
+            AgentState::ExplorerNormalCompletion => {
+                "Explorer Normal Completion - Last Explorer subagent completed successfully"
+            }
+            AgentState::ExplorerForcedCompletion => {
+                "Explorer Forced Completion - Last Explorer subagent reached turn limit"
+            }
+            AgentState::CoderNormalCompletion => {
+                "Coder Normal Completion - Last Coder subagent completed successfully"
+            }
+            AgentState::CoderForcedCompletion => {
+                "Coder Forced Completion - Last Coder subagent reached turn limit"
+            }
         }
     }
 
@@ -197,31 +207,41 @@ impl AgentState {
     /// Get suggested alternative actions when subagent creation is blocked
     pub fn get_blocked_alternatives(&self, blocked_type: SubagentType) -> &'static str {
         match (self, blocked_type) {
-            (AgentState::ExplorerNormalCompletion | AgentState::ExplorerForcedCompletion, SubagentType::Explorer) => {
+            (
+                AgentState::ExplorerNormalCompletion | AgentState::ExplorerForcedCompletion,
+                SubagentType::Explorer,
+            ) => {
                 "Consider creating a 'coder' subagent to implement changes based on the exploration results, or request a summary of the existing analysis."
             }
-            (AgentState::CoderNormalCompletion | AgentState::CoderForcedCompletion, SubagentType::Coder) => {
+            (
+                AgentState::CoderNormalCompletion | AgentState::CoderForcedCompletion,
+                SubagentType::Coder,
+            ) => {
                 "Consider creating an 'explorer' subagent to analyze additional files or areas, or request a summary of the existing implementation."
             }
-            _ => "No alternatives needed - action should be allowed."
+            _ => "No alternatives needed - action should be allowed.",
         }
     }
 }
 
 /// Detect current agent state based on recent subagent execution history
-async fn detect_agent_state(
-    multi_agent_components: &Option<MultiAgentComponents>,
-) -> AgentState {
+async fn detect_agent_state(multi_agent_components: &Option<MultiAgentComponents>) -> AgentState {
     let Some(components) = multi_agent_components else {
         return AgentState::Initialization;
     };
 
-    match components.subagent_manager.get_recently_completed_tasks(1).await {
+    match components
+        .subagent_manager
+        .get_recently_completed_tasks(1)
+        .await
+    {
         Ok(recent_tasks) => {
             if let Some(last_task) = recent_tasks.first() {
-                if let crate::subagent_manager::TaskStatus::Completed { result } = &last_task.status {
-                    let was_forced_completion = result.metadata.reached_max_turns || result.metadata.force_completed;
-                    
+                if let crate::subagent_manager::TaskStatus::Completed { result } = &last_task.status
+                {
+                    let was_forced_completion =
+                        result.metadata.reached_max_turns || result.metadata.force_completed;
+
                     match (&last_task.agent_type, was_forced_completion) {
                         (SubagentType::Explorer, false) => AgentState::ExplorerNormalCompletion,
                         (SubagentType::Explorer, true) => AgentState::ExplorerForcedCompletion,
@@ -450,6 +470,7 @@ struct State {
 /// Context for an initialized model agent
 ///
 /// A session has at most 1 running task at a time, and can be interrupted by user input.
+
 pub(crate) struct Session {
     conversation_id: ConversationId,
     tx_event: Sender<Event>,
@@ -458,6 +479,7 @@ pub(crate) struct Session {
     mcp_connection_manager: McpConnectionManager,
     session_manager: ExecSessionManager,
     unified_exec_manager: UnifiedExecSessionManager,
+    mcp_clients: Arc<TokioMutex<Vec<McpClient>>>,
 
     /// External notifier command (will be passed as args to exec()). When
     /// `None` this feature is disabled.
@@ -690,7 +712,10 @@ impl Session {
             let subagent_manager = Arc::new(InMemorySubagentManager::new(
                 context_repo.clone(),
                 event_tx,
-                ExecutorType::LLM { model_client }, // Use LLM executor for production
+                ExecutorType::LLM {
+                    model_client,
+                    mcp_tools: Some(mcp_connection_manager.list_all_tools()),
+                }, // Use LLM executor for production with MCP tools
             ));
 
             // Spawn a task to handle subagent events
@@ -719,6 +744,7 @@ impl Session {
             mcp_connection_manager,
             session_manager: ExecSessionManager::default(),
             unified_exec_manager: UnifiedExecSessionManager::default(),
+            mcp_clients: Arc::new(TokioMutex::new(Vec::new())),
             notify,
             state: Mutex::new(state),
             rollout: Mutex::new(Some(rollout_recorder)),
@@ -2093,23 +2119,27 @@ async fn run_turn(
 ) -> CodexResult<Vec<ProcessedResponseItem>> {
     let tools = get_openai_tools(
         &turn_context.tools_config,
-        Some(sess.mcp_connection_manager.list_all_tools()),
-        crate::openai_tools::AgentType::Main, // Main agent can only use store_context tool
+        None, // Main agent cannot use MCP tools
+        crate::openai_tools::AgentType::Main,
     );
 
     // Detect current agent state and create state information
     let agent_state = detect_agent_state(&sess.multi_agent_components).await;
-    let agent_state_info = if !agent_state.can_create_explorer() || !agent_state.can_create_coder() {
+    let agent_state_info = if !agent_state.can_create_explorer() || !agent_state.can_create_coder()
+    {
         format!(
-            "**Current Agent State**: {}\n\n\
-            **Subagent Creation Constraints**:\n\
-            - Explorer Subagent: {}\n\
-            - Coder Subagent: {}\n\n\
-            **Note**: {}\n\n\
-            Please work with available information or consider alternative approaches instead of creating blocked subagent types.",
+            "Current Agent State: {}. Subagent Creation Constraints: Explorer Subagent: {}, Coder Subagent: {}. Note: {}. Please work with available information or consider alternative approaches instead of creating blocked subagent types.",
             agent_state.description(),
-            if agent_state.can_create_explorer() { "Allowed" } else { "Blocked" },
-            if agent_state.can_create_coder() { "Allowed" } else { "Blocked" },
+            if agent_state.can_create_explorer() {
+                "Allowed"
+            } else {
+                "Blocked"
+            },
+            if agent_state.can_create_coder() {
+                "Allowed"
+            } else {
+                "Blocked"
+            },
             if !agent_state.can_create_explorer() && !agent_state.can_create_coder() {
                 "All subagent creation is currently blocked"
             } else if !agent_state.can_create_explorer() {
@@ -2120,8 +2150,7 @@ async fn run_turn(
         )
     } else {
         format!(
-            "**Current Agent State**: {}\n\
-            **Subagent Creation Constraints**: All subagent types are currently allowed",
+            "Current Agent State: {}. Subagent Creation Constraints: All subagent types are currently allowed.",
             agent_state.description()
         )
     };
@@ -2129,8 +2158,16 @@ async fn run_turn(
     tracing::info!(
         "🔍 NORMAL TURN STATE: Current State: {:?}, Explorer: {}, Coder: {}",
         agent_state,
-        if agent_state.can_create_explorer() { "Allowed" } else { "BLOCKED" },
-        if agent_state.can_create_coder() { "Allowed" } else { "BLOCKED" }
+        if agent_state.can_create_explorer() {
+            "Allowed"
+        } else {
+            "BLOCKED"
+        },
+        if agent_state.can_create_coder() {
+            "Allowed"
+        } else {
+            "BLOCKED"
+        }
     );
 
     let prompt = Prompt {
@@ -2284,6 +2321,7 @@ async fn try_run_turn(
         match event {
             ResponseEvent::Created => {}
             ResponseEvent::OutputItemDone(item) => {
+                tracing::info!("Full response item: {:?}", item);
                 let response = handle_response_item(
                     sess,
                     turn_context,
@@ -2758,7 +2796,9 @@ async fn handle_create_subagent_task(
 
                     // Detect current state for the injected message
                     let current_state = detect_agent_state(&sess.multi_agent_components).await;
-                    let state_info = if !current_state.can_create_explorer() || !current_state.can_create_coder() {
+                    let state_info = if !current_state.can_create_explorer()
+                        || !current_state.can_create_coder()
+                    {
                         format!(
                             "**Current Agent State**: {}\n\n\
                             **Subagent Creation Constraints**:\n\
@@ -2767,9 +2807,19 @@ async fn handle_create_subagent_task(
                             **Note**: {}\n\n\
                             Please work with available information or consider alternative approaches instead of creating blocked subagent types.",
                             current_state.description(),
-                            if current_state.can_create_explorer() { "Allowed" } else { "Blocked" },
-                            if current_state.can_create_coder() { "Allowed" } else { "Blocked" },
-                            if !current_state.can_create_explorer() && !current_state.can_create_coder() {
+                            if current_state.can_create_explorer() {
+                                "Allowed"
+                            } else {
+                                "Blocked"
+                            },
+                            if current_state.can_create_coder() {
+                                "Allowed"
+                            } else {
+                                "Blocked"
+                            },
+                            if !current_state.can_create_explorer()
+                                && !current_state.can_create_coder()
+                            {
                                 "All subagent creation is currently blocked"
                             } else if !current_state.can_create_explorer() {
                                 "Explorer subagent creation is blocked due to previous forced completion"
@@ -2788,8 +2838,16 @@ async fn handle_create_subagent_task(
                     tracing::info!(
                         "🔍 STATE INJECTION: Injecting state information to LLM - Current State: {:?}, Explorer: {}, Coder: {}",
                         current_state,
-                        if current_state.can_create_explorer() { "Allowed" } else { "BLOCKED" },
-                        if current_state.can_create_coder() { "Allowed" } else { "BLOCKED" }
+                        if current_state.can_create_explorer() {
+                            "Allowed"
+                        } else {
+                            "BLOCKED"
+                        },
+                        if current_state.can_create_coder() {
+                            "Allowed"
+                        } else {
+                            "BLOCKED"
+                        }
                     );
 
                     // Prepare the injection message
@@ -2809,7 +2867,10 @@ async fn handle_create_subagent_task(
                     if let Err(contexts) = sess.inject_input(vec![InputItem::Text {
                         text: injection_message,
                     }]) {
-                        tracing::warn!("Failed to inject context summary for LLM analysis: {:?}", contexts);
+                        tracing::warn!(
+                            "Failed to inject context summary for LLM analysis: {:?}",
+                            contexts
+                        );
                     }
 
                     // Return a simple blocking message - the real content will be processed in the next turn with proper state info
@@ -2943,7 +3004,7 @@ async fn handle_create_subagent_task(
         description: args.description.clone(),
         context_refs: selected_context_refs,
         bootstrap_paths: args.bootstrap_paths,
-        max_turns: Some(30),       // Default to 50 turns
+        max_turns: Some(30),       // Default to 100 turns
         timeout_ms: Some(1800000), // Default to 30 minutes timeout
     };
 
@@ -3271,8 +3332,14 @@ async fn handle_create_subagent_task(
                                                 };
 
                                                 // Detect current state and add state information
-                                                let current_state = detect_agent_state(&sess.multi_agent_components).await;
-                                                let state_info = if !current_state.can_create_explorer() || !current_state.can_create_coder() {
+                                                let current_state = detect_agent_state(
+                                                    &sess.multi_agent_components,
+                                                )
+                                                .await;
+                                                let state_info = if !current_state
+                                                    .can_create_explorer()
+                                                    || !current_state.can_create_coder()
+                                                {
                                                     format!(
                                                         "\n**Current Agent State**: {}\n\n\
                                                         **Subagent Creation Constraints**:\n\
@@ -3281,11 +3348,23 @@ async fn handle_create_subagent_task(
                                                         **Note**: {}\n\n\
                                                         Please work with available information or consider alternative approaches instead of creating blocked subagent types.\n\n",
                                                         current_state.description(),
-                                                        if current_state.can_create_explorer() { "Allowed" } else { "Blocked" },
-                                                        if current_state.can_create_coder() { "Allowed" } else { "Blocked" },
-                                                        if !current_state.can_create_explorer() && !current_state.can_create_coder() {
+                                                        if current_state.can_create_explorer() {
+                                                            "Allowed"
+                                                        } else {
+                                                            "Blocked"
+                                                        },
+                                                        if current_state.can_create_coder() {
+                                                            "Allowed"
+                                                        } else {
+                                                            "Blocked"
+                                                        },
+                                                        if !current_state.can_create_explorer()
+                                                            && !current_state.can_create_coder()
+                                                        {
                                                             "All subagent creation is currently blocked"
-                                                        } else if !current_state.can_create_explorer() {
+                                                        } else if !current_state
+                                                            .can_create_explorer()
+                                                        {
                                                             "Explorer subagent creation is blocked due to previous forced completion"
                                                         } else {
                                                             "Coder subagent creation is blocked due to previous forced completion"
@@ -3302,8 +3381,16 @@ async fn handle_create_subagent_task(
                                                 tracing::info!(
                                                     "🔍 SUBAGENT COMPLETION STATE: Current State: {:?}, Explorer: {}, Coder: {}",
                                                     current_state,
-                                                    if current_state.can_create_explorer() { "Allowed" } else { "BLOCKED" },
-                                                    if current_state.can_create_coder() { "Allowed" } else { "BLOCKED" }
+                                                    if current_state.can_create_explorer() {
+                                                        "Allowed"
+                                                    } else {
+                                                        "BLOCKED"
+                                                    },
+                                                    if current_state.can_create_coder() {
+                                                        "Allowed"
+                                                    } else {
+                                                        "BLOCKED"
+                                                    }
                                                 );
 
                                                 tracing::error!(
@@ -3335,10 +3422,16 @@ async fn handle_create_subagent_task(
                                                 );
 
                                                 // 🔥 DEBUG: Specifically check if state info is in the content
-                                                if full_context_content.contains("**CURRENT AGENT STATE**") {
-                                                    tracing::error!("✅ STATE INFO CONFIRMED: State information is included in LLM message");
+                                                if full_context_content
+                                                    .contains("**CURRENT AGENT STATE**")
+                                                {
+                                                    tracing::error!(
+                                                        "✅ STATE INFO CONFIRMED: State information is included in LLM message"
+                                                    );
                                                 } else {
-                                                    tracing::error!("❌ STATE INFO MISSING: State information is NOT included in LLM message");
+                                                    tracing::error!(
+                                                        "❌ STATE INFO MISSING: State information is NOT included in LLM message"
+                                                    );
                                                 }
 
                                                 // 🔥 DEBUG: Log individual context items for verification
@@ -3366,10 +3459,15 @@ async fn handle_create_subagent_task(
                                                 }
 
                                                 // Inject the context summary via inject_input to trigger proper turn processing with state info
-                                                if let Err(contexts) = sess.inject_input(vec![InputItem::Text {
-                                                    text: full_context_content,
-                                                }]) {
-                                                    tracing::warn!("Failed to inject context summary for LLM analysis: {:?}", contexts);
+                                                if let Err(contexts) =
+                                                    sess.inject_input(vec![InputItem::Text {
+                                                        text: full_context_content,
+                                                    }])
+                                                {
+                                                    tracing::warn!(
+                                                        "Failed to inject context summary for LLM analysis: {:?}",
+                                                        contexts
+                                                    );
                                                 }
 
                                                 // Return a function call output indicating completion - the real content will be processed in the next turn
@@ -3408,8 +3506,14 @@ async fn handle_create_subagent_task(
                                                 };
 
                                                 // Detect current state and add state information
-                                                let current_state = detect_agent_state(&sess.multi_agent_components).await;
-                                                let state_info = if !current_state.can_create_explorer() || !current_state.can_create_coder() {
+                                                let current_state = detect_agent_state(
+                                                    &sess.multi_agent_components,
+                                                )
+                                                .await;
+                                                let state_info = if !current_state
+                                                    .can_create_explorer()
+                                                    || !current_state.can_create_coder()
+                                                {
                                                     format!(
                                                         "\n**Current Agent State**: {}\n\n\
                                                         **Subagent Creation Constraints**:\n\
@@ -3418,11 +3522,23 @@ async fn handle_create_subagent_task(
                                                         **Note**: {}\n\n\
                                                         Please work with available information or consider alternative approaches instead of creating blocked subagent types.\n\n",
                                                         current_state.description(),
-                                                        if current_state.can_create_explorer() { "Allowed" } else { "Blocked" },
-                                                        if current_state.can_create_coder() { "Allowed" } else { "Blocked" },
-                                                        if !current_state.can_create_explorer() && !current_state.can_create_coder() {
+                                                        if current_state.can_create_explorer() {
+                                                            "Allowed"
+                                                        } else {
+                                                            "Blocked"
+                                                        },
+                                                        if current_state.can_create_coder() {
+                                                            "Allowed"
+                                                        } else {
+                                                            "Blocked"
+                                                        },
+                                                        if !current_state.can_create_explorer()
+                                                            && !current_state.can_create_coder()
+                                                        {
                                                             "All subagent creation is currently blocked"
-                                                        } else if !current_state.can_create_explorer() {
+                                                        } else if !current_state
+                                                            .can_create_explorer()
+                                                        {
                                                             "Explorer subagent creation is blocked due to previous forced completion"
                                                         } else {
                                                             "Coder subagent creation is blocked due to previous forced completion"
@@ -3439,8 +3555,16 @@ async fn handle_create_subagent_task(
                                                 tracing::info!(
                                                     "🔍 SUBAGENT COMPLETION STATE (No Contexts): Current State: {:?}, Explorer: {}, Coder: {}",
                                                     current_state,
-                                                    if current_state.can_create_explorer() { "Allowed" } else { "BLOCKED" },
-                                                    if current_state.can_create_coder() { "Allowed" } else { "BLOCKED" }
+                                                    if current_state.can_create_explorer() {
+                                                        "Allowed"
+                                                    } else {
+                                                        "BLOCKED"
+                                                    },
+                                                    if current_state.can_create_coder() {
+                                                        "Allowed"
+                                                    } else {
+                                                        "BLOCKED"
+                                                    }
                                                 );
 
                                                 tracing::error!(
@@ -3455,10 +3579,15 @@ async fn handle_create_subagent_task(
                                                 );
 
                                                 // Inject the completion summary via inject_input to trigger proper turn processing with state info
-                                                if let Err(contexts) = sess.inject_input(vec![InputItem::Text {
-                                                    text: full_message,
-                                                }]) {
-                                                    tracing::warn!("Failed to inject completion summary for LLM analysis: {:?}", contexts);
+                                                if let Err(contexts) =
+                                                    sess.inject_input(vec![InputItem::Text {
+                                                        text: full_message,
+                                                    }])
+                                                {
+                                                    tracing::warn!(
+                                                        "Failed to inject completion summary for LLM analysis: {:?}",
+                                                        contexts
+                                                    );
                                                 }
 
                                                 // Return a function call output indicating completion - the real content will be processed in the next turn
@@ -3743,12 +3872,10 @@ async fn handle_unified_exec_tool_call(
     }
 }
 
-async fn handle_list_contexts(
-    sess: &Session,
-    call_id: String,
-) -> ResponseInputItem {
+async fn handle_list_contexts(sess: &Session, call_id: String) -> ResponseInputItem {
     let result = if let Some(multi_agent_components) = &sess.multi_agent_components {
-        use crate::context_store::{ContextQuery, IContextRepository};
+        use crate::context_store::ContextQuery;
+        use crate::context_store::IContextRepository;
 
         match multi_agent_components
             .context_repo
@@ -3766,10 +3893,7 @@ async fn handle_list_contexts(
                     .map(|c| format!("- {}: {}", c.id, c.summary))
                     .collect();
                 FunctionCallOutputPayload {
-                    content: format!(
-                        "Available contexts:\n{}",
-                        context_list.join("\n")
-                    ),
+                    content: format!("Available contexts:\n{}", context_list.join("\n")),
                     success: Some(true),
                 }
             }
@@ -3828,10 +3952,7 @@ async fn handle_multi_retrieve_contexts(
                     .map(|c| format!("- {}: {}\n{}", c.id, c.summary, c.content))
                     .collect();
                 FunctionCallOutputPayload {
-                    content: format!(
-                        "Retrieved contexts:\n{}",
-                        context_list.join("\n\n")
-                    ),
+                    content: format!("Retrieved contexts:\n{}", context_list.join("\n\n")),
                     success: Some(true),
                 }
             }
@@ -3865,7 +3986,7 @@ async fn handle_function_call(
     // Check if the tool is allowed for main agent
     let allowed_tools = get_openai_tools(
         &turn_context.tools_config,
-        Some(sess.mcp_connection_manager.list_all_tools()),
+        None, // Main agent cannot use MCP tools
         crate::openai_tools::AgentType::Main,
     );
 
@@ -4006,9 +4127,7 @@ async fn handle_function_call(
             handle_create_subagent_task(sess, arguments, sub_id, call_id).await
         }
         "list_contexts" => handle_list_contexts(sess, call_id).await,
-        "multi_retrieve_contexts" => {
-            handle_multi_retrieve_contexts(sess, arguments, call_id).await
-        }
+        "multi_retrieve_contexts" => handle_multi_retrieve_contexts(sess, arguments, call_id).await,
         EXEC_COMMAND_TOOL_NAME => {
             // TODO(mbolin): Sandbox check.
             let exec_params = match serde_json::from_str::<ExecCommandParams>(&arguments) {
