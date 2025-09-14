@@ -31,6 +31,9 @@ pub struct Prompt {
 
     /// Optional override for the built-in BASE_INSTRUCTIONS.
     pub base_instructions_override: Option<String>,
+
+    /// Optional agent state information to inject into the prompt
+    pub agent_state_info: Option<String>,
 }
 
 impl Prompt {
@@ -39,7 +42,12 @@ impl Prompt {
             .base_instructions_override
             .as_deref()
             .unwrap_or(BASE_INSTRUCTIONS);
-        let mut sections: Vec<&str> = vec![base];
+        let mut sections: Vec<String> = vec![base.to_string()];
+
+        // Add agent state information if provided
+        if let Some(state_info) = &self.agent_state_info {
+            sections.push(format!("\n## Current Agent State\n\n{}", state_info));
+        }
 
         // When there are no custom instructions, add apply_patch_tool_instructions if either:
         // - the model needs special instructions (4.1), or
@@ -52,8 +60,9 @@ impl Prompt {
         if self.base_instructions_override.is_none()
             && (model.needs_special_apply_patch_instructions || !is_apply_patch_tool_present)
         {
-            sections.push(APPLY_PATCH_TOOL_INSTRUCTIONS);
+            sections.push(APPLY_PATCH_TOOL_INSTRUCTIONS.to_string());
         }
+
         Cow::Owned(sections.join("\n"))
     }
 

@@ -74,10 +74,13 @@ impl LLMSubagentExecutor {
     }
 
     /// Create tools for subagent based on agent type using unified tool configuration
-    fn create_subagent_tools(&self, agent_type: &SubagentType) -> Vec<crate::openai_tools::OpenAiTool> {
+    fn create_subagent_tools(
+        &self,
+        agent_type: &SubagentType,
+    ) -> Vec<crate::openai_tools::OpenAiTool> {
         // Convert SubagentType to AgentType and use the unified tool configuration
         let unified_agent_type = crate::openai_tools::AgentType::from(agent_type.clone());
-        
+
         // Create a minimal tools config for subagents (they don't need all the main agent features)
         let tools_config = crate::openai_tools::ToolsConfig {
             shell_type: crate::openai_tools::ConfigShellToolType::DefaultShell,
@@ -88,7 +91,7 @@ impl LLMSubagentExecutor {
             experimental_unified_exec_tool: false,
             include_subagent_task_tool: false,
         };
-        
+
         // Use the unified get_openai_tools function
         crate::openai_tools::get_openai_tools(
             &tools_config,
@@ -320,6 +323,7 @@ impl LLMSubagentExecutor {
             input: prompt_items,
             tools,
             base_instructions_override: None,
+            agent_state_info: None, // Subagents don't need state info
         };
 
         // Call the real LLM
@@ -497,7 +501,7 @@ impl LLMSubagentExecutor {
 
         // Check if we have a valid response (either text content or function calls)
         let has_valid_response = !full_response.is_empty() || !function_calls.is_empty();
-        
+
         if !has_valid_response {
             // Detailed analysis of why response is empty
             tracing::error!("LLM returned empty response after {} events", event_count);
@@ -568,7 +572,10 @@ impl LLMSubagentExecutor {
 
             // Handle store_context specially to actually store in context repository
             if func_call.name == "store_context" {
-                match self.handle_store_context_call(&func_call.arguments, task).await {
+                match self
+                    .handle_store_context_call(&func_call.arguments, task)
+                    .await
+                {
                     Ok(content) => {
                         results.push(codex_protocol::models::ResponseItem::Message {
                             id: None,
@@ -705,7 +712,7 @@ impl LLMSubagentExecutor {
         match self.get_llm_response(messages, task).await {
             Ok(llm_response) => {
                 tracing::info!("Got final LLM response for context generation");
-                
+
                 // Add assistant message to history
                 messages.push(codex_protocol::models::ResponseItem::Message {
                     id: None,
@@ -729,7 +736,10 @@ impl LLMSubagentExecutor {
                 }
             }
             Err(e) => {
-                tracing::error!("Failed to get final LLM response for context generation: {}", e);
+                tracing::error!(
+                    "Failed to get final LLM response for context generation: {}",
+                    e
+                );
             }
         }
 
@@ -862,7 +872,7 @@ impl LLMSubagentExecutor {
             args.id.clone(),
             args.summary.clone(),
             args.content.clone(),
-            task.task_id.clone(), // created_by
+            task.task_id.clone(),       // created_by
             Some(task.task_id.clone()), // task_id
         );
 
@@ -871,7 +881,9 @@ impl LLMSubagentExecutor {
 
         tracing::info!(
             "Context stored successfully: id='{}', summary='{}', content_length={}",
-            args.id, args.summary, args.content.len()
+            args.id,
+            args.summary,
+            args.content.len()
         );
 
         Ok(format!(
