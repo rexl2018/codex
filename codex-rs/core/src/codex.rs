@@ -38,8 +38,8 @@ use mcp_types::CallToolResult;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json;
-use tokio::sync::oneshot;
 use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 use tracing::debug;
 use tracing::error;
@@ -78,7 +78,6 @@ use crate::exec_command::WriteStdinParams;
 use crate::exec_env::create_env;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::mcp_tool_call::handle_mcp_tool_call;
-use codex_mcp_client::McpClient;
 use crate::model_family::find_family_for_model;
 use crate::openai_model_info::get_model_info;
 use crate::openai_tools::ApplyPatchToolArgs;
@@ -128,6 +127,7 @@ use crate::unified_exec::UnifiedExecSessionManager;
 use crate::user_instructions::UserInstructions;
 use crate::user_notification::UserNotification;
 use crate::util::backoff;
+use codex_mcp_client::McpClient;
 use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::custom_prompts::CustomPrompt;
@@ -152,6 +152,8 @@ use codex_protocol::protocol::SubagentType;
 pub enum AgentState {
     /// No subagent execution history exists
     Initialization,
+    /// A new user instruction has been received and a new agent task has been created.
+    AgentTaskCreated,
     /// Last Explorer subagent completed successfully without reaching turn limits
     ExplorerNormalCompletion,
     /// Last Explorer subagent was forced to complete due to reaching maximum turns
@@ -167,6 +169,9 @@ impl AgentState {
     pub fn description(&self) -> &'static str {
         match self {
             AgentState::Initialization => "Initialization - No subagent execution history",
+            AgentState::AgentTaskCreated => {
+                "AgentTaskCreated - A new user instruction has been received and a new agent task has been created."
+            }
             AgentState::ExplorerNormalCompletion => {
                 "Explorer Normal Completion - Last Explorer subagent completed successfully"
             }
@@ -186,6 +191,7 @@ impl AgentState {
     pub fn can_create_explorer(&self) -> bool {
         match self {
             AgentState::Initialization => true,
+            AgentState::AgentTaskCreated => true,
             AgentState::ExplorerNormalCompletion => false,
             AgentState::ExplorerForcedCompletion => false,
             AgentState::CoderNormalCompletion => true,
@@ -197,6 +203,7 @@ impl AgentState {
     pub fn can_create_coder(&self) -> bool {
         match self {
             AgentState::Initialization => true,
+            AgentState::AgentTaskCreated => true,
             AgentState::ExplorerNormalCompletion => true,
             AgentState::ExplorerForcedCompletion => true,
             AgentState::CoderNormalCompletion => false,
@@ -229,6 +236,11 @@ async fn detect_agent_state(multi_agent_components: &Option<MultiAgentComponents
     let Some(components) = multi_agent_components else {
         return AgentState::Initialization;
     };
+
+    // Check if a new user task has been created
+    if components.new_user_task_created.load(std::sync::atomic::Ordering::Relaxed) {
+        return AgentState::AgentTaskCreated;
+    }
 
     match components
         .subagent_manager
@@ -502,6 +514,8 @@ pub(crate) struct MultiAgentComponents {
     pub context_repo: Arc<InMemoryContextRepository>,
     pub subagent_manager: Arc<InMemorySubagentManager>,
     pub subtask_coordinator: Option<SubtaskCoordinator>,
+    /// Flag to track if a new user task has been created
+    pub new_user_task_created: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The context needed for a single turn of the conversation.
@@ -694,10 +708,10 @@ impl Session {
             shell_environment_policy: config.shell_environment_policy.clone(),
             cwd,
         };
-        
+
         // Create Arc for mcp_connection_manager to be used in both subagent and main session
         let mcp_connection_manager_arc = Arc::new(mcp_connection_manager);
-        
+
         // Initialize multi-agent components if subagent task tool is enabled
         let multi_agent_components = if config.include_subagent_task_tool {
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -737,6 +751,7 @@ impl Session {
                 context_repo,
                 subagent_manager,
                 subtask_coordinator: None,
+                new_user_task_created: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             })
         } else {
             None
@@ -1466,6 +1481,12 @@ async fn submission_loop(
                     // no current task, spawn a new one
                     tracing::debug!("Creating agent task for UserInput: sub_id={}", sub.id);
                     tracing::info!("Creating agent task for UserInput: sub_id={}", sub.id);
+                    
+                    // Set the flag to indicate a new user task has been created
+                    if let Some(components) = &sess.multi_agent_components {
+                        components.new_user_task_created.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    
                     let task =
                         AgentTask::spawn(sess.clone(), Arc::clone(&turn_context), sub.id, items);
                     sess.set_task(task);
@@ -2687,6 +2708,140 @@ async fn handle_create_subagent_task(
         }
     };
 
+    // Check current agent state - if we're in AgentTaskCreated state, allow any subagent creation
+    let current_agent_state = detect_agent_state(&sess.multi_agent_components).await;
+    if matches!(current_agent_state, AgentState::AgentTaskCreated) {
+        tracing::info!(
+            "🆕 AGENT TASK CREATED STATE: Allowing {} subagent creation due to new user task",
+            args.agent_type
+        );
+        
+        // Skip all blocking logic and proceed directly to task creation
+        let selected_context_refs = if !args.context_refs.is_empty() {
+            args.context_refs
+        } else {
+             // Try to get some relevant contexts intelligently
+             match multi_agent_components
+                 .context_repo
+                 .query_contexts(&crate::context_store::ContextQuery {
+                     ids: None,
+                     tags: None,
+                     created_by: None,
+                     limit: Some(5), // Limit to 5 contexts
+                 })
+                 .await
+             {
+                 Ok(contexts) => {
+                     let refs: Vec<String> = contexts.iter().map(|ctx| ctx.id.clone()).collect();
+                     tracing::info!(
+                         "Selected {} available contexts for subagent '{}': {:?}",
+                         refs.len(),
+                         args.title,
+                         refs
+                     );
+                     refs
+                 }
+                 Err(e) => {
+                     tracing::warn!(
+                         "Failed to query contexts for subagent '{}', using empty context_refs: {}",
+                         args.title,
+                         e
+                     );
+                     Vec::new()
+                 }
+             }
+        };
+
+        // Create the subagent task specification
+        let task_spec = SubagentTaskSpec {
+            agent_type,
+            title: args.title.clone(),
+            description: args.description.clone(),
+            context_refs: selected_context_refs,
+            bootstrap_paths: args.bootstrap_paths,
+            max_turns: Some(100),      // Default to 100 turns
+            timeout_ms: Some(1800000), // Default to 30 minutes timeout
+        };
+
+        // Create the task using the subagent manager
+        match multi_agent_components
+            .subagent_manager
+            .create_task(task_spec)
+            .await
+        {
+            Ok(task_id) => {
+                tracing::debug!(
+                    "Creating subagent task: task_id={task_id}, type={}, title={}",
+                    args.agent_type,
+                    args.title
+                );
+                tracing::info!(
+                    "Creating subagent task: task_id={}, type={}, title={}",
+                    task_id,
+                    args.agent_type,
+                    args.title
+                );
+
+                let mut response = format!(
+                    "Successfully created {} subagent task '{}' with ID: {}",
+                    args.agent_type, args.title, task_id
+                );
+
+                // Auto-launch if requested
+                if args.auto_launch {
+                    match multi_agent_components
+                        .subagent_manager
+                        .launch_subagent(&task_id)
+                        .await
+                    {
+                        Ok(_handle) => {
+                            tracing::info!("Auto-launched subagent: task_id={}", task_id);
+                            response.push_str("\nSubagent launched and executing task...");
+
+                            // Reset the flag when subagent is successfully launched
+                            multi_agent_components.new_user_task_created.store(false, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            let event = Event {
+                                id: sub_id,
+                                msg: EventMsg::Error(ErrorEvent {
+                                    message: format!("Failed to launch subagent: {}", e),
+                                }),
+                            };
+                            sess.send_event(event).await;
+                        }
+                    }
+                }
+
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload {
+                        content: response,
+                        success: Some(true),
+                    },
+                };
+            }
+            Err(e) => {
+                let event = Event {
+                    id: sub_id,
+                    msg: EventMsg::Error(ErrorEvent {
+                        message: format!("Failed to create subagent task: {}", e),
+                    }),
+                };
+                sess.send_event(event).await;
+
+                return ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output: FunctionCallOutputPayload {
+                        content: format!("Failed to create subagent task: {}", e),
+                        success: Some(false),
+                    },
+                };
+            }
+        }
+    }
+
+    // Continue with normal state checking logic for non-AgentTaskCreated states
     // Intelligent subagent type checking: Prevent creating same-type subagents if the last one completed normally
     // Also prevent creating if there are too many consecutive forced completions
     match multi_agent_components

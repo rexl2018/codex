@@ -396,7 +396,7 @@ impl LLMSubagentExecutor {
             SubagentType::Explorer => "[Explorer]: ",
             SubagentType::Coder => "[Coder]: ",
         };
-        
+
         // Send initial prefix if this is the first message
         let mut prefix_sent = false;
 
@@ -410,7 +410,7 @@ impl LLMSubagentExecutor {
                         ResponseEvent::OutputTextDelta(delta) => {
                             text_delta_count += 1;
                             tracing::trace!("OutputTextDelta #{}: '{}'", text_delta_count, &delta);
-                            
+
                             // Send prefix before first delta
                             if !prefix_sent && !delta.trim().is_empty() {
                                 tracing::info!("Sending subagent prefix: '{}'", agent_prefix);
@@ -419,25 +419,30 @@ impl LLMSubagentExecutor {
                                     msg: codex_protocol::protocol::EventMsg::AgentMessageDelta(
                                         codex_protocol::protocol::AgentMessageDeltaEvent {
                                             delta: agent_prefix.to_string(),
-                                        }
+                                        },
                                     ),
-                                }).await;
+                                })
+                                .await;
                                 prefix_sent = true;
                             }
-                            
+
                             // Send the actual delta
                             if !delta.trim().is_empty() {
-                                tracing::info!("Sending subagent delta: '{}'", &delta[..delta.len().min(50)]);
+                                tracing::info!(
+                                    "Sending subagent delta: '{}'",
+                                    &delta[..delta.len().min(50)]
+                                );
                                 self.send_event(codex_protocol::protocol::Event {
                                     id: task.task_id.clone(),
                                     msg: codex_protocol::protocol::EventMsg::AgentMessageDelta(
                                         codex_protocol::protocol::AgentMessageDeltaEvent {
                                             delta: delta.clone(),
-                                        }
+                                        },
                                     ),
-                                }).await;
+                                })
+                                .await;
                             }
-                            
+
                             full_response.push_str(&delta);
                         }
                         ResponseEvent::OutputItemDone(item) => {
@@ -611,16 +616,17 @@ impl LLMSubagentExecutor {
             } else {
                 agent_prefix.to_string()
             };
-            
+
             tracing::info!("Sending final subagent message event");
             self.send_event(codex_protocol::protocol::Event {
                 id: task.task_id.clone(),
                 msg: codex_protocol::protocol::EventMsg::AgentMessage(
                     codex_protocol::protocol::AgentMessageEvent {
                         message: final_message,
-                    }
+                    },
                 ),
-            }).await;
+            })
+            .await;
         }
 
         Ok(LLMResponse {
@@ -956,7 +962,11 @@ impl LLMSubagentExecutor {
         func_call: &FunctionCall,
         task: &SubagentTask,
     ) -> codex_protocol::models::ResponseInputItem {
-        tracing::info!("Subagent executing function call: {} with args: {}", func_call.name, func_call.arguments);
+        tracing::info!(
+            "Subagent executing function call: {} with args: {}",
+            func_call.name,
+            func_call.arguments
+        );
 
         // Execute the function call
         let context = crate::function_call_handler::FunctionCallContext {
@@ -965,7 +975,8 @@ impl LLMSubagentExecutor {
             call_id: func_call.call_id.clone(),
         };
 
-        let result = self.function_handler
+        let result = self
+            .function_handler
             .handle_function_call(func_call.name.clone(), func_call.arguments.clone(), context)
             .await;
 
@@ -973,24 +984,34 @@ impl LLMSubagentExecutor {
         let completion_message = match &result {
             codex_protocol::models::ResponseInputItem::FunctionCallOutput { output, .. } => {
                 if output.success.unwrap_or(false) {
-                    format!("Subagent completed: {}({}) ✓", func_call.name, func_call.arguments)
+                    format!(
+                        "Subagent completed: {}({}) ✓",
+                        func_call.name, func_call.arguments
+                    )
                 } else {
-                    format!("Subagent completed: {}({}) ✗", func_call.name, func_call.arguments)
+                    format!(
+                        "Subagent completed: {}({}) ✗",
+                        func_call.name, func_call.arguments
+                    )
                 }
             }
-            _ => format!("Subagent completed: {}({})", func_call.name, func_call.arguments),
+            _ => format!(
+                "Subagent completed: {}({})",
+                func_call.name, func_call.arguments
+            ),
         };
 
         let event = codex_protocol::protocol::EventMsg::BackgroundEvent(
             codex_protocol::protocol::BackgroundEventEvent {
                 message: completion_message,
-            }
+            },
         );
 
         self.send_event(codex_protocol::protocol::Event {
             id: "subagent".to_string(),
             msg: event,
-        }).await;
+        })
+        .await;
 
         result
     }
@@ -1004,8 +1025,13 @@ impl LLMSubagentExecutor {
         arguments: &str,
         call_id: &str,
     ) -> codex_protocol::models::ResponseInputItem {
-        tracing::info!("Subagent executing MCP tool: {}::{} with args: {}", server_name, tool_name, arguments);
-        
+        tracing::info!(
+            "Subagent executing MCP tool: {}::{} with args: {}",
+            server_name,
+            tool_name,
+            arguments
+        );
+
         // Parse arguments as JSON to validate format
         let arguments_value = if arguments.trim().is_empty() {
             None
@@ -1036,16 +1062,19 @@ impl LLMSubagentExecutor {
             codex_protocol::protocol::McpToolCallBeginEvent {
                 call_id: call_id.to_string(),
                 invocation: invocation.clone(),
-            }
+            },
         );
 
         self.send_event(codex_protocol::protocol::Event {
             id: "subagent".to_string(),
             msg: tool_call_begin_event,
-        }).await;
+        })
+        .await;
 
         // Try to execute the MCP tool directly
-        let result = self.execute_mcp_tool_directly(server_name, tool_name, arguments_value.as_ref()).await;
+        let result = self
+            .execute_mcp_tool_directly(server_name, tool_name, arguments_value.as_ref())
+            .await;
 
         // Send MCP tool call end event
         let tool_call_end_event = codex_protocol::protocol::EventMsg::McpToolCallEnd(
@@ -1054,13 +1083,14 @@ impl LLMSubagentExecutor {
                 invocation: invocation.clone(),
                 duration: std::time::Duration::from_millis(100), // Approximate duration
                 result: result.clone(),
-            }
+            },
         );
 
         self.send_event(codex_protocol::protocol::Event {
             id: "subagent".to_string(),
             msg: tool_call_end_event,
-        }).await;
+        })
+        .await;
 
         // Return the MCP tool call output
         codex_protocol::models::ResponseInputItem::McpToolCallOutput {
@@ -1079,21 +1109,24 @@ impl LLMSubagentExecutor {
         // Check if we have MCP connection manager available
         if let Some(mcp_manager) = &self.mcp_connection_manager {
             let full_tool_name = format!("{}__{}", server_name, tool_name);
-            
+
             // Check if the tool is available in our tool definitions
             if let Some(mcp_tools) = &self.mcp_tools {
                 if mcp_tools.contains_key(&full_tool_name) {
                     // Use the MCP connection manager to call the tool
                     let arguments_value = arguments.cloned();
-                     
-                     match mcp_manager.call_tool(server_name, tool_name, arguments_value, None).await {
-                         Ok(result) => return Ok(result),
-                         Err(e) => {
-                             return Err(format!(
-                                 "Failed to execute MCP tool {server_name}::{tool_name}: {e}"
-                             ));
-                         }
-                     }
+
+                    match mcp_manager
+                        .call_tool(server_name, tool_name, arguments_value, None)
+                        .await
+                    {
+                        Ok(result) => return Ok(result),
+                        Err(e) => {
+                            return Err(format!(
+                                "Failed to execute MCP tool {server_name}::{tool_name}: {e}"
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -1104,8 +1137,6 @@ impl LLMSubagentExecutor {
             server_name, tool_name
         ))
     }
-
-
 
     async fn handle_store_context_call(
         &self,

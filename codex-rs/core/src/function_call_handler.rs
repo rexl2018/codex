@@ -249,7 +249,7 @@ impl FunctionExecutor for SubagentExecutor {
                 format!("Shell command '{}' is not available for subagents.\nSubagents have limited shell access. Use MCP tools for file operations.", command)
             }
         };
-        
+
         FunctionCallOutputPayload {
             content: output,
             success: Some(true),

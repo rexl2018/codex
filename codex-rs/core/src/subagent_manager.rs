@@ -62,6 +62,9 @@ pub trait ISubagentManager: Send + Sync {
         &self,
         limit: usize,
     ) -> Result<Vec<TaskSummary>, SubagentError>;
+
+    /// Get the total number of tasks
+    async fn get_task_count(&self) -> Result<usize, SubagentError>;
 }
 
 /// Subagent task specification
@@ -685,6 +688,11 @@ impl ISubagentManager for InMemorySubagentManager {
         completed_tasks.truncate(limit);
 
         Ok(completed_tasks)
+    }
+
+    async fn get_task_count(&self) -> Result<usize, SubagentError> {
+        let tasks = self.tasks.read().await;
+        Ok(tasks.len())
     }
 }
 
