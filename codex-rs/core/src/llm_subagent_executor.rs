@@ -73,114 +73,28 @@ impl LLMSubagentExecutor {
         }
     }
 
-    /// Create basic tools for subagent (shell and file operations)
-    fn create_subagent_tools(&self) -> Vec<crate::openai_tools::OpenAiTool> {
-        use crate::openai_tools::JsonSchema;
-        use crate::openai_tools::OpenAiTool;
-        use crate::openai_tools::ResponsesApiTool;
-        use std::collections::BTreeMap;
-
-        let mut tools = Vec::new();
-
-        // Shell tool for bash commands
-        let mut shell_properties = BTreeMap::new();
-        shell_properties.insert(
-            "command".to_string(),
-            JsonSchema::String {
-                description: Some("The shell command to execute".to_string()),
-            },
-        );
-
-        tools.push(OpenAiTool::Function(ResponsesApiTool {
-            name: "shell".to_string(),
-            description: "Execute shell commands for system inspection and operations".to_string(),
-            strict: false,
-            parameters: JsonSchema::Object {
-                properties: shell_properties,
-                required: Some(vec!["command".to_string()]),
-                additional_properties: Some(false),
-            },
-        }));
-
-        // File read tool
-        let mut read_properties = BTreeMap::new();
-        read_properties.insert(
-            "file_path".to_string(),
-            JsonSchema::String {
-                description: Some("Path to the file to read".to_string()),
-            },
-        );
-
-        tools.push(OpenAiTool::Function(ResponsesApiTool {
-            name: "read_file".to_string(),
-            description: "Read the contents of a file".to_string(),
-            strict: false,
-            parameters: JsonSchema::Object {
-                properties: read_properties,
-                required: Some(vec!["file_path".to_string()]),
-                additional_properties: Some(false),
-            },
-        }));
-
-        // File write tool (for coder agents)
-        let mut write_properties = BTreeMap::new();
-        write_properties.insert(
-            "file_path".to_string(),
-            JsonSchema::String {
-                description: Some("Path to the file to write".to_string()),
-            },
-        );
-        write_properties.insert(
-            "content".to_string(),
-            JsonSchema::String {
-                description: Some("Content to write to the file".to_string()),
-            },
-        );
-
-        tools.push(OpenAiTool::Function(ResponsesApiTool {
-            name: "write_file".to_string(),
-            description: "Write content to a file".to_string(),
-            strict: false,
-            parameters: JsonSchema::Object {
-                properties: write_properties,
-                required: Some(vec!["file_path".to_string(), "content".to_string()]),
-                additional_properties: Some(false),
-            },
-        }));
-
-        // Context storage tool - allows LLM to create context items
-        let mut context_properties = BTreeMap::new();
-        context_properties.insert(
-            "id".to_string(),
-            JsonSchema::String {
-                description: Some("Unique identifier for the context (use snake_case like 'file_structure_analysis')".to_string()),
-            },
-        );
-        context_properties.insert(
-            "summary".to_string(),
-            JsonSchema::String {
-                description: Some("Brief description of what this context contains (1-2 sentences)".to_string()),
-            },
-        );
-        context_properties.insert(
-            "content".to_string(),
-            JsonSchema::String {
-                description: Some("Detailed findings, analysis, or information that will be useful for future tasks".to_string()),
-            },
-        );
-
-        tools.push(OpenAiTool::Function(ResponsesApiTool {
-            name: "store_context".to_string(),
-            description: "Store a context item containing important findings or analysis for future use".to_string(),
-            strict: false,
-            parameters: JsonSchema::Object {
-                properties: context_properties,
-                required: Some(vec!["id".to_string(), "summary".to_string(), "content".to_string()]),
-                additional_properties: Some(false),
-            },
-        }));
-
-        tools
+    /// Create tools for subagent based on agent type using unified tool configuration
+    fn create_subagent_tools(&self, agent_type: &SubagentType) -> Vec<crate::openai_tools::OpenAiTool> {
+        // Convert SubagentType to AgentType and use the unified tool configuration
+        let unified_agent_type = crate::openai_tools::AgentType::from(agent_type.clone());
+        
+        // Create a minimal tools config for subagents (they don't need all the main agent features)
+        let tools_config = crate::openai_tools::ToolsConfig {
+            shell_type: crate::openai_tools::ConfigShellToolType::DefaultShell,
+            plan_tool: false,
+            apply_patch_tool_type: None,
+            web_search_request: false,
+            include_view_image_tool: false,
+            experimental_unified_exec_tool: false,
+            include_subagent_task_tool: false,
+        };
+        
+        // Use the unified get_openai_tools function
+        crate::openai_tools::get_openai_tools(
+            &tools_config,
+            None, // Subagents don't need MCP tools for now
+            unified_agent_type,
+        )
     }
 
     /// Try to parse function calls from LLM response
@@ -263,7 +177,7 @@ impl LLMSubagentExecutor {
             tracing::debug!("LLM Subagent turn {}/{}", turn, self.max_turns);
 
             // Get LLM response
-            match self.get_llm_response(&messages).await {
+            match self.get_llm_response(&messages, task).await {
                 Ok(llm_response) => {
                     tracing::debug!(
                         "LLM Response (turn {}): {}",
@@ -375,6 +289,7 @@ impl LLMSubagentExecutor {
     async fn get_llm_response(
         &self,
         messages: &[Message],
+        task: &SubagentTask,
     ) -> Result<LLMResponse, Box<dyn std::error::Error + Send + Sync>> {
         // Convert our messages to the format expected by the model client
         use crate::client_common::Prompt;
@@ -385,8 +300,8 @@ impl LLMSubagentExecutor {
         // Messages are already in ResponseItem format, so we can use them directly
         let prompt_items = messages.to_vec();
 
-        // Create basic tools for subagent
-        let tools = self.create_subagent_tools();
+        // Create tools for subagent based on agent type
+        let tools = self.create_subagent_tools(&task.agent_type);
         tracing::info!(
             "Created {} tools for subagent: {:?}",
             tools.len(),
@@ -787,7 +702,7 @@ impl LLMSubagentExecutor {
         });
 
         // Try to get one more LLM response to generate contexts
-        match self.get_llm_response(messages).await {
+        match self.get_llm_response(messages, task).await {
             Ok(llm_response) => {
                 tracing::info!("Got final LLM response for context generation");
                 

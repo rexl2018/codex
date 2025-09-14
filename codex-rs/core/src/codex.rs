@@ -1999,6 +1999,7 @@ async fn run_turn(
     let tools = get_openai_tools(
         &turn_context.tools_config,
         Some(sess.mcp_connection_manager.list_all_tools()),
+        crate::openai_tools::AgentType::Main, // Main agent can only use store_context tool
     );
 
     let prompt = Prompt {
@@ -2476,6 +2477,62 @@ async fn handle_create_subagent_task(
         }
     };
 
+    // CRITICAL: Check for forced completion blocking before proceeding
+    if let Some(multi_agent_components) = &sess.multi_agent_components {
+        // Check if there was a recent forced completion that should block new subagent creation
+        match multi_agent_components.subagent_manager.get_recently_completed_tasks(10).await {
+            Ok(recent_tasks) => {
+                let agent_type = match args.agent_type.as_str() {
+                    "explorer" => SubagentType::Explorer,
+                    "coder" => SubagentType::Coder,
+                    _ => {
+                        return ResponseInputItem::FunctionCallOutput {
+                            call_id,
+                            output: FunctionCallOutputPayload {
+                                content: format!("Invalid agent_type: {}. Must be 'explorer' or 'coder'", args.agent_type),
+                                success: Some(false),
+                            },
+                        };
+                    }
+                };
+
+                // Check if the most recent task of the same type was forced to complete
+                for task in &recent_tasks {
+                    if task.agent_type == agent_type {
+                        if let crate::subagent_manager::TaskStatus::Completed { result } = &task.status {
+                            let was_forced_completion = result.metadata.reached_max_turns || result.metadata.force_completed;
+                            
+                            if was_forced_completion {
+                                tracing::warn!(
+                                    "🚫 TOOL-LEVEL BLOCK: Preventing creation of {} subagent '{}' because the previous {} subagent was forced to complete",
+                                    args.agent_type,
+                                    args.title,
+                                    args.agent_type
+                                );
+                                
+                                return ResponseInputItem::FunctionCallOutput {
+                                    call_id,
+                                    output: FunctionCallOutputPayload {
+                                        content: format!(
+                                            "🚫 **SUBAGENT CREATION IS PERMANENTLY DISABLED** 🚫\n\nCreating new subagents of type '{agent_type}' is disabled because a previous subagent of the same type was force-completed.\n\n**REASON**: The previous '{agent_type}' subagent failed to complete its task, indicating that creating more subagents of this type is not a productive strategy.\n\n**MANDATORY ACTION**: Do not attempt to create any more subagents. Instead, you MUST synthesize the information you already have and provide a summary to the user.",
+                                            agent_type = args.agent_type
+                                        ),
+                                        success: Some(false),
+                                    },
+                                };
+                            }
+                        }
+                        break; // Only check the most recent task of this type
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to check recent tasks for forced completion blocking: {}", e);
+                // Continue with creation if we can't check - don't block due to errors
+            }
+        }
+    }
+
     // Validate agent_type
     let agent_type = match args.agent_type.as_str() {
         "explorer" => SubagentType::Explorer,
@@ -2518,13 +2575,14 @@ async fn handle_create_subagent_task(
         Ok(recent_tasks) => {
             // Count consecutive forced completions of the same type
             let mut consecutive_forced_completions = 0;
-            
+
             for task in &recent_tasks {
                 if task.agent_type == agent_type {
-                    
-                    if let crate::subagent_manager::TaskStatus::Completed { result } = &task.status {
-                        let was_forced_completion = result.metadata.reached_max_turns || result.metadata.force_completed;
-                        
+                    if let crate::subagent_manager::TaskStatus::Completed { result } = &task.status
+                    {
+                        let was_forced_completion =
+                            result.metadata.reached_max_turns || result.metadata.force_completed;
+
                         if was_forced_completion {
                             consecutive_forced_completions += 1;
                         } else {
@@ -2538,10 +2596,10 @@ async fn handle_create_subagent_task(
                 }
             }
 
-            // Check for consecutive forced completion limit (2 for Explorer, 3 for Coder)
+            // Check for consecutive forced completion limit (1 for both Explorer and Coder)
             let max_consecutive_forced = match agent_type {
-                SubagentType::Explorer => 2,
-                SubagentType::Coder => 3,
+                SubagentType::Explorer => 1,
+                SubagentType::Coder => 1,
             };
 
             if consecutive_forced_completions >= max_consecutive_forced {
@@ -2554,21 +2612,26 @@ async fn handle_create_subagent_task(
                 );
 
                 // When hitting consecutive limit, gather all available contexts and inject them for summarization
-                let all_contexts = match get_all_available_contexts(&multi_agent_components.context_repo).await {
-                    Ok(context_ids) => {
-                        let mut contexts = Vec::new();
-                        for context_id in context_ids {
-                            if let Ok(Some(context)) = multi_agent_components.context_repo.get_context(&context_id).await {
-                                contexts.push(context);
+                let all_contexts =
+                    match get_all_available_contexts(&multi_agent_components.context_repo).await {
+                        Ok(context_ids) => {
+                            let mut contexts = Vec::new();
+                            for context_id in context_ids {
+                                if let Ok(Some(context)) = multi_agent_components
+                                    .context_repo
+                                    .get_context(&context_id)
+                                    .await
+                                {
+                                    contexts.push(context);
+                                }
                             }
+                            contexts
                         }
-                        contexts
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to retrieve contexts for summarization: {}", e);
-                        Vec::new()
-                    }
-                };
+                        Err(e) => {
+                            tracing::warn!("Failed to retrieve contexts for summarization: {}", e);
+                            Vec::new()
+                        }
+                    };
 
                 if !all_contexts.is_empty() {
                     tracing::info!(
@@ -2578,18 +2641,17 @@ async fn handle_create_subagent_task(
 
                     // Create a comprehensive context summary message
                     let mut context_summary = format!(
-                        "🚫 **Subagent Creation Blocked**: Cannot create another '{}' subagent due to {} consecutive forced completions (limit: {}).\n\n📊 **Analysis Pattern**: The last {} '{}' subagents all reached their turn limits without completing successfully, indicating this approach may not be effective.\n\n📋 **Available Context Summary**: Here are all the findings and analysis results gathered so far:\n\n",
-                        args.agent_type,
-                        consecutive_forced_completions,
-                        max_consecutive_forced,
-                        consecutive_forced_completions,
-                        args.agent_type
+                        "🚫 **Subagent Creation Blocked**: Cannot create another '{}' subagent because the previous '{}' subagent was forced to complete (reached turn limit).\n\n📊 **Analysis Pattern**: The previous '{}' subagent reached its turn limit without completing successfully, indicating this approach may not be effective for this task.\n\n📋 **Available Context Summary**: Here are all the findings and analysis results gathered so far:\n\n",
+                        args.agent_type, args.agent_type, args.agent_type
                     );
 
                     for (i, context) in all_contexts.iter().enumerate() {
                         context_summary.push_str(&format!(
                             "## Context {}: {}\n\n**Summary:** {}\n\n**Details:**\n{}\n\n---\n\n",
-                            i + 1, context.id, context.summary, context.content
+                            i + 1,
+                            context.id,
+                            context.summary,
+                            context.content
                         ));
                     }
 
@@ -2618,7 +2680,7 @@ async fn handle_create_subagent_task(
                     // Inject the context into the session for the LLM to process
                     if let Err(contexts) = sess.inject_input(vec![InputItem::Text {
                         text: format!(
-                            "🚫 Cannot create '{}' subagent due to consecutive forced completions. Please summarize the available analysis and provide recommendations.",
+                            "🚫 **CRITICAL: ANALYSIS COMPLETE - SUMMARY REQUIRED**\n\nThe previous '{}' subagent was forced to complete, and you now have comprehensive analysis results above.\n\n**MANDATORY INSTRUCTION**: You must provide a final summary based on the context items above. Do NOT create any new subagents or use any tools. Your response should be a comprehensive text-only summary that synthesizes all the analysis provided.\n\nThis is a completion mode where your task is to summarize, not to delegate further work.",
                             args.agent_type
                         ),
                     }]) {
@@ -2641,11 +2703,9 @@ async fn handle_create_subagent_task(
                         call_id,
                         output: FunctionCallOutputPayload {
                             content: format!(
-                                "🚫 Cannot create another '{}' subagent due to {} consecutive forced completions (reached maximum limit of {}).\n\n📊 **Recent pattern:** The last {} '{}' subagents all reached their turn limits without completing successfully.\n\n🔄 **Suggested alternatives:**\n{}\n\n💡 **Tip:** This limit prevents infinite loops. Try a different approach or request a summary of current progress.",
+                                "🚫 Cannot create another '{}' subagent because the previous '{}' subagent was forced to complete (reached turn limit).\n\n📊 **Analysis Pattern:** The previous '{}' subagent reached its turn limit without completing successfully, indicating this approach may not be effective for this task.\n\n🔄 **Suggested alternatives:**\n{}\n\n💡 **Tip:** This limit prevents infinite loops. Try a different approach or request a summary of current progress.",
                                 args.agent_type,
-                                consecutive_forced_completions,
-                                max_consecutive_forced,
-                                consecutive_forced_completions,
+                                args.agent_type,
                                 args.agent_type,
                                 alternative_suggestion
                             ),
@@ -2698,14 +2758,13 @@ async fn handle_create_subagent_task(
                             };
                         } else {
                             tracing::info!(
-                                "Allowing creation of {} subagent '{}' because the last {} subagent '{}' was forced to complete (reached_max_turns: {}, force_completed: {}). Consecutive forced completions: {}",
+                                "Allowing creation of {} subagent '{}' because the last {} subagent '{}' completed normally (reached_max_turns: {}, force_completed: {})",
                                 args.agent_type,
                                 args.title,
                                 args.agent_type,
                                 last_completed.title,
                                 result.metadata.reached_max_turns,
-                                result.metadata.force_completed,
-                                consecutive_forced_completions
+                                result.metadata.force_completed
                             );
                         }
                     }
@@ -2749,7 +2808,7 @@ async fn handle_create_subagent_task(
         description: args.description.clone(),
         context_refs: selected_context_refs,
         bootstrap_paths: args.bootstrap_paths,
-        max_turns: Some(20),       // Default to 50 turns
+        max_turns: Some(30),       // Default to 50 turns
         timeout_ms: Some(1800000), // Default to 30 minutes timeout
     };
 
@@ -2885,22 +2944,68 @@ async fn handle_create_subagent_task(
                                                 );
                                             }
 
-                                            // Query context repository for contexts generated by this subagent task
-                                            let task_contexts = match query_contexts_by_task_id(
-                                                &multi_agent_components.context_repo,
-                                                &task_id,
-                                            )
-                                            .await
+                                            // Query context repository for ALL available contexts (not just current task)
+                                            // This allows main agent to see the complete analysis history
+                                            let all_contexts = match multi_agent_components
+                                                .context_repo
+                                                .query_contexts(
+                                                    &crate::context_store::ContextQuery {
+                                                        ids: None,
+                                                        tags: None,
+                                                        created_by: None,
+                                                        limit: None,
+                                                    },
+                                                )
+                                                .await
                                             {
                                                 Ok(contexts) => contexts,
                                                 Err(e) => {
                                                     tracing::error!(
-                                                        "Failed to query contexts for task {}: {}",
-                                                        task_id,
+                                                        "Failed to query all available contexts: {}",
                                                         e
                                                     );
                                                     Vec::new()
                                                 }
+                                            };
+
+                                            // Also get the current task's contexts for comparison
+                                            let current_task_contexts =
+                                                match query_contexts_by_task_id(
+                                                    &multi_agent_components.context_repo,
+                                                    &task_id,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(contexts) => contexts,
+                                                    Err(e) => {
+                                                        tracing::error!(
+                                                            "Failed to query contexts for task {}: {}",
+                                                            task_id,
+                                                            e
+                                                        );
+                                                        Vec::new()
+                                                    }
+                                                };
+
+                                            // Use all contexts for injection, but prioritize current task contexts
+                                            let task_contexts = if !current_task_contexts.is_empty()
+                                            {
+                                                // If current task has contexts, include them plus all others
+                                                let mut combined_contexts =
+                                                    current_task_contexts.clone();
+                                                for ctx in all_contexts {
+                                                    // Add contexts that are not from the current task
+                                                    if !current_task_contexts
+                                                        .iter()
+                                                        .any(|c| c.id == ctx.id)
+                                                    {
+                                                        combined_contexts.push(ctx);
+                                                    }
+                                                }
+                                                combined_contexts
+                                            } else {
+                                                // If current task has no contexts, use all available contexts
+                                                all_contexts
                                             };
 
                                             // Check subagent completion status to decide how to handle contexts
@@ -2944,24 +3049,35 @@ async fn handle_create_subagent_task(
 
                                             if should_inject_contexts {
                                                 tracing::info!(
-                                                    "Injecting {} context items from subagent into conversation for LLM analysis",
+                                                    "Injecting {} context items (including {} from current task and {} from previous tasks) into conversation for LLM analysis",
+                                                    task_contexts.len(),
+                                                    current_task_contexts.len(),
                                                     task_contexts.len()
+                                                        - current_task_contexts.len()
                                                 );
 
                                                 // Create a context summary message for the LLM
                                                 let context_summary = if was_forced_completion {
                                                     format!(
-                                                        "The {} subagent '{}' was forced to complete (reached max turns) but generated {} context items. Here are the findings so far:\n\n",
+                                                        "The {} subagent '{}' was forced to complete (reached max turns) but generated {} context items. Here are ALL available analysis findings ({} total contexts, including {} from current task and {} from previous tasks):\n\n",
                                                         args.agent_type,
                                                         args.title,
+                                                        current_task_contexts.len(),
+                                                        task_contexts.len(),
+                                                        current_task_contexts.len(),
                                                         task_contexts.len()
+                                                            - current_task_contexts.len()
                                                     )
                                                 } else {
                                                     format!(
-                                                        "The {} subagent '{}' has completed successfully and generated {} context items. Here are the detailed findings:\n\n",
+                                                        "The {} subagent '{}' has completed successfully and generated {} context items. Here are ALL available analysis findings ({} total contexts, including {} from current task and {} from previous tasks):\n\n",
                                                         args.agent_type,
                                                         args.title,
+                                                        current_task_contexts.len(),
+                                                        task_contexts.len(),
+                                                        current_task_contexts.len(),
                                                         task_contexts.len()
+                                                            - current_task_contexts.len()
                                                     )
                                                 };
 
@@ -2981,27 +3097,42 @@ async fn handle_create_subagent_task(
                                                 ));
 
                                                 let prompt_instructions = if was_forced_completion {
-                                                    "**INSTRUCTION: The subagent was forced to complete due to reaching maximum turns, but it has generated useful context items above. Based on these findings, you can:**\n\n\
-                                                    **AVAILABLE OPTIONS:**\n\
-                                                    1. **Summarize the findings** - Provide a comprehensive text-based summary of the analysis\n\
-                                                    2. **Create a new subagent** - If you think more analysis is needed on different aspects\n\
-                                                    3. **Use other tools** - If you need to perform additional tasks based on the findings\n\n\
-                                                    **RECOMMENDATION:** Consider the quality and completeness of the context items above. If they provide sufficient information for your needs, summarize them. If more analysis is needed, you can create additional subagents to explore different aspects.\n\n"
+                                                    &format!(
+                                                        "**CRITICAL INSTRUCTION: COMPREHENSIVE ANALYSIS AVAILABLE - PROVIDE SUMMARY ONLY**\n\n\
+                                                        The subagent was forced to complete due to reaching maximum turns, but comprehensive analysis is now available from ALL context items above ({} total contexts). Your task is to:\n\n\
+                                                        **REQUIRED ACTION: SUMMARIZE AND CONCLUDE**\n\
+                                                        1. **Synthesize the findings** from all context items above\n\
+                                                        2. **Provide a comprehensive summary** of key insights and discoveries\n\
+                                                        3. **Present conclusions** to the user based on the complete analysis\n\
+                                                        4. **Optionally store synthesized insights** using store_context if valuable for future reference\n\n\
+                                                        **DO NOT:**\n\
+                                                        - Create new subagents (comprehensive analysis is already available)\n\
+                                                        - Call create_subagent_task (sufficient information is provided above)\n\
+                                                        - Request additional analysis (all necessary context items are included)\n\n\
+                                                        **NOTE:** As an orchestrator, you cannot execute shell commands directly. However, with {} context items available, you have comprehensive information to provide a complete analysis.\n\n\
+                                                        **Your response should be a comprehensive text summary that synthesizes all the context items above. The analysis work is complete - now provide the final summary.**\n\n",
+                                                        task_contexts.len(),
+                                                        task_contexts.len()
+                                                    )
                                                 } else {
-                                                    "**CRITICAL INSTRUCTION: This is a SUMMARY AND ANALYSIS TASK ONLY. The subagent has completed its work and generated the above context items. You must ONLY provide a text-based summary and analysis. DO NOT call any functions, DO NOT use any tools, DO NOT create subagents, DO NOT call create_subagent_task or any other function. Your response should be PURE TEXT ANALYSIS ONLY.**\n\n\
-                                                    **FORBIDDEN ACTIONS:**\n\
-                                                    - DO NOT call create_subagent_task\n\
-                                                    - DO NOT call any functions\n\
-                                                    - DO NOT use any tools\n\
-                                                    - DO NOT request additional analysis\n\
-                                                    - DO NOT suggest creating new subagents\n\n\
-                                                    **REQUIRED ACTION: Provide a comprehensive TEXT-ONLY summary and analysis of these findings. Focus on:**\n\
-                                                    1. Key insights and discoveries from the subagent's analysis\n\
-                                                    2. Important technical details and patterns identified\n\
-                                                    3. Implications for the overall project architecture and design\n\
-                                                    4. Synthesis of information across all context items\n\
-                                                    5. Any recommendations or next steps based on the analysis\n\n\
-                                                    Provide a well-structured, comprehensive TEXT-ONLY analysis that synthesizes and summarizes the information from all context items. This is a summary task - respond with analysis text only, no function calls."
+                                                    "**CRITICAL INSTRUCTION: ANALYSIS COMPLETE - PROVIDE SUMMARY ONLY**\n\n\
+                                                    The subagent work is COMPLETE. The above context items contain comprehensive analysis results. Your task now is to:\n\n\
+                                                    **REQUIRED ACTION: SUMMARIZE AND CONCLUDE**\n\
+                                                    1. **Synthesize the findings** from all context items above\n\
+                                                    2. **Provide a comprehensive summary** of key insights and discoveries\n\
+                                                    3. **Present conclusions** to the user based on the analysis\n\
+                                                    4. **Optionally store synthesized insights** using store_context if valuable for future reference\n\n\
+                                                    **DO NOT:**\n\
+                                                    - Create new subagents (analysis is already complete)\n\
+                                                    - Call create_subagent_task (the work is done)\n\
+                                                    - Request additional analysis (sufficient information is provided above)\n\n\
+                                                    **FOCUS YOUR SUMMARY ON:**\n\
+                                                    1. Key architectural insights from the context store analysis\n\
+                                                    2. Important implementation patterns and design decisions\n\
+                                                    3. Overall assessment of the context store's design and functionality\n\
+                                                    4. Any notable strengths or areas for potential improvement\n\
+                                                    5. How this analysis addresses the original user request\n\n\
+                                                    **Your response should be a comprehensive text summary that synthesizes all the context items above. The analysis work is complete - now provide the final summary.**"
                                                 };
 
                                                 tracing::error!(
@@ -3015,9 +3146,12 @@ async fn handle_create_subagent_task(
                                                     "🔥 DEBUG: COMPLETE CONTEXT CONTENT BEING SENT TO LLM (length={}): \n{}",
                                                     full_context_content.len(),
                                                     if full_context_content.len() > 2000 {
-                                                        format!("{}...[TRUNCATED]...{}", 
+                                                        format!(
+                                                            "{}...[TRUNCATED]...{}",
                                                             &full_context_content[..1000],
-                                                            &full_context_content[full_context_content.len()-1000..]
+                                                            &full_context_content
+                                                                [full_context_content.len()
+                                                                    - 1000..]
                                                         )
                                                     } else {
                                                         full_context_content.clone()
@@ -3025,16 +3159,23 @@ async fn handle_create_subagent_task(
                                                 );
 
                                                 // 🔥 DEBUG: Log individual context items for verification
-                                                for (i, context) in task_contexts.iter().enumerate() {
+                                                for (i, context) in task_contexts.iter().enumerate()
+                                                {
                                                     tracing::error!(
                                                         "🔥 DEBUG: Context Item #{}: id='{}', summary='{}', content_length={}",
-                                                        i + 1, context.id, context.summary, context.content.len()
+                                                        i + 1,
+                                                        context.id,
+                                                        context.summary,
+                                                        context.content.len()
                                                     );
                                                     tracing::error!(
                                                         "🔥 DEBUG: Context Item #{} content preview: {}",
                                                         i + 1,
                                                         if context.content.len() > 500 {
-                                                            format!("{}...[truncated]", &context.content[..500])
+                                                            format!(
+                                                                "{}...[truncated]",
+                                                                &context.content[..500]
+                                                            )
                                                         } else {
                                                             context.content.clone()
                                                         }
@@ -3075,7 +3216,10 @@ async fn handle_create_subagent_task(
                                                     }
                                                 };
 
-                                                let full_message = format!("{}\n\n{}", completion_summary, guidance);
+                                                let full_message = format!(
+                                                    "{}\n\n{}",
+                                                    completion_summary, guidance
+                                                );
 
                                                 // Return as a user message to trigger LLM analysis and decision-making
                                                 let context_input = ResponseInputItem::Message {
@@ -3357,6 +3501,116 @@ async fn handle_unified_exec_tool_call(
     }
 }
 
+async fn handle_list_contexts(
+    sess: &Session,
+    call_id: String,
+) -> ResponseInputItem {
+    let result = if let Some(multi_agent_components) = &sess.multi_agent_components {
+        use crate::context_store::{ContextQuery, IContextRepository};
+
+        match multi_agent_components
+            .context_repo
+            .query_contexts(&ContextQuery {
+                ids: None,
+                tags: None,
+                created_by: None,
+                limit: None,
+            })
+            .await
+        {
+            Ok(contexts) => {
+                let context_list: Vec<_> = contexts
+                    .iter()
+                    .map(|c| format!("- {}: {}", c.id, c.summary))
+                    .collect();
+                FunctionCallOutputPayload {
+                    content: format!(
+                        "Available contexts:\n{}",
+                        context_list.join("\n")
+                    ),
+                    success: Some(true),
+                }
+            }
+            Err(e) => FunctionCallOutputPayload {
+                content: format!("Failed to list contexts: {}", e),
+                success: Some(false),
+            },
+        }
+    } else {
+        FunctionCallOutputPayload {
+            content: "Multi-agent components not initialized".to_string(),
+            success: Some(false),
+        }
+    };
+
+    ResponseInputItem::FunctionCallOutput {
+        call_id,
+        output: result,
+    }
+}
+
+async fn handle_multi_retrieve_contexts(
+    sess: &Session,
+    arguments: String,
+    call_id: String,
+) -> ResponseInputItem {
+    #[derive(serde::Deserialize)]
+    struct MultiRetrieveContextsArgs {
+        ids: Vec<String>,
+    }
+
+    let args = match serde_json::from_str::<MultiRetrieveContextsArgs>(&arguments) {
+        Ok(args) => args,
+        Err(err) => {
+            return ResponseInputItem::FunctionCallOutput {
+                call_id,
+                output: FunctionCallOutputPayload {
+                    content: format!("failed to parse multi_retrieve_contexts arguments: {err}"),
+                    success: Some(false),
+                },
+            };
+        }
+    };
+
+    let result = if let Some(multi_agent_components) = &sess.multi_agent_components {
+        use crate::context_store::IContextRepository;
+
+        match multi_agent_components
+            .context_repo
+            .get_contexts(&args.ids)
+            .await
+        {
+            Ok(contexts) => {
+                let context_list: Vec<_> = contexts
+                    .iter()
+                    .map(|c| format!("- {}: {}\n{}", c.id, c.summary, c.content))
+                    .collect();
+                FunctionCallOutputPayload {
+                    content: format!(
+                        "Retrieved contexts:\n{}",
+                        context_list.join("\n\n")
+                    ),
+                    success: Some(true),
+                }
+            }
+            Err(e) => FunctionCallOutputPayload {
+                content: format!("Failed to retrieve contexts: {}", e),
+                success: Some(false),
+            },
+        }
+    } else {
+        FunctionCallOutputPayload {
+            content: "Multi-agent components not initialized".to_string(),
+            success: Some(false),
+        }
+    };
+
+    ResponseInputItem::FunctionCallOutput {
+        call_id,
+        output: result,
+    }
+}
+
 async fn handle_function_call(
     sess: &Session,
     turn_context: &TurnContext,
@@ -3366,6 +3620,34 @@ async fn handle_function_call(
     arguments: String,
     call_id: String,
 ) -> ResponseInputItem {
+    // Check if the tool is allowed for main agent
+    let allowed_tools = get_openai_tools(
+        &turn_context.tools_config,
+        Some(sess.mcp_connection_manager.list_all_tools()),
+        crate::openai_tools::AgentType::Main,
+    );
+
+    let tool_allowed = allowed_tools.iter().any(|tool| match tool {
+        crate::openai_tools::OpenAiTool::Function(func) => func.name == name,
+        crate::openai_tools::OpenAiTool::LocalShell {} => name == "local_shell",
+        crate::openai_tools::OpenAiTool::WebSearch {} => name == "web_search",
+        crate::openai_tools::OpenAiTool::Freeform(freeform) => freeform.name == name,
+    });
+
+    if !tool_allowed {
+        warn!("Tool '{}' is not allowed for main agent", name);
+        return ResponseInputItem::FunctionCallOutput {
+            call_id,
+            output: FunctionCallOutputPayload {
+                content: format!(
+                    "Tool '{}' is not allowed for main agent. Main agent can only use: list_contexts, multi_retrieve_contexts, create_subagent_task",
+                    name
+                ),
+                success: Some(false),
+            },
+        };
+    }
+
     match name.as_str() {
         "container.exec" | "shell" => {
             let params = match parse_container_exec_arguments(arguments, turn_context, &call_id) {
@@ -3481,71 +3763,9 @@ async fn handle_function_call(
         "create_subagent_task" => {
             handle_create_subagent_task(sess, arguments, sub_id, call_id).await
         }
-        "store_context" => {
-            #[derive(Deserialize)]
-            struct StoreContextArgs {
-                id: String,
-                summary: String,
-                content: String,
-            }
-
-            let args = match serde_json::from_str::<StoreContextArgs>(&arguments) {
-                Ok(args) => args,
-                Err(err) => {
-                    return ResponseInputItem::FunctionCallOutput {
-                        call_id,
-                        output: FunctionCallOutputPayload {
-                            content: format!("failed to parse store_context arguments: {err}"),
-                            success: Some(false),
-                        },
-                    };
-                }
-            };
-
-            // Store the context using the multi-agent components
-            let result = if let Some(multi_agent_components) = &sess.multi_agent_components {
-                use crate::context_store::{Context, IContextRepository};
-                use std::time::SystemTime;
-                use std::collections::HashMap;
-                
-                let now = SystemTime::now();
-                let context = Context {
-                    id: args.id.clone(),
-                    summary: args.summary.clone(),
-                    content: args.content.clone(),
-                    created_by: sub_id.clone(),
-                    task_id: None, // Main agent doesn't have a specific task_id
-                    created_at: now,
-                    updated_at: now,
-                    tags: Vec::new(),
-                    metadata: HashMap::new(),
-                };
-
-                match multi_agent_components.context_repo.store_context(context).await {
-                    Ok(()) => {
-                        FunctionCallOutputPayload {
-                            content: format!("Successfully stored context item '{}'", args.id),
-                            success: Some(true),
-                        }
-                    }
-                    Err(err) => {
-                        FunctionCallOutputPayload {
-                            content: format!("Failed to store context: {}", err),
-                            success: Some(false),
-                        }
-                    }
-                }
-            } else {
-                FunctionCallOutputPayload {
-                    content: "Multi-agent components not available".to_string(),
-                    success: Some(false),
-                }
-            };
-
-            ResponseInputItem::FunctionCallOutput {
-                call_id,
-                output: result,
-            }
+        "list_contexts" => handle_list_contexts(sess, call_id).await,
+        "multi_retrieve_contexts" => {
+            handle_multi_retrieve_contexts(sess, arguments, call_id).await
         }
         EXEC_COMMAND_TOOL_NAME => {
             // TODO(mbolin): Sandbox check.

@@ -13,6 +13,26 @@ use crate::tool_apply_patch::ApplyPatchToolType;
 use crate::tool_apply_patch::create_apply_patch_freeform_tool;
 use crate::tool_apply_patch::create_apply_patch_json_tool;
 
+/// Agent type for tool configuration
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum AgentType {
+    /// Main agent - only has access to store_context tool
+    Main,
+    /// Explorer agent - read-only operations, no file writing
+    Explorer,
+    /// Coder agent - full access including file writing
+    Coder,
+}
+
+impl From<codex_protocol::protocol::SubagentType> for AgentType {
+    fn from(subagent_type: codex_protocol::protocol::SubagentType) -> Self {
+        match subagent_type {
+            codex_protocol::protocol::SubagentType::Explorer => AgentType::Explorer,
+            codex_protocol::protocol::SubagentType::Coder => AgentType::Coder,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ResponsesApiTool {
     pub(crate) name: String,
@@ -676,115 +696,220 @@ fn sanitize_json_schema(value: &mut JsonValue) {
 /// Returns a list of OpenAiTools based on the provided config and MCP tools.
 /// Note that the keys of mcp_tools should be fully qualified names. See
 /// [`McpConnectionManager`] for more details.
+/// 
+/// Different agent types have different tool access:
+/// - Main: `list_contexts`, `multi_retrieve_contexts`, and `create_subagent_task`.
+/// - Explorer: All tools except file_write, plus MCP tools
+/// - Coder: All tools including file_write, plus MCP tools
 pub(crate) fn get_openai_tools(
     config: &ToolsConfig,
     mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
+    agent_type: AgentType,
 ) -> Vec<OpenAiTool> {
     let mut tools: Vec<OpenAiTool> = Vec::new();
 
-    if config.experimental_unified_exec_tool {
-        tools.push(create_unified_exec_tool());
-    } else {
-        match &config.shell_type {
-            ConfigShellToolType::DefaultShell => {
-                tools.push(create_shell_tool());
-            }
-            ConfigShellToolType::ShellWithRequest { sandbox_policy } => {
-                tools.push(create_shell_tool_for_sandbox(sandbox_policy));
-            }
-            ConfigShellToolType::LocalShell => {
-                tools.push(OpenAiTool::LocalShell {});
-            }
-            ConfigShellToolType::StreamableShell => {
-                tools.push(OpenAiTool::Function(
-                    crate::exec_command::create_exec_command_tool_for_responses_api(),
-                ));
-                tools.push(OpenAiTool::Function(
-                    crate::exec_command::create_write_stdin_tool_for_responses_api(),
-                ));
+    match agent_type {
+        AgentType::Main => {
+            // Main agent can use store_context and create_subagent_task tools
+            
+
+
+            // Add list_contexts tool
+            tools.push(OpenAiTool::Function(ResponsesApiTool {
+                name: "list_contexts".to_string(),
+                description: "List all available context items. Context items are knowledge artifacts created by subagents containing analysis findings, discoveries, and insights from previous tasks. Each context item has an ID, summary, and detailed content that can be retrieved for reference when making decisions or understanding the codebase.".to_string(),
+                strict: false,
+                parameters: JsonSchema::Object {
+                    properties: BTreeMap::new(), // No parameters
+                    required: Some(vec![]),
+                    additional_properties: Some(false),
+                },
+            }));
+
+            // Add multi_retrieve_contexts tool
+            let mut retrieve_context_properties = BTreeMap::new();
+            retrieve_context_properties.insert(
+                "ids".to_string(),
+                JsonSchema::Array {
+                    description: Some("List of context item IDs to retrieve".to_string()),
+                    items: Box::new(JsonSchema::String {
+                        description: Some("A context item ID".to_string()),
+                    }),
+                },
+            );
+
+            tools.push(OpenAiTool::Function(ResponsesApiTool {
+                name: "multi_retrieve_contexts".to_string(),
+                description: "Retrieve multiple context items by their IDs. Use this to get the full content of specific context items that contain relevant analysis, findings, or insights from previous subagent tasks. This allows you to access detailed information needed for decision-making or understanding the codebase.".to_string(),
+                strict: false,
+                parameters: JsonSchema::Object {
+                    properties: retrieve_context_properties,
+                    required: Some(vec!["ids".to_string()]),
+                    additional_properties: Some(false),
+                },
+            }));
+
+            // Add create_subagent_task tool for multi-agent coordination
+            if config.include_subagent_task_tool {
+                tools.push(create_subagent_task_tool());
             }
         }
-    }
-
-    if config.plan_tool {
-        tools.push(PLAN_TOOL.clone());
-    }
-
-    if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
-        match apply_patch_tool_type {
-            ApplyPatchToolType::Freeform => {
-                tools.push(create_apply_patch_freeform_tool());
+        AgentType::Explorer | AgentType::Coder => {
+            // Explorer and Coder agents can use all other tools
+            if config.experimental_unified_exec_tool {
+                tools.push(create_unified_exec_tool());
+            } else {
+                match &config.shell_type {
+                    ConfigShellToolType::DefaultShell => {
+                        tools.push(create_shell_tool());
+                    }
+                    ConfigShellToolType::ShellWithRequest { sandbox_policy } => {
+                        tools.push(create_shell_tool_for_sandbox(sandbox_policy));
+                    }
+                    ConfigShellToolType::LocalShell => {
+                        tools.push(OpenAiTool::LocalShell {});
+                    }
+                    ConfigShellToolType::StreamableShell => {
+                        tools.push(OpenAiTool::Function(
+                            crate::exec_command::create_exec_command_tool_for_responses_api(),
+                        ));
+                        tools.push(OpenAiTool::Function(
+                            crate::exec_command::create_write_stdin_tool_for_responses_api(),
+                        ));
+                    }
+                }
             }
-            ApplyPatchToolType::Function => {
-                tools.push(create_apply_patch_json_tool());
+
+            if config.plan_tool {
+                tools.push(PLAN_TOOL.clone());
             }
-        }
-    }
 
-    if config.web_search_request {
-        tools.push(OpenAiTool::WebSearch {});
-    }
+            if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
+                match apply_patch_tool_type {
+                    ApplyPatchToolType::Freeform => {
+                        tools.push(create_apply_patch_freeform_tool());
+                    }
+                    ApplyPatchToolType::Function => {
+                        tools.push(create_apply_patch_json_tool());
+                    }
+                }
+            }
 
-    // Include the view_image tool so the agent can attach images to context.
-    if config.include_view_image_tool {
-        tools.push(create_view_image_tool());
-    }
+            if config.web_search_request {
+                tools.push(OpenAiTool::WebSearch {});
+            }
 
-    // Include the create_subagent_task tool for multi-agent coordination.
-    if config.include_subagent_task_tool {
-        tools.push(create_subagent_task_tool());
-    }
+            // Include the view_image tool so the agent can attach images to context.
+            if config.include_view_image_tool {
+                tools.push(create_view_image_tool());
+            }
 
-    // Add store_context tool for main agent to store context items
-    let mut context_properties = BTreeMap::new();
-    context_properties.insert(
-        "id".to_string(),
-        JsonSchema::String {
-            description: Some(
-                "Unique identifier for the context item (use snake_case)".to_string(),
-            ),
-        },
-    );
-    context_properties.insert(
-        "summary".to_string(),
-        JsonSchema::String {
-            description: Some("Brief summary of the context content".to_string()),
-        },
-    );
-    context_properties.insert(
-        "content".to_string(),
-        JsonSchema::String {
-            description: Some("Detailed content of the context item".to_string()),
-        },
-    );
+            // Include the create_subagent_task tool for multi-agent coordination.
+            if config.include_subagent_task_tool {
+                tools.push(create_subagent_task_tool());
+            }
 
-    tools.push(OpenAiTool::Function(ResponsesApiTool {
-        name: "store_context".to_string(),
-        description:
-            "Store a context item containing important findings or analysis for future use"
-                .to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties: context_properties,
-            required: Some(vec![
+            // Add read_file tool for both Explorer and Coder agents
+            let mut read_properties = BTreeMap::new();
+            read_properties.insert(
+                "file_path".to_string(),
+                JsonSchema::String {
+                    description: Some("Path to the file to read".to_string()),
+                },
+            );
+
+            tools.push(OpenAiTool::Function(ResponsesApiTool {
+                name: "read_file".to_string(),
+                description: "Read the contents of a file".to_string(),
+                strict: false,
+                parameters: JsonSchema::Object {
+                    properties: read_properties,
+                    required: Some(vec!["file_path".to_string()]),
+                    additional_properties: Some(false),
+                },
+            }));
+
+            // Add write_file tool only for Coder agents
+            if matches!(agent_type, AgentType::Coder) {
+                let mut write_properties = BTreeMap::new();
+                write_properties.insert(
+                    "file_path".to_string(),
+                    JsonSchema::String {
+                        description: Some("Path to the file to write".to_string()),
+                    },
+                );
+                write_properties.insert(
+                    "content".to_string(),
+                    JsonSchema::String {
+                        description: Some("Content to write to the file".to_string()),
+                    },
+                );
+
+                tools.push(OpenAiTool::Function(ResponsesApiTool {
+                    name: "write_file".to_string(),
+                    description: "Write content to a file".to_string(),
+                    strict: false,
+                    parameters: JsonSchema::Object {
+                        properties: write_properties,
+                        required: Some(vec!["file_path".to_string(), "content".to_string()]),
+                        additional_properties: Some(false),
+                    },
+                }));
+            }
+
+            // Add store_context tool for subagents as well
+            let mut context_properties = BTreeMap::new();
+            context_properties.insert(
                 "id".to_string(),
+                JsonSchema::String {
+                    description: Some(
+                        "Unique identifier for the context item (use snake_case)".to_string(),
+                    ),
+                },
+            );
+            context_properties.insert(
                 "summary".to_string(),
+                JsonSchema::String {
+                    description: Some("Brief summary of the context content".to_string()),
+                },
+            );
+            context_properties.insert(
                 "content".to_string(),
-            ]),
-            additional_properties: Some(false),
-        },
-    }));
+                JsonSchema::String {
+                    description: Some("Detailed content of the context item".to_string()),
+                },
+            );
 
-    if let Some(mcp_tools) = mcp_tools {
-        // Ensure deterministic ordering to maximize prompt cache hits.
-        let mut entries: Vec<(String, mcp_types::Tool)> = mcp_tools.into_iter().collect();
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
+            tools.push(OpenAiTool::Function(ResponsesApiTool {
+                name: "store_context".to_string(),
+                description:
+                    "Store a context item containing important findings or analysis for future use"
+                        .to_string(),
+                strict: false,
+                parameters: JsonSchema::Object {
+                    properties: context_properties,
+                    required: Some(vec![
+                        "id".to_string(),
+                        "summary".to_string(),
+                        "content".to_string(),
+                    ]),
+                    additional_properties: Some(false),
+                },
+            }));
 
-        for (name, tool) in entries.into_iter() {
-            match mcp_tool_to_openai_tool(name.clone(), tool.clone()) {
-                Ok(converted_tool) => tools.push(OpenAiTool::Function(converted_tool)),
-                Err(e) => {
-                    tracing::error!("Failed to convert {name:?} MCP tool to OpenAI tool: {e:?}");
+            // Add MCP tools for subagents
+            if let Some(mcp_tools) = mcp_tools {
+                // Ensure deterministic ordering to maximize prompt cache hits.
+                let mut entries: Vec<(String, mcp_types::Tool)> = mcp_tools.into_iter().collect();
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+                for (name, tool) in entries.into_iter() {
+                    match mcp_tool_to_openai_tool(name.clone(), tool.clone()) {
+                        Ok(converted_tool) => tools.push(OpenAiTool::Function(converted_tool)),
+                        Err(e) => {
+                            tracing::error!("Failed to convert {name:?} MCP tool to OpenAI tool: {e:?}");
+                        }
+                    }
                 }
             }
         }
@@ -840,7 +965,7 @@ mod tests {
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
         });
-        let tools = get_openai_tools(&config, Some(HashMap::new()));
+        let tools = get_openai_tools(&config, Some(HashMap::new()), AgentType::Explorer);
 
         assert_eq_tool_names(
             &tools,
@@ -862,7 +987,7 @@ mod tests {
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
         });
-        let tools = get_openai_tools(&config, Some(HashMap::new()));
+        let tools = get_openai_tools(&config, Some(HashMap::new()), AgentType::Explorer);
 
         assert_eq_tool_names(
             &tools,

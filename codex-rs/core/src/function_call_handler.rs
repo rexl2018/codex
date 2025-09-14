@@ -83,7 +83,7 @@ impl<E: FunctionExecutor> FunctionCallHandler<E> {
     ) -> FunctionCallOutputPayload {
         #[derive(Deserialize)]
         struct ShellArgs {
-            command: String,
+            command: Vec<String>,
         }
 
         let args = match serde_json::from_str::<ShellArgs>(&arguments) {
@@ -97,8 +97,9 @@ impl<E: FunctionExecutor> FunctionCallHandler<E> {
             }
         };
 
-        debug!("Executing shell command: {}", args.command);
-        self.executor.execute_shell(args.command, context).await
+        let command_str = args.command.join(" ");
+        debug!("Executing shell command: {}", command_str);
+        self.executor.execute_shell(command_str, context).await
     }
 
     async fn handle_read_file_call(
