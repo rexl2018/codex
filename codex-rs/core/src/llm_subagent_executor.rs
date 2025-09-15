@@ -259,22 +259,11 @@ impl LLMSubagentExecutor {
     }
 
     /// Build initial conversation messages
+    /// Note: System message is now handled via base_instructions_override in get_llm_response
     fn build_initial_messages(&self, task: &SubagentTask) -> Vec<Message> {
-        let system_message = match task.agent_type {
-            SubagentType::Explorer => get_explorer_system_message(),
-            SubagentType::Coder => get_coder_system_message(),
-        };
-
         let task_prompt = self.build_task_prompt(task);
 
         vec![
-            codex_protocol::models::ResponseItem::Message {
-                id: None,
-                role: "system".to_string(),
-                content: vec![codex_protocol::models::ContentItem::OutputText {
-                    text: system_message.to_string(),
-                }],
-            },
             codex_protocol::models::ResponseItem::Message {
                 id: None,
                 role: "user".to_string(),
@@ -337,10 +326,16 @@ impl LLMSubagentExecutor {
                 .collect::<Vec<_>>()
         );
 
+        // Use subagent-specific system message as base instructions to avoid inheriting main agent's prompt
+        let subagent_base_instructions = match task.agent_type {
+            SubagentType::Explorer => get_explorer_system_message(),
+            SubagentType::Coder => get_coder_system_message(),
+        };
+
         let prompt = Prompt {
             input: prompt_items,
             tools,
-            base_instructions_override: None,
+            base_instructions_override: Some(subagent_base_instructions.to_string()),
             agent_state_info: None, // Subagents don't need state info
         };
 

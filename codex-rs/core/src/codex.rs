@@ -238,7 +238,10 @@ async fn detect_agent_state(multi_agent_components: &Option<MultiAgentComponents
     };
 
     // Check if a new user task has been created
-    if components.new_user_task_created.load(std::sync::atomic::Ordering::Relaxed) {
+    if components
+        .new_user_task_created
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
         return AgentState::AgentTaskCreated;
     }
 
@@ -1481,12 +1484,14 @@ async fn submission_loop(
                     // no current task, spawn a new one
                     tracing::debug!("Creating agent task for UserInput: sub_id={}", sub.id);
                     tracing::info!("Creating agent task for UserInput: sub_id={}", sub.id);
-                    
+
                     // Set the flag to indicate a new user task has been created
                     if let Some(components) = &sess.multi_agent_components {
-                        components.new_user_task_created.store(true, std::sync::atomic::Ordering::Relaxed);
+                        components
+                            .new_user_task_created
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    
+
                     let task =
                         AgentTask::spawn(sess.clone(), Arc::clone(&turn_context), sub.id, items);
                     sess.set_task(task);
@@ -2715,41 +2720,41 @@ async fn handle_create_subagent_task(
             "🆕 AGENT TASK CREATED STATE: Allowing {} subagent creation due to new user task",
             args.agent_type
         );
-        
+
         // Skip all blocking logic and proceed directly to task creation
         let selected_context_refs = if !args.context_refs.is_empty() {
             args.context_refs
         } else {
-             // Try to get some relevant contexts intelligently
-             match multi_agent_components
-                 .context_repo
-                 .query_contexts(&crate::context_store::ContextQuery {
-                     ids: None,
-                     tags: None,
-                     created_by: None,
-                     limit: Some(5), // Limit to 5 contexts
-                 })
-                 .await
-             {
-                 Ok(contexts) => {
-                     let refs: Vec<String> = contexts.iter().map(|ctx| ctx.id.clone()).collect();
-                     tracing::info!(
-                         "Selected {} available contexts for subagent '{}': {:?}",
-                         refs.len(),
-                         args.title,
-                         refs
-                     );
-                     refs
-                 }
-                 Err(e) => {
-                     tracing::warn!(
-                         "Failed to query contexts for subagent '{}', using empty context_refs: {}",
-                         args.title,
-                         e
-                     );
-                     Vec::new()
-                 }
-             }
+            // Try to get some relevant contexts intelligently
+            match multi_agent_components
+                .context_repo
+                .query_contexts(&crate::context_store::ContextQuery {
+                    ids: None,
+                    tags: None,
+                    created_by: None,
+                    limit: Some(5), // Limit to 5 contexts
+                })
+                .await
+            {
+                Ok(contexts) => {
+                    let refs: Vec<String> = contexts.iter().map(|ctx| ctx.id.clone()).collect();
+                    tracing::info!(
+                        "Selected {} available contexts for subagent '{}': {:?}",
+                        refs.len(),
+                        args.title,
+                        refs
+                    );
+                    refs
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to query contexts for subagent '{}', using empty context_refs: {}",
+                        args.title,
+                        e
+                    );
+                    Vec::new()
+                }
+            }
         };
 
         // Create the subagent task specification
@@ -2759,7 +2764,7 @@ async fn handle_create_subagent_task(
             description: args.description.clone(),
             context_refs: selected_context_refs,
             bootstrap_paths: args.bootstrap_paths,
-            max_turns: Some(100),      // Default to 100 turns
+            max_turns: Some(30),       // Default to 100 turns
             timeout_ms: Some(1800000), // Default to 30 minutes timeout
         };
 
@@ -2799,7 +2804,9 @@ async fn handle_create_subagent_task(
                             response.push_str("\nSubagent launched and executing task...");
 
                             // Reset the flag when subagent is successfully launched
-                            multi_agent_components.new_user_task_created.store(false, std::sync::atomic::Ordering::Relaxed);
+                            multi_agent_components
+                                .new_user_task_created
+                                .store(false, std::sync::atomic::Ordering::Relaxed);
                         }
                         Err(e) => {
                             let event = Event {
