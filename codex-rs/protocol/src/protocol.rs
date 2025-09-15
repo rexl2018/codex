@@ -201,6 +201,26 @@ pub enum Op {
         query: ContextQuery,
     },
 
+    /// Get full contexts by IDs
+    GetContexts {
+        /// Context IDs to retrieve
+        ids: Vec<String>,
+    },
+
+    /// Save contexts to file
+    SaveContextsToFile {
+        /// File path to save to
+        file_path: String,
+        /// Context IDs to save (empty means all)
+        ids: Option<Vec<String>>,
+    },
+
+    /// Load contexts from file
+    LoadContextsFromFile {
+        /// File path to load from
+        file_path: String,
+    },
+
     /// Update context
     UpdateContext {
         /// Context ID
@@ -592,8 +612,17 @@ pub enum EventMsg {
     /// Context stored
     ContextStored(ContextStoredEvent),
 
-    /// Context query result
+    /// Context query result event
     ContextQueryResult(ContextQueryResultEvent),
+
+    /// Get contexts result event
+    GetContextsResult(GetContextsResultEvent),
+
+    /// Save contexts to file result event
+    SaveContextsToFileResult(SaveContextsToFileResultEvent),
+
+    /// Load contexts from file result event
+    LoadContextsFromFileResult(LoadContextsFromFileResultEvent),
 
     /// Multi-agent coordination status
     MultiAgentStatus(MultiAgentStatusEvent),
@@ -1356,6 +1385,31 @@ pub struct ContextQueryResultEvent {
     pub query_id: String,
     pub contexts: Vec<ContextSummary>,
     pub total_count: usize,
+}
+
+/// Get contexts result event
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct GetContextsResultEvent {
+    pub contexts: Vec<ContextItem>,
+    pub total_count: usize,
+}
+
+/// Save contexts to file result event
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct SaveContextsToFileResultEvent {
+    pub file_path: String,
+    pub success: bool,
+    pub message: String,
+    pub contexts_saved: usize,
+}
+
+/// Load contexts from file result event
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
+pub struct LoadContextsFromFileResultEvent {
+    pub file_path: String,
+    pub success: bool,
+    pub message: String,
+    pub contexts_loaded: usize,
 }
 
 /// Multi-agent status event

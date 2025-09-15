@@ -20,6 +20,7 @@ pub enum SlashCommand {
     Diff,
     Mention,
     Status,
+    Ci,
     Mcp,
     Logout,
     Quit,
@@ -40,6 +41,7 @@ impl SlashCommand {
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Approvals => "choose what Codex can do without approval",
+            SlashCommand::Ci => "manage context items (list, get, del, savefile, loadfile, help)",
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Logout => "log out of Codex",
             #[cfg(debug_assertions)]
@@ -65,6 +67,7 @@ impl SlashCommand {
             SlashCommand::Diff
             | SlashCommand::Mention
             | SlashCommand::Status
+            | SlashCommand::Ci
             | SlashCommand::Mcp
             | SlashCommand::Quit => true,
 

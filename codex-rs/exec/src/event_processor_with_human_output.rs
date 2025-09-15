@@ -568,6 +568,9 @@ impl EventProcessor for EventProcessorWithHumanOutput {
             EventMsg::SubagentCompleted(_) => {}
             EventMsg::ContextStored(_) => {}
             EventMsg::ContextQueryResult(_) => {}
+            EventMsg::GetContextsResult(_) => {}
+            EventMsg::SaveContextsToFileResult(_) => {}
+            EventMsg::LoadContextsFromFileResult(_) => {}
             EventMsg::MultiAgentStatus(_) => {}
             EventMsg::SubagentForceCompleted(_) => {}
             EventMsg::SubagentCancelled(_) => {}

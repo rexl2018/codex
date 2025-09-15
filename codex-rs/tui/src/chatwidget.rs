@@ -20,15 +20,18 @@ use codex_core::protocol::EventMsg;
 use codex_core::protocol::ExecApprovalRequestEvent;
 use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
+use codex_core::protocol::GetContextsResultEvent;
 use codex_core::protocol::InputItem;
 use codex_core::protocol::InputMessageKind;
 use codex_core::protocol::ListCustomPromptsResponseEvent;
+use codex_core::protocol::LoadContextsFromFileResultEvent;
 use codex_core::protocol::McpListToolsResponseEvent;
 use codex_core::protocol::McpToolCallBeginEvent;
 use codex_core::protocol::McpToolCallEndEvent;
 use codex_core::protocol::MultiAgentStatusEvent;
 use codex_core::protocol::Op;
 use codex_core::protocol::PatchApplyBeginEvent;
+use codex_core::protocol::SaveContextsToFileResultEvent;
 use codex_core::protocol::StreamErrorEvent;
 use codex_core::protocol::SubagentCancelledEvent;
 use codex_core::protocol::SubagentCompletedEvent;
@@ -484,12 +487,101 @@ impl ChatWidget {
     }
 
     fn on_context_query_result(&mut self, ev: ContextQueryResultEvent) {
-        let message = format!(
-            "🔍 Context query result: {} contexts found (total: {})",
-            ev.contexts.len(),
-            ev.total_count
-        );
-        self.on_background_event(message);
+        if ev.contexts.is_empty() {
+            let message = "📋 Context Items List:\n\nNo context items found.".to_string();
+            self.add_to_history(history_cell::new_background_event(message));
+        } else {
+            let mut message = format!(
+                "📋 Context Items List ({} items found):\n\n",
+                ev.contexts.len()
+            );
+
+            for (i, context) in ev.contexts.iter().enumerate() {
+                message.push_str(&format!(
+                    "{}. **{}**\n   Summary: {}\n   Size: {} bytes\n   Created by: {}\n   Created at: {}\n",
+                    i + 1,
+                    context.id,
+                    context.summary,
+                    context.size_bytes,
+                    context.created_by,
+                    context.created_at
+                ));
+
+                // For single item queries (like /ci get), show a note about content
+                if ev.contexts.len() == 1 {
+                    message.push_str("\n**Note:** Context summaries only show metadata. ");
+                    message.push_str("To view full content, the system would need to implement ");
+                    message.push_str("a separate operation to fetch complete context data.\n");
+                }
+
+                message.push('\n');
+            }
+
+            if ev.total_count > ev.contexts.len() {
+                message.push_str(&format!(
+                    "\n... and {} more items (showing first {})",
+                    ev.total_count - ev.contexts.len(),
+                    ev.contexts.len()
+                ));
+            }
+
+            self.add_to_history(history_cell::new_background_event(message));
+        }
+    }
+
+    fn on_get_contexts_result(&mut self, ev: GetContextsResultEvent) {
+        if ev.contexts.is_empty() {
+            let message = "📋 Context Items:\n\nNo context items found.".to_string();
+            self.add_to_history(history_cell::new_background_event(message));
+        } else {
+            let mut message = format!("📋 Context Items ({} items found):\n\n", ev.contexts.len());
+
+            for (i, context) in ev.contexts.iter().enumerate() {
+                if ev.contexts.len() == 1 {
+                    // For single context (like /ci get), show full content
+                    message.push_str(&format!(
+                        "**{}**\n\n**Summary:** {}\n**Size:** {} bytes\n\n**Full Content:**\n{}",
+                        context.id,
+                        context.summary,
+                        context.content.len(),
+                        if context.content.len() > 2000 {
+                            format!(
+                                "{}...\n\n[Content truncated - {} total characters]",
+                                &context.content[..2000],
+                                context.content.len()
+                            )
+                        } else {
+                            context.content.clone()
+                        }
+                    ));
+                } else {
+                    // For multiple contexts, show summary
+                    message.push_str(&format!(
+                        "{}. **{}**\n   Summary: {}\n   Size: {} bytes\n",
+                        i + 1,
+                        context.id,
+                        context.summary,
+                        context.content.len()
+                    ));
+                }
+
+                message.push('\n');
+            }
+
+            self.add_to_history(history_cell::new_background_event(message));
+        }
+    }
+
+    fn on_save_contexts_to_file_result(&mut self, ev: SaveContextsToFileResultEvent) {
+        let icon = if ev.success { "💾" } else { "❌" };
+        let message = format!("{} Save to File: {}", icon, ev.message);
+        self.add_to_history(history_cell::new_background_event(message));
+    }
+
+    fn on_load_contexts_from_file_result(&mut self, ev: LoadContextsFromFileResultEvent) {
+        let icon = if ev.success { "📂" } else { "❌" };
+        let message = format!("{} Load from File: {}", icon, ev.message);
+        self.add_to_history(history_cell::new_background_event(message));
     }
 
     fn on_multi_agent_status(&mut self, ev: MultiAgentStatusEvent) {
@@ -886,16 +978,21 @@ impl ChatWidget {
             _ => {
                 match self.bottom_pane.handle_key_event(key_event) {
                     InputResult::Submitted(text) => {
-                        // If a task is running, queue the user input to be sent after the turn completes.
-                        let user_message = UserMessage {
-                            text,
-                            image_paths: self.bottom_pane.take_recent_submission_images(),
-                        };
-                        if self.bottom_pane.is_task_running() {
-                            self.queued_user_messages.push_back(user_message);
-                            self.refresh_queued_user_messages();
+                        // Check if this is a /ci command
+                        if text.trim().starts_with("/ci ") {
+                            self.handle_ci_command(text.trim());
                         } else {
-                            self.submit_user_message(user_message);
+                            // If a task is running, queue the user input to be sent after the turn completes.
+                            let user_message = UserMessage {
+                                text,
+                                image_paths: self.bottom_pane.take_recent_submission_images(),
+                            };
+                            if self.bottom_pane.is_task_running() {
+                                self.queued_user_messages.push_back(user_message);
+                                self.refresh_queued_user_messages();
+                            } else {
+                                self.submit_user_message(user_message);
+                            }
                         }
                     }
                     InputResult::Command(cmd) => {
@@ -981,6 +1078,10 @@ impl ChatWidget {
             }
             SlashCommand::Status => {
                 self.add_status_output();
+            }
+            SlashCommand::Ci => {
+                // 显示帮助信息，因为slash command不支持参数
+                self.handle_ci_command("/ci help");
             }
             SlashCommand::Mcp => {
                 self.add_mcp_output();
@@ -1069,6 +1170,13 @@ impl ChatWidget {
 
     fn submit_user_message(&mut self, user_message: UserMessage) {
         let UserMessage { text, image_paths } = user_message;
+
+        // Check if this is a /ci command and handle it locally
+        if !text.is_empty() && text.starts_with("/ci ") {
+            self.handle_ci_command(&text);
+            return;
+        }
+
         let mut items: Vec<InputItem> = Vec::new();
 
         if !text.is_empty() {
@@ -1212,6 +1320,9 @@ impl ChatWidget {
             EventMsg::SubagentCompleted(ev) => self.on_subagent_completed(ev),
             EventMsg::ContextStored(ev) => self.on_context_stored(ev),
             EventMsg::ContextQueryResult(ev) => self.on_context_query_result(ev),
+            EventMsg::GetContextsResult(ev) => self.on_get_contexts_result(ev),
+            EventMsg::SaveContextsToFileResult(ev) => self.on_save_contexts_to_file_result(ev),
+            EventMsg::LoadContextsFromFileResult(ev) => self.on_load_contexts_from_file_result(ev),
             EventMsg::MultiAgentStatus(ev) => self.on_multi_agent_status(ev),
             EventMsg::SubagentForceCompleted(ev) => self.on_subagent_force_completed(ev),
             EventMsg::SubagentCancelled(ev) => self.on_subagent_cancelled(ev),
@@ -1480,6 +1591,178 @@ impl ChatWidget {
             return;
         }
         self.submit_user_message(text.into());
+    }
+
+    /// Handle /ci commands for context items management
+    fn handle_ci_command(&mut self, command: &str) {
+        let parts: Vec<&str> = command.split_whitespace().collect();
+
+        if parts.len() < 2 {
+            self.add_to_history(history_cell::new_error_event(
+                "Usage: /ci <subcommand> [args]. Use '/ci help' for more information.".to_string(),
+            ));
+            return;
+        }
+
+        let subcommand = parts[1];
+        match subcommand {
+            "help" => {
+                let help_text = r#"Context Items Commands:
+
+/ci list                    - List all current context items
+/ci get <id>               - Show content of context item with given ID
+/ci del <id>               - Delete context item with given ID
+/ci savefile <filename>    - Save all context items to a file
+/ci loadfile <filename>    - Load context items from a file
+/ci help                   - Show this help message
+
+Context items are pieces of information that provide context to the AI assistant during conversations."#;
+
+                self.add_to_history(history_cell::new_background_event(help_text.to_string()));
+            }
+            "list" => {
+                self.handle_ci_list();
+            }
+            "get" => {
+                if parts.len() < 3 {
+                    self.add_to_history(history_cell::new_error_event(
+                        "Usage: /ci get <id>".to_string(),
+                    ));
+                } else {
+                    self.handle_ci_get(parts[2]);
+                }
+            }
+            "del" => {
+                if parts.len() < 3 {
+                    self.add_to_history(history_cell::new_error_event(
+                        "Usage: /ci del <id>".to_string(),
+                    ));
+                } else {
+                    self.handle_ci_del(parts[2]);
+                }
+            }
+            "savefile" => {
+                if parts.len() < 3 {
+                    self.add_to_history(history_cell::new_error_event(
+                        "Usage: /ci savefile <filename>".to_string(),
+                    ));
+                } else {
+                    self.handle_ci_savefile(parts[2]);
+                }
+            }
+            "loadfile" => {
+                if parts.len() < 3 {
+                    self.add_to_history(history_cell::new_error_event(
+                        "Usage: /ci loadfile <filename>".to_string(),
+                    ));
+                } else {
+                    self.handle_ci_loadfile(parts[2]);
+                }
+            }
+            _ => {
+                self.add_to_history(history_cell::new_error_event(format!(
+                    "Unknown subcommand: '{}'. Use '/ci help' for available commands.",
+                    subcommand
+                )));
+            }
+        }
+        self.request_redraw();
+    }
+
+    /// Handle /ci list command
+    fn handle_ci_list(&mut self) {
+        use codex_core::protocol::ContextQuery;
+
+        // Query all context items
+        let query = ContextQuery {
+            ids: None,
+            tags: None,
+            created_by: None,
+            limit: Some(100), // Limit to 100 items for display
+        };
+
+        // Send query operation to core
+        let op = Op::QueryContextStore { query };
+        if let Err(e) = self.codex_op_tx.send(op) {
+            self.add_to_history(history_cell::new_error_event(format!(
+                "Failed to query context store: {}",
+                e
+            )));
+        } else {
+            self.add_to_history(history_cell::new_background_event(
+                "Querying context items...".to_string(),
+            ));
+        }
+    }
+
+    /// Handle /ci get <id> command
+    fn handle_ci_get(&mut self, id: &str) {
+        // Use the new GetContexts operation to get full content
+        let op = Op::GetContexts {
+            ids: vec![id.to_string()],
+        };
+
+        if let Err(e) = self.codex_op_tx.send(op) {
+            self.add_to_history(history_cell::new_error_event(format!(
+                "Failed to get context item '{}': {}",
+                id, e
+            )));
+        } else {
+            self.add_to_history(history_cell::new_background_event(format!(
+                "Retrieving full content for context item '{}'...",
+                id
+            )));
+        }
+    }
+
+    /// Handle /ci del <id> command
+    fn handle_ci_del(&mut self, id: &str) {
+        // Note: The current protocol doesn't have a delete operation exposed to TUI
+        // This would need to be added to the protocol if deletion from TUI is required
+        self.add_to_history(history_cell::new_error_event(
+            format!("Context item deletion from TUI is not currently supported.\nContext item '{}' can only be deleted through the core API.", id)
+        ));
+    }
+
+    /// Handle /ci savefile <filename> command
+    fn handle_ci_savefile(&mut self, filename: &str) {
+        // Use the new SaveContextsToFile operation
+        let op = Op::SaveContextsToFile {
+            file_path: filename.to_string(),
+            ids: None, // Save all contexts
+        };
+
+        if let Err(e) = self.codex_op_tx.send(op) {
+            self.add_to_history(history_cell::new_error_event(format!(
+                "Failed to save context items to '{}': {}",
+                filename, e
+            )));
+        } else {
+            self.add_to_history(history_cell::new_background_event(format!(
+                "Saving all context items to '{}'...",
+                filename
+            )));
+        }
+    }
+
+    /// Handle /ci loadfile <filename> command
+    fn handle_ci_loadfile(&mut self, filename: &str) {
+        // Use the new LoadContextsFromFile operation
+        let op = Op::LoadContextsFromFile {
+            file_path: filename.to_string(),
+        };
+
+        if let Err(e) = self.codex_op_tx.send(op) {
+            self.add_to_history(history_cell::new_error_event(format!(
+                "Failed to load context items from '{}': {}",
+                filename, e
+            )));
+        } else {
+            self.add_to_history(history_cell::new_background_event(format!(
+                "Loading context items from '{}'...",
+                filename
+            )));
+        }
     }
 
     pub(crate) fn token_usage(&self) -> TokenUsage {

@@ -416,7 +416,14 @@ impl ChatComposer {
 
                     match sel {
                         CommandItem::Builtin(cmd) => {
-                            return (InputResult::Command(cmd), true);
+                            // For ci command, don't dispatch immediately but let user continue typing
+                            if cmd == SlashCommand::Ci {
+                                self.textarea.set_text("/ci ");
+                                self.textarea.set_cursor(4); // Position cursor after "/ci "
+                                return (InputResult::None, true);
+                            } else {
+                                return (InputResult::Command(cmd), true);
+                            }
                         }
                         CommandItem::UserPrompt(_) => {
                             if let Some(contents) = prompt_content {
@@ -755,14 +762,10 @@ impl ChatComposer {
                 // If we're in a paste-like burst capture, treat Enter as part of the burst
                 // and accumulate it rather than submitting or inserting immediately.
                 // Do not treat Enter as paste inside a slash-command context.
+                // However, /ci with subcommands should be treated as regular text input.
+                let first_line = self.textarea.text().lines().next().unwrap_or("");
                 let in_slash_context = matches!(self.active_popup, ActivePopup::Command(_))
-                    || self
-                        .textarea
-                        .text()
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .starts_with('/');
+                    || (first_line.starts_with('/') && !first_line.starts_with("/ci "));
                 if self.paste_burst.is_active() && !in_slash_context {
                     let now = Instant::now();
                     if self.paste_burst.append_newline_if_active(now) {
@@ -1132,7 +1135,8 @@ impl ChatComposer {
     /// the text so the popup is shown/updated/hidden as appropriate.
     fn sync_command_popup(&mut self) {
         let first_line = self.textarea.text().lines().next().unwrap_or("");
-        let input_starts_with_slash = first_line.starts_with('/');
+        // Don't show slash command popup for /ci with subcommands
+        let input_starts_with_slash = first_line.starts_with('/') && !first_line.starts_with("/ci ");
         match &mut self.active_popup {
             ActivePopup::Command(popup) => {
                 if input_starts_with_slash {

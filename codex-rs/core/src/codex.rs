@@ -142,6 +142,9 @@ use codex_protocol::protocol::ContextItem;
 use codex_protocol::protocol::ContextQuery;
 use codex_protocol::protocol::ContextQueryResultEvent;
 use codex_protocol::protocol::ContextStoredEvent;
+use codex_protocol::protocol::GetContextsResultEvent;
+use codex_protocol::protocol::SaveContextsToFileResultEvent;
+use codex_protocol::protocol::LoadContextsFromFileResultEvent;
 use codex_protocol::protocol::ContextSummary;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::SubagentMetadata;
@@ -1781,6 +1784,11 @@ async fn submission_loop(
             }
             Op::QueryContextStore { query } => {
                 if let Some(ref components) = sess.multi_agent_components {
+                    // Check if this is a single context query (like /ci get <id>) before moving query
+                    let is_single_context_query = query.ids.as_ref()
+                        .map(|ids| ids.len() == 1)
+                        .unwrap_or(false);
+                    
                     // Convert protocol ContextQuery to context_store ContextQuery
                     let context_query = crate::context_store::ContextQuery {
                         ids: query.ids,
@@ -1791,34 +1799,62 @@ async fn submission_loop(
                     match components.context_repo.query_contexts(&context_query).await {
                         Ok(contexts) => {
                             let total_count = contexts.len();
-                            let summaries: Vec<ContextSummary> = contexts
-                                .into_iter()
-                                .map(|ctx| {
-                                    let size_bytes = ctx.size_bytes();
-                                    ContextSummary {
-                                        id: ctx.id,
-                                        summary: ctx.summary,
-                                        created_by: ctx.created_by,
-                                        created_at: ctx
-                                            .created_at
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default()
-                                            .as_secs()
-                                            .to_string(),
-                                        size_bytes,
-                                    }
-                                })
-                                .collect();
+                            
+                            // Check if this is a single context query (like /ci get <id>)
+                            // If so, we'll send the full content via a background event
+                            if contexts.len() == 1 && is_single_context_query {
+                                let ctx = &contexts[0];
+                                let full_content_message = format!(
+                                    "📋 Context Item: **{}**\n\n**Summary:** {}\n**Size:** {} bytes\n**Created by:** {}\n**Created at:** {}\n\n**Full Content:**\n{}",
+                                    ctx.id,
+                                    ctx.summary,
+                                    ctx.size_bytes(),
+                                    ctx.created_by,
+                                    ctx.created_at
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs(),
+                                    ctx.content
+                                );
+                                
+                                let event = Event {
+                                    id: sub.id,
+                                    msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
+                                        message: full_content_message,
+                                    }),
+                                };
+                                sess.send_event(event).await;
+                            } else {
+                                // For multiple contexts or list queries, return summaries as before
+                                let summaries: Vec<ContextSummary> = contexts
+                                    .into_iter()
+                                    .map(|ctx| {
+                                        let size_bytes = ctx.size_bytes();
+                                        ContextSummary {
+                                            id: ctx.id,
+                                            summary: ctx.summary,
+                                            created_by: ctx.created_by,
+                                            created_at: ctx
+                                                .created_at
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_secs()
+                                                .to_string(),
+                                            size_bytes,
+                                        }
+                                    })
+                                    .collect();
 
-                            let event = Event {
-                                id: sub.id,
-                                msg: EventMsg::ContextQueryResult(ContextQueryResultEvent {
-                                    query_id: uuid::Uuid::new_v4().to_string(),
-                                    contexts: summaries,
-                                    total_count,
-                                }),
-                            };
-                            sess.send_event(event).await;
+                                let event = Event {
+                                    id: sub.id,
+                                    msg: EventMsg::ContextQueryResult(ContextQueryResultEvent {
+                                        query_id: uuid::Uuid::new_v4().to_string(),
+                                        contexts: summaries,
+                                        total_count,
+                                    }),
+                                };
+                                sess.send_event(event).await;
+                            }
                         }
                         Err(e) => {
                             let event = Event {
@@ -1835,6 +1871,244 @@ async fn submission_loop(
                         id: sub.id,
                         msg: EventMsg::Error(ErrorEvent {
                             message: "Multi-agent functionality not enabled".to_string(),
+                        }),
+                    };
+                    sess.send_event(event).await;
+                }
+            }
+            Op::GetContexts { ids } => {
+                if let Some(ref components) = sess.multi_agent_components {
+                    match components.context_repo.get_contexts(&ids).await {
+                        Ok(contexts) => {
+                            let total_count = contexts.len();
+                            // Convert full Context objects to ContextItem for the response
+                            let context_items: Vec<ContextItem> = contexts
+                                .into_iter()
+                                .map(|ctx| ContextItem {
+                                    id: ctx.id,
+                                    summary: ctx.summary,
+                                    content: ctx.content,
+                                })
+                                .collect();
+
+                            let event = Event {
+                                id: sub.id,
+                                msg: EventMsg::GetContextsResult(GetContextsResultEvent {
+                                    contexts: context_items,
+                                    total_count,
+                                }),
+                            };
+                            sess.send_event(event).await;
+                        }
+                        Err(e) => {
+                            let event = Event {
+                                id: sub.id,
+                                msg: EventMsg::Error(ErrorEvent {
+                                    message: format!("Get contexts failed: {}", e),
+                                }),
+                            };
+                            sess.send_event(event).await;
+                        }
+                    }
+                } else {
+                    let event = Event {
+                        id: sub.id,
+                        msg: EventMsg::Error(ErrorEvent {
+                            message: "Multi-agent functionality not enabled".to_string(),
+                        }),
+                    };
+                    sess.send_event(event).await;
+                }
+            }
+            Op::SaveContextsToFile { file_path, ids } => {
+                if let Some(ref components) = sess.multi_agent_components {
+                    // Get contexts to save
+                    let contexts_to_save = if let Some(ids) = ids {
+                        // Save specific contexts
+                        match components.context_repo.get_contexts(&ids).await {
+                            Ok(contexts) => contexts,
+                            Err(e) => {
+                                let event = Event {
+                                    id: sub.id,
+                                    msg: EventMsg::SaveContextsToFileResult(SaveContextsToFileResultEvent {
+                                        file_path: file_path.clone(),
+                                        success: false,
+                                        message: format!("Failed to get contexts: {}", e),
+                                        contexts_saved: 0,
+                                    }),
+                                };
+                                sess.send_event(event).await;
+                                continue;
+                            }
+                        }
+                    } else {
+                        // Save all contexts
+                        match components.context_repo.query_contexts(&crate::context_store::ContextQuery {
+                            ids: None,
+                            tags: None,
+                            created_by: None,
+                            limit: None,
+                        }).await {
+                            Ok(contexts) => contexts,
+                            Err(e) => {
+                                let event = Event {
+                                    id: sub.id,
+                                    msg: EventMsg::SaveContextsToFileResult(SaveContextsToFileResultEvent {
+                                        file_path: file_path.clone(),
+                                        success: false,
+                                        message: format!("Failed to query contexts: {}", e),
+                                        contexts_saved: 0,
+                                    }),
+                                };
+                                sess.send_event(event).await;
+                                continue;
+                            }
+                        }
+                    };
+
+                    // Convert to ContextItems for serialization
+                    let context_items: Vec<ContextItem> = contexts_to_save
+                        .iter()
+                        .map(|ctx| ContextItem {
+                            id: ctx.id.clone(),
+                            summary: ctx.summary.clone(),
+                            content: ctx.content.clone(),
+                        })
+                        .collect();
+
+                    // Save to file
+                    let result = tokio::task::spawn_blocking({
+                        let file_path = file_path.clone();
+                        let context_items = context_items.clone();
+                        move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                            let json_content = serde_json::to_string_pretty(&context_items)?;
+                            std::fs::write(&file_path, json_content)?;
+                            Ok(())
+                        }
+                    }).await;
+
+                    let event = match result {
+                        Ok(Ok(())) => Event {
+                            id: sub.id,
+                            msg: EventMsg::SaveContextsToFileResult(SaveContextsToFileResultEvent {
+                                file_path: file_path.clone(),
+                                success: true,
+                                message: format!("Successfully saved {} context items to '{}'", context_items.len(), file_path),
+                                contexts_saved: context_items.len(),
+                            }),
+                        },
+                        Ok(Err(e)) => Event {
+                            id: sub.id,
+                            msg: EventMsg::SaveContextsToFileResult(SaveContextsToFileResultEvent {
+                                file_path: file_path.clone(),
+                                success: false,
+                                message: format!("Failed to save file: {}", e),
+                                contexts_saved: 0,
+                            }),
+                        },
+                        Err(e) => Event {
+                            id: sub.id,
+                            msg: EventMsg::SaveContextsToFileResult(SaveContextsToFileResultEvent {
+                                file_path: file_path.clone(),
+                                success: false,
+                                message: format!("Task execution failed: {}", e),
+                                contexts_saved: 0,
+                            }),
+                        },
+                    };
+                    sess.send_event(event).await;
+                } else {
+                    let event = Event {
+                        id: sub.id,
+                        msg: EventMsg::SaveContextsToFileResult(SaveContextsToFileResultEvent {
+                            file_path: file_path.clone(),
+                            success: false,
+                            message: "Multi-agent functionality not enabled".to_string(),
+                            contexts_saved: 0,
+                        }),
+                    };
+                    sess.send_event(event).await;
+                }
+            }
+            Op::LoadContextsFromFile { file_path } => {
+                if let Some(ref components) = sess.multi_agent_components {
+                    // Load from file
+                    let result = tokio::task::spawn_blocking({
+                        let file_path = file_path.clone();
+                        move || -> Result<Vec<ContextItem>, Box<dyn std::error::Error + Send + Sync>> {
+                            let file_content = std::fs::read_to_string(&file_path)?;
+                            let context_items: Vec<ContextItem> = serde_json::from_str(&file_content)?;
+                            Ok(context_items)
+                        }
+                    }).await;
+
+                    let event = match result {
+                        Ok(Ok(context_items)) => {
+                            // Store each context item
+                            let mut stored_count = 0;
+                            let mut errors = Vec::new();
+
+                            for item in &context_items {
+                                let context = crate::context_store::Context::new(
+                                    item.id.clone(),
+                                    item.summary.clone(),
+                                    item.content.clone(),
+                                    "file_import".to_string(),
+                                    None,
+                                );
+
+                                match components.context_repo.store_context(context).await {
+                                    Ok(()) => stored_count += 1,
+                                    Err(e) => errors.push(format!("Failed to store context '{}': {}", item.id, e)),
+                                }
+                            }
+
+                            let success = errors.is_empty();
+                            let message = if success {
+                                format!("Successfully loaded {} context items from '{}'", stored_count, file_path)
+                            } else {
+                                format!("Loaded {} out of {} context items. Errors: {}", 
+                                    stored_count, context_items.len(), errors.join("; "))
+                            };
+
+                            Event {
+                                id: sub.id,
+                                msg: EventMsg::LoadContextsFromFileResult(LoadContextsFromFileResultEvent {
+                                    file_path: file_path.clone(),
+                                    success,
+                                    message,
+                                    contexts_loaded: stored_count,
+                                }),
+                            }
+                        },
+                        Ok(Err(e)) => Event {
+                            id: sub.id,
+                            msg: EventMsg::LoadContextsFromFileResult(LoadContextsFromFileResultEvent {
+                                file_path: file_path.clone(),
+                                success: false,
+                                message: format!("Failed to load file: {}", e),
+                                contexts_loaded: 0,
+                            }),
+                        },
+                        Err(e) => Event {
+                            id: sub.id,
+                            msg: EventMsg::LoadContextsFromFileResult(LoadContextsFromFileResultEvent {
+                                file_path: file_path.clone(),
+                                success: false,
+                                message: format!("Task execution failed: {}", e),
+                                contexts_loaded: 0,
+                            }),
+                        },
+                    };
+                    sess.send_event(event).await;
+                } else {
+                    let event = Event {
+                        id: sub.id,
+                        msg: EventMsg::LoadContextsFromFileResult(LoadContextsFromFileResultEvent {
+                            file_path: file_path.clone(),
+                            success: false,
+                            message: "Multi-agent functionality not enabled".to_string(),
+                            contexts_loaded: 0,
                         }),
                     };
                     sess.send_event(event).await;
