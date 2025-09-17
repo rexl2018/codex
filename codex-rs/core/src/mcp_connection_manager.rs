@@ -269,10 +269,43 @@ impl McpConnectionManager {
             .with_context(|| format!("tool call failed for `{server}/{tool}`"))
     }
 
+    /// Parse tool name and return (server_name, tool_name)
+    /// Handles two cases:
+    /// 1. If tool_name has ":数字" suffix (e.g., "claude-tools__Bash:0"), remove the suffix
+    /// 2. If tool_name lacks "xxx__" prefix (e.g., "Bash"), find and add the correct prefix
     pub fn parse_tool_name(&self, tool_name: &str) -> Option<(String, String)> {
-        self.tools
-            .get(tool_name)
-            .map(|tool| (tool.server_name.clone(), tool.tool_name.clone()))
+        // Step 1: Remove ":数字" suffix if present
+        let base_name = if let Some(colon_pos) = tool_name.find(':') {
+            let suffix = &tool_name[colon_pos + 1..];
+            // Only remove if suffix is purely numeric
+            if suffix.chars().all(|c| c.is_ascii_digit()) {
+                &tool_name[..colon_pos]
+            } else {
+                tool_name
+            }
+        } else {
+            tool_name
+        };
+
+        // Step 2: Try exact match first
+        if let Some(tool) = self.tools.get(base_name) {
+            return Some((tool.server_name.clone(), tool.tool_name.clone()));
+        }
+
+        // Step 3: If no "__" prefix, try to find a tool that ends with the given name
+        // This handles cases where OpenAI returns "Bash" but we registered "claude-tools__Bash"
+        if !base_name.contains("__") {
+            for (full_name, tool_info) in self.tools.iter() {
+                if let Some(pos) = full_name.find("__") {
+                    let actual_tool_name = &full_name[pos + 2..];
+                    if actual_tool_name == base_name {
+                        return Some((tool_info.server_name.clone(), tool_info.tool_name.clone()));
+                    }
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -422,5 +455,51 @@ mod tests {
             keys[1],
             "my_server__yet_another_e1c3987bd9c50b826cbe1687966f79f0c602d19ca"
         );
+    }
+
+    #[test]
+    fn test_parse_tool_name_with_fixes() {
+        // Create a mock McpConnectionManager with test tools
+        let tools = vec![
+            create_test_tool("claude-tools", "Read"),
+            create_test_tool("claude-tools", "Bash"),
+            create_test_tool("server1", "tool1"),
+        ];
+        let qualified_tools = qualify_tools(tools);
+        let manager = McpConnectionManager {
+            clients: HashMap::new(),
+            tools: qualified_tools,
+        };
+
+        // Test 1: Exact match (should work as before)
+        assert_eq!(
+            manager.parse_tool_name("claude-tools__Read"),
+            Some(("claude-tools".to_string(), "Read".to_string()))
+        );
+
+        // Test 2: With numeric suffix (should remove :0)
+        assert_eq!(
+            manager.parse_tool_name("claude-tools__Bash:0"),
+            Some(("claude-tools".to_string(), "Bash".to_string()))
+        );
+
+        // Test 3: Missing prefix (should find claude-tools__Read)
+        assert_eq!(
+            manager.parse_tool_name("Read"),
+            Some(("claude-tools".to_string(), "Read".to_string()))
+        );
+
+        // Test 4: Missing prefix with suffix (should remove :0 and find claude-tools__Bash)
+        assert_eq!(
+            manager.parse_tool_name("Bash:0"),
+            Some(("claude-tools".to_string(), "Bash".to_string()))
+        );
+
+        // Test 5: Non-numeric suffix (should not match)
+        assert_eq!(manager.parse_tool_name("Read:abc"), None);
+
+        // Test 6: Non-existent tool (should not match)
+        assert_eq!(manager.parse_tool_name("NonExistent"), None);
+        assert_eq!(manager.parse_tool_name("NonExistent:0"), None);
     }
 }

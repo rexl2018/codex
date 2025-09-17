@@ -142,11 +142,11 @@ use codex_protocol::protocol::ContextItem;
 use codex_protocol::protocol::ContextQuery;
 use codex_protocol::protocol::ContextQueryResultEvent;
 use codex_protocol::protocol::ContextStoredEvent;
-use codex_protocol::protocol::GetContextsResultEvent;
-use codex_protocol::protocol::SaveContextsToFileResultEvent;
-use codex_protocol::protocol::LoadContextsFromFileResultEvent;
 use codex_protocol::protocol::ContextSummary;
+use codex_protocol::protocol::GetContextsResultEvent;
 use codex_protocol::protocol::InitialHistory;
+use codex_protocol::protocol::LoadContextsFromFileResultEvent;
+use codex_protocol::protocol::SaveContextsToFileResultEvent;
 use codex_protocol::protocol::SubagentMetadata;
 use codex_protocol::protocol::SubagentType;
 
@@ -1785,10 +1785,12 @@ async fn submission_loop(
             Op::QueryContextStore { query } => {
                 if let Some(ref components) = sess.multi_agent_components {
                     // Check if this is a single context query (like /ci get <id>) before moving query
-                    let is_single_context_query = query.ids.as_ref()
+                    let is_single_context_query = query
+                        .ids
+                        .as_ref()
                         .map(|ids| ids.len() == 1)
                         .unwrap_or(false);
-                    
+
                     // Convert protocol ContextQuery to context_store ContextQuery
                     let context_query = crate::context_store::ContextQuery {
                         ids: query.ids,
@@ -1799,7 +1801,7 @@ async fn submission_loop(
                     match components.context_repo.query_contexts(&context_query).await {
                         Ok(contexts) => {
                             let total_count = contexts.len();
-                            
+
                             // Check if this is a single context query (like /ci get <id>)
                             // If so, we'll send the full content via a background event
                             if contexts.len() == 1 && is_single_context_query {
@@ -1816,7 +1818,7 @@ async fn submission_loop(
                                         .as_secs(),
                                     ctx.content
                                 );
-                                
+
                                 let event = Event {
                                     id: sub.id,
                                     msg: EventMsg::BackgroundEvent(BackgroundEventEvent {
@@ -1930,12 +1932,14 @@ async fn submission_loop(
                             Err(e) => {
                                 let event = Event {
                                     id: sub.id,
-                                    msg: EventMsg::SaveContextsToFileResult(SaveContextsToFileResultEvent {
-                                        file_path: file_path.clone(),
-                                        success: false,
-                                        message: format!("Failed to get contexts: {}", e),
-                                        contexts_saved: 0,
-                                    }),
+                                    msg: EventMsg::SaveContextsToFileResult(
+                                        SaveContextsToFileResultEvent {
+                                            file_path: file_path.clone(),
+                                            success: false,
+                                            message: format!("Failed to get contexts: {}", e),
+                                            contexts_saved: 0,
+                                        },
+                                    ),
                                 };
                                 sess.send_event(event).await;
                                 continue;
@@ -1943,22 +1947,28 @@ async fn submission_loop(
                         }
                     } else {
                         // Save all contexts
-                        match components.context_repo.query_contexts(&crate::context_store::ContextQuery {
-                            ids: None,
-                            tags: None,
-                            created_by: None,
-                            limit: None,
-                        }).await {
+                        match components
+                            .context_repo
+                            .query_contexts(&crate::context_store::ContextQuery {
+                                ids: None,
+                                tags: None,
+                                created_by: None,
+                                limit: None,
+                            })
+                            .await
+                        {
                             Ok(contexts) => contexts,
                             Err(e) => {
                                 let event = Event {
                                     id: sub.id,
-                                    msg: EventMsg::SaveContextsToFileResult(SaveContextsToFileResultEvent {
-                                        file_path: file_path.clone(),
-                                        success: false,
-                                        message: format!("Failed to query contexts: {}", e),
-                                        contexts_saved: 0,
-                                    }),
+                                    msg: EventMsg::SaveContextsToFileResult(
+                                        SaveContextsToFileResultEvent {
+                                            file_path: file_path.clone(),
+                                            success: false,
+                                            message: format!("Failed to query contexts: {}", e),
+                                            contexts_saved: 0,
+                                        },
+                                    ),
                                 };
                                 sess.send_event(event).await;
                                 continue;
@@ -1985,35 +1995,46 @@ async fn submission_loop(
                             std::fs::write(&file_path, json_content)?;
                             Ok(())
                         }
-                    }).await;
+                    })
+                    .await;
 
                     let event = match result {
                         Ok(Ok(())) => Event {
                             id: sub.id,
-                            msg: EventMsg::SaveContextsToFileResult(SaveContextsToFileResultEvent {
-                                file_path: file_path.clone(),
-                                success: true,
-                                message: format!("Successfully saved {} context items to '{}'", context_items.len(), file_path),
-                                contexts_saved: context_items.len(),
-                            }),
+                            msg: EventMsg::SaveContextsToFileResult(
+                                SaveContextsToFileResultEvent {
+                                    file_path: file_path.clone(),
+                                    success: true,
+                                    message: format!(
+                                        "Successfully saved {} context items to '{}'",
+                                        context_items.len(),
+                                        file_path
+                                    ),
+                                    contexts_saved: context_items.len(),
+                                },
+                            ),
                         },
                         Ok(Err(e)) => Event {
                             id: sub.id,
-                            msg: EventMsg::SaveContextsToFileResult(SaveContextsToFileResultEvent {
-                                file_path: file_path.clone(),
-                                success: false,
-                                message: format!("Failed to save file: {}", e),
-                                contexts_saved: 0,
-                            }),
+                            msg: EventMsg::SaveContextsToFileResult(
+                                SaveContextsToFileResultEvent {
+                                    file_path: file_path.clone(),
+                                    success: false,
+                                    message: format!("Failed to save file: {}", e),
+                                    contexts_saved: 0,
+                                },
+                            ),
                         },
                         Err(e) => Event {
                             id: sub.id,
-                            msg: EventMsg::SaveContextsToFileResult(SaveContextsToFileResultEvent {
-                                file_path: file_path.clone(),
-                                success: false,
-                                message: format!("Task execution failed: {}", e),
-                                contexts_saved: 0,
-                            }),
+                            msg: EventMsg::SaveContextsToFileResult(
+                                SaveContextsToFileResultEvent {
+                                    file_path: file_path.clone(),
+                                    success: false,
+                                    message: format!("Task execution failed: {}", e),
+                                    contexts_saved: 0,
+                                },
+                            ),
                         },
                     };
                     sess.send_event(event).await;
@@ -2059,57 +2080,75 @@ async fn submission_loop(
 
                                 match components.context_repo.store_context(context).await {
                                     Ok(()) => stored_count += 1,
-                                    Err(e) => errors.push(format!("Failed to store context '{}': {}", item.id, e)),
+                                    Err(e) => errors.push(format!(
+                                        "Failed to store context '{}': {}",
+                                        item.id, e
+                                    )),
                                 }
                             }
 
                             let success = errors.is_empty();
                             let message = if success {
-                                format!("Successfully loaded {} context items from '{}'", stored_count, file_path)
+                                format!(
+                                    "Successfully loaded {} context items from '{}'",
+                                    stored_count, file_path
+                                )
                             } else {
-                                format!("Loaded {} out of {} context items. Errors: {}", 
-                                    stored_count, context_items.len(), errors.join("; "))
+                                format!(
+                                    "Loaded {} out of {} context items. Errors: {}",
+                                    stored_count,
+                                    context_items.len(),
+                                    errors.join("; ")
+                                )
                             };
 
                             Event {
                                 id: sub.id,
-                                msg: EventMsg::LoadContextsFromFileResult(LoadContextsFromFileResultEvent {
-                                    file_path: file_path.clone(),
-                                    success,
-                                    message,
-                                    contexts_loaded: stored_count,
-                                }),
+                                msg: EventMsg::LoadContextsFromFileResult(
+                                    LoadContextsFromFileResultEvent {
+                                        file_path: file_path.clone(),
+                                        success,
+                                        message,
+                                        contexts_loaded: stored_count,
+                                    },
+                                ),
                             }
-                        },
+                        }
                         Ok(Err(e)) => Event {
                             id: sub.id,
-                            msg: EventMsg::LoadContextsFromFileResult(LoadContextsFromFileResultEvent {
-                                file_path: file_path.clone(),
-                                success: false,
-                                message: format!("Failed to load file: {}", e),
-                                contexts_loaded: 0,
-                            }),
+                            msg: EventMsg::LoadContextsFromFileResult(
+                                LoadContextsFromFileResultEvent {
+                                    file_path: file_path.clone(),
+                                    success: false,
+                                    message: format!("Failed to load file: {}", e),
+                                    contexts_loaded: 0,
+                                },
+                            ),
                         },
                         Err(e) => Event {
                             id: sub.id,
-                            msg: EventMsg::LoadContextsFromFileResult(LoadContextsFromFileResultEvent {
-                                file_path: file_path.clone(),
-                                success: false,
-                                message: format!("Task execution failed: {}", e),
-                                contexts_loaded: 0,
-                            }),
+                            msg: EventMsg::LoadContextsFromFileResult(
+                                LoadContextsFromFileResultEvent {
+                                    file_path: file_path.clone(),
+                                    success: false,
+                                    message: format!("Task execution failed: {}", e),
+                                    contexts_loaded: 0,
+                                },
+                            ),
                         },
                     };
                     sess.send_event(event).await;
                 } else {
                     let event = Event {
                         id: sub.id,
-                        msg: EventMsg::LoadContextsFromFileResult(LoadContextsFromFileResultEvent {
-                            file_path: file_path.clone(),
-                            success: false,
-                            message: "Multi-agent functionality not enabled".to_string(),
-                            contexts_loaded: 0,
-                        }),
+                        msg: EventMsg::LoadContextsFromFileResult(
+                            LoadContextsFromFileResultEvent {
+                                file_path: file_path.clone(),
+                                success: false,
+                                message: "Multi-agent functionality not enabled".to_string(),
+                                contexts_loaded: 0,
+                            },
+                        ),
                     };
                     sess.send_event(event).await;
                 }
@@ -4627,12 +4666,50 @@ async fn handle_function_call(
                     .await
                 }
                 None => {
+                    // Get list of available tools for better error message
+                    let available_tools = get_openai_tools(
+                        &turn_context.tools_config,
+                        Some(sess.mcp_connection_manager.list_all_tools()),
+                        crate::openai_tools::AgentType::Main,
+                    );
+                    let tool_names: Vec<String> = available_tools
+                        .iter()
+                        .map(|tool| match tool {
+                            crate::openai_tools::OpenAiTool::Function(func) => func.name.clone(),
+                            crate::openai_tools::OpenAiTool::LocalShell {} => {
+                                "local_shell".to_string()
+                            }
+                            crate::openai_tools::OpenAiTool::WebSearch {} => {
+                                "web_search".to_string()
+                            }
+                            crate::openai_tools::OpenAiTool::Freeform(freeform) => {
+                                freeform.name.clone()
+                            }
+                        })
+                        .collect();
+
+                    let error_message = format!(
+                        "❌ Tool '{}' does not exist.\n\n📋 **Available tools:**\n{}\n\n💡 **Please use one of the available tools listed above.**",
+                        name,
+                        tool_names
+                            .iter()
+                            .map(|tool_name| format!("  • {}", tool_name))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    );
+
+                    tracing::warn!(
+                        "Unknown tool call: {} - Available tools: {:?}",
+                        name,
+                        tool_names
+                    );
+
                     // Unknown function: reply with structured failure so the model can adapt.
                     ResponseInputItem::FunctionCallOutput {
                         call_id,
                         output: FunctionCallOutputPayload {
-                            content: format!("unsupported call: {name}"),
-                            success: None,
+                            content: error_message,
+                            success: Some(false),
                         },
                     }
                 }
