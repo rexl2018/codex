@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::context_store::{Context, IContextRepository, InMemoryContextRepository};
 use crate::subagent_manager::{SubagentTask, SubagentReport, MessageEntry};
-use crate::subagent_system_messages::{get_explorer_system_message, get_coder_system_message};
+use crate::subagent_system_messages::{get_explorer_system_message_with_network_access, get_coder_system_message};
 use codex_protocol::protocol::{ContextItem, SubagentMetadata, SubagentType};
 
 /// Mock subagent executor for testing and demonstration purposes
@@ -218,7 +218,7 @@ impl MockSubagentExecutor {
         
         // Add system message based on agent type
         let system_message = match task.agent_type {
-            SubagentType::Explorer => get_explorer_system_message(),
+            SubagentType::Explorer => get_explorer_system_message_with_network_access(task.network_access.clone()),
             SubagentType::Coder => get_coder_system_message(),
         };
         sections.push(system_message.to_string());

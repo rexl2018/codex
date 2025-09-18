@@ -1745,6 +1745,7 @@ async fn submission_loop(
                         bootstrap_paths,
                         max_turns: None,
                         timeout_ms: None,
+                        network_access: None, // TODO: Pass network access from turn context
                     };
 
                     match components.subagent_manager.create_task(spec).await {
@@ -2957,6 +2958,7 @@ async fn handle_response_item(
 
 async fn handle_create_subagent_task(
     sess: &Session,
+    turn_context: &TurnContext,
     arguments: String,
     sub_id: String,
     call_id: String,
@@ -3009,6 +3011,19 @@ async fn handle_create_subagent_task(
                     success: Some(false),
                 },
             };
+        }
+    };
+
+    // Extract network access from turn context
+    let network_access = match &turn_context.sandbox_policy {
+        SandboxPolicy::DangerFullAccess => Some(crate::environment_context::NetworkAccess::Enabled),
+        SandboxPolicy::ReadOnly => Some(crate::environment_context::NetworkAccess::Restricted),
+        SandboxPolicy::WorkspaceWrite { network_access, .. } => {
+            if *network_access {
+                Some(crate::environment_context::NetworkAccess::Enabled)
+            } else {
+                Some(crate::environment_context::NetworkAccess::Restricted)
+            }
         }
     };
 
@@ -3077,8 +3092,9 @@ async fn handle_create_subagent_task(
             description: args.description.clone(),
             context_refs: selected_context_refs,
             bootstrap_paths: args.bootstrap_paths,
-            max_turns: Some(30),       // Default to 100 turns
+            max_turns: Some(100),      // Default to 100 turns
             timeout_ms: Some(1800000), // Default to 30 minutes timeout
+            network_access,
         };
 
         // Create the task using the subagent manager
@@ -3485,6 +3501,7 @@ async fn handle_create_subagent_task(
         bootstrap_paths: args.bootstrap_paths,
         max_turns: Some(30),       // Default to 100 turns
         timeout_ms: Some(1800000), // Default to 30 minutes timeout
+        network_access,
     };
 
     // Create the task using the subagent manager
@@ -4603,7 +4620,7 @@ async fn handle_function_call(
         }
         "update_plan" => handle_update_plan(sess, arguments, sub_id, call_id).await,
         "create_subagent_task" => {
-            handle_create_subagent_task(sess, arguments, sub_id, call_id).await
+            handle_create_subagent_task(sess, turn_context, arguments, sub_id, call_id).await
         }
         "list_contexts" => handle_list_contexts(sess, call_id).await,
         "multi_retrieve_contexts" => handle_multi_retrieve_contexts(sess, arguments, call_id).await,

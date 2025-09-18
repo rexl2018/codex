@@ -13,6 +13,7 @@ use crate::client::ModelClient;
 use crate::context_store::Context;
 use crate::context_store::IContextRepository;
 use crate::context_store::InMemoryContextRepository;
+use crate::environment_context::NetworkAccess;
 use crate::llm_subagent_executor::LLMSubagentExecutor;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::mock_subagent_executor::MockSubagentExecutor;
@@ -77,6 +78,7 @@ pub struct SubagentTaskSpec {
     pub bootstrap_paths: Vec<BootstrapPath>,
     pub max_turns: Option<u32>,
     pub timeout_ms: Option<u64>,
+    pub network_access: Option<NetworkAccess>,
 }
 
 /// Subagent handle
@@ -140,6 +142,8 @@ pub struct SubagentTask {
     pub status: TaskStatus,
     /// Maximum execution turns
     pub max_turns: u32,
+    /// Network access level
+    pub network_access: Option<NetworkAccess>,
     /// Creation time
     pub created_at: SystemTime,
     /// Start time
@@ -340,6 +344,7 @@ impl ISubagentManager for InMemorySubagentManager {
             bootstrap_contexts,
             status: TaskStatus::Created,
             max_turns: spec.max_turns.unwrap_or(10),
+            network_access: spec.network_access,
             created_at: SystemTime::now(),
             started_at: None,
             completed_at: None,
@@ -716,6 +721,7 @@ mod tests {
             bootstrap_paths: Vec::new(),
             max_turns: Some(5),
             timeout_ms: None,
+            network_access: None,
         };
 
         let task_id = manager.create_task(spec).await.unwrap();
@@ -740,6 +746,7 @@ mod tests {
             bootstrap_paths: Vec::new(),
             max_turns: Some(10),
             timeout_ms: None,
+            network_access: None,
         };
 
         let task_id = manager.create_task(spec).await.unwrap();
@@ -770,6 +777,7 @@ mod tests {
             bootstrap_paths: Vec::new(),
             max_turns: Some(5),
             timeout_ms: None,
+            network_access: None,
         };
 
         let task_id = manager.create_task(spec).await.unwrap();

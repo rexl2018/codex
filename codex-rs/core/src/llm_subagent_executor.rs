@@ -16,7 +16,7 @@ use crate::subagent_manager::MessageEntry;
 use crate::subagent_manager::SubagentReport;
 use crate::subagent_manager::SubagentTask;
 use crate::subagent_system_messages::get_coder_system_message;
-use crate::subagent_system_messages::get_explorer_system_message;
+use crate::subagent_system_messages::get_explorer_system_message_with_network_access;
 use codex_protocol::protocol::ContextItem;
 use codex_protocol::protocol::SubagentMetadata;
 use codex_protocol::protocol::SubagentType;
@@ -338,7 +338,7 @@ impl LLMSubagentExecutor {
 
         // Use subagent-specific system message as base instructions to avoid inheriting main agent's prompt
         let subagent_base_instructions = match task.agent_type {
-            SubagentType::Explorer => get_explorer_system_message(),
+            SubagentType::Explorer => get_explorer_system_message_with_network_access(task.network_access.clone()),
             SubagentType::Coder => get_coder_system_message(),
         };
 

@@ -1,7 +1,35 @@
 /// System messages for different subagent types
 /// Based on the reference multi-agent-coding-system implementation
+use crate::environment_context::NetworkAccess;
 
-pub fn get_explorer_system_message() -> &'static str {
+pub fn get_explorer_system_message() -> String {
+    get_explorer_system_message_with_network_access(None)
+}
+
+pub fn get_explorer_system_message_with_network_access(
+    network_access: Option<NetworkAccess>,
+) -> String {
+    let base_message = get_explorer_system_message_static();
+
+    // Add network access information if available
+    match network_access {
+        Some(NetworkAccess::Enabled) => {
+            format!(
+                "{}\n\n## Network Access\n\nYou have network access enabled, which means you can:\n- Use MCP tools that require network connectivity\n- Access external resources and APIs through available MCP tools\n- Perform web searches and external data retrieval if MCP tools support it\n\nLeverage these capabilities when they help accomplish your exploration tasks.",
+                base_message
+            )
+        }
+        Some(NetworkAccess::Restricted) => {
+            format!(
+                "{}\n\n## Network Access\n\nYour network access is restricted. You can:\n- Use local MCP tools that don't require network connectivity\n- Work with local files and system resources\n- Analyze existing data and configurations\n\nFocus on local exploration and analysis tasks.",
+                base_message
+            )
+        }
+        None => base_message.to_string(),
+    }
+}
+
+fn get_explorer_system_message_static() -> &'static str {
     r#"# Explorer Subagent System Message
 
 ## Context
@@ -60,8 +88,8 @@ comments: string
 
 **Critical Requirements:**
 - `contexts`: List of knowledge artifacts you discovered
-  - `id`: Unique identifier (use snake_case like "file_structure_analysis")
-  - `summary`: **REQUIRED** - Brief description of what this context contains (1-2 sentences)
+  - `id`: Unique identifier (use snake_case, based on the content rather than the action, like "projectname_data_access_layer" with "projectname" as the real project name)
+  - `summary`: **REQUIRED** - Brief description of what this context contains (2-4 sentences)
   - `content`: Detailed findings, analysis, or information
 - `comments`: Brief summary of task execution status and key outcomes
 
@@ -80,7 +108,7 @@ comments: string
 - Your final report should summarize what you accomplished, not repeat the context contents"#
 }
 
-pub fn get_coder_system_message() -> &'static str {
+pub fn get_coder_system_message() -> String {
     r#"# Coder Agent System Message
 
 ## Context
@@ -88,6 +116,7 @@ pub fn get_coder_system_message() -> &'static str {
 You are a Coder Agent, a state-of-the-art AI software engineer with extraordinary expertise spanning the entire technology landscape. You possess mastery-level proficiency in all programming languages, from assembly and C to Python, Rust, TypeScript, and beyond. Your knowledge encompasses:
 
 - **Systems Engineering**: Deep understanding of operating systems, kernels, drivers, embedded systems, networking protocols, and distributed systems architecture
+- **Backend Engineering**: Expert in server-side architecture, API design, microservices, message queues, caching strategies, scalable backend systems, high availability patterns, and distributed consistency models
 - **Machine Learning & AI**: Expert in deep learning frameworks (PyTorch, TensorFlow, JAX), model architectures (transformers, CNNs, RNNs), training pipelines, and deployment strategies
 - **Security**: Comprehensive knowledge of cryptography, vulnerability analysis, secure coding practices, penetration testing methodologies, and defense mechanisms
 - **Cloud & Infrastructure**: Mastery of containerization (Docker, Kubernetes), infrastructure-as-code, CI/CD pipelines, and cloud platforms (AWS, GCP, Azure)
@@ -170,5 +199,5 @@ comments: string
 - Store contexts immediately when you discover something useful - don't wait until the end
 - Use standard tools (bash, file operations) available in your environment as needed
 - The `store_context` function takes: id (snake_case), summary (brief description), content (detailed findings)
-- Your final report should summarize what you accomplished, not repeat the context contents"#
+- Your final report should summarize what you accomplished, not repeat the context contents"#.to_string()
 }
