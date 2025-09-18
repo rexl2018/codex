@@ -157,6 +157,10 @@ pub enum AgentState {
     Initialization,
     /// A new user instruction has been received and a new agent task has been created.
     AgentTaskCreated,
+    /// An Explorer subagent has been created and is currently running
+    ExplorerCreated,
+    /// A Coder subagent has been created and is currently running
+    CoderCreated,
     /// Last Explorer subagent completed successfully without reaching turn limits
     ExplorerNormalCompletion,
     /// Last Explorer subagent was forced to complete due to reaching maximum turns
@@ -174,6 +178,12 @@ impl AgentState {
             AgentState::Initialization => "Initialization - No subagent execution history",
             AgentState::AgentTaskCreated => {
                 "AgentTaskCreated - A new user instruction has been received and a new agent task has been created."
+            }
+            AgentState::ExplorerCreated => {
+                "Explorer Created - An Explorer subagent has been created and is currently running"
+            }
+            AgentState::CoderCreated => {
+                "Coder Created - A Coder subagent has been created and is currently running"
             }
             AgentState::ExplorerNormalCompletion => {
                 "Explorer Normal Completion - Last Explorer subagent completed successfully"
@@ -195,6 +205,8 @@ impl AgentState {
         match self {
             AgentState::Initialization => true,
             AgentState::AgentTaskCreated => true,
+            AgentState::ExplorerCreated => false,
+            AgentState::CoderCreated => false,
             AgentState::ExplorerNormalCompletion => false,
             AgentState::ExplorerForcedCompletion => false,
             AgentState::CoderNormalCompletion => true,
@@ -207,6 +219,8 @@ impl AgentState {
         match self {
             AgentState::Initialization => true,
             AgentState::AgentTaskCreated => true,
+            AgentState::ExplorerCreated => false,
+            AgentState::CoderCreated => false,
             AgentState::ExplorerNormalCompletion => true,
             AgentState::ExplorerForcedCompletion => true,
             AgentState::CoderNormalCompletion => false,
@@ -229,6 +243,12 @@ impl AgentState {
             ) => {
                 "Consider creating an 'explorer' subagent to analyze additional files or areas, or request a summary of the existing implementation."
             }
+            (
+                AgentState::ExplorerCreated | AgentState::CoderCreated,
+                _,
+            ) => {
+                "A subagent is currently running. Please wait for it to complete before creating another subagent."
+            }
             _ => "No alternatives needed - action should be allowed.",
         }
     }
@@ -240,7 +260,23 @@ async fn detect_agent_state(multi_agent_components: &Option<MultiAgentComponents
         return AgentState::Initialization;
     };
 
-    // Check if a new user task has been created
+    // First check for currently running subagents (highest priority)
+    match components.subagent_manager.get_active_tasks().await {
+        Ok(active_tasks) => {
+            if let Some(active_task) = active_tasks.first() {
+                // If there's an active task, return the appropriate Created state
+                match active_task.agent_type {
+                    SubagentType::Explorer => return AgentState::ExplorerCreated,
+                    SubagentType::Coder => return AgentState::CoderCreated,
+                }
+            }
+        }
+        Err(_) => {
+            // Continue to check other states if we can't get active tasks
+        }
+    }
+
+    // Then check if a new user task has been created (only if no active subagents)
     if components
         .new_user_task_created
         .load(std::sync::atomic::Ordering::Relaxed)
@@ -3049,7 +3085,41 @@ async fn handle_create_subagent_task(
             args.agent_type
         );
 
-        // Skip all blocking logic and proceed directly to task creation
+        // Even in AgentTaskCreated state, check if there's already an active subagent
+        match multi_agent_components.subagent_manager.get_active_tasks().await {
+            Ok(active_tasks) => {
+                if !active_tasks.is_empty() {
+                    let active_task = &active_tasks[0];
+                    
+                    // Reset the flag since we're not creating a new subagent
+                    multi_agent_components
+                        .new_user_task_created
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+                    
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: format!(
+                                "Cannot create {} subagent: A {} subagent '{}' is already running. Please wait for it to complete before creating another subagent.",
+                                args.agent_type,
+                                match active_task.agent_type {
+                                    SubagentType::Explorer => "Explorer",
+                                    SubagentType::Coder => "Coder",
+                                },
+                                active_task.title
+                            ),
+                            success: Some(false),
+                        },
+                    };
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to check active tasks: {}", e);
+                // Continue with creation if we can't check - don't block due to errors
+            }
+        }
+
+        // Proceed with task creation
         let selected_context_refs = if !args.context_refs.is_empty() {
             args.context_refs
         } else {
@@ -3368,6 +3438,11 @@ async fn handle_create_subagent_task(
                         );
                     }
 
+                    // Reset the flag since we're not creating a new subagent
+                    multi_agent_components
+                        .new_user_task_created
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
+
                     // Return a simple blocking message - the real content will be processed in the next turn with proper state info
                     return ResponseInputItem::FunctionCallOutput {
                         call_id,
@@ -3389,6 +3464,11 @@ async fn handle_create_subagent_task(
                             "Consider creating an 'explorer' subagent to gather more information, or try a different implementation approach."
                         }
                     };
+
+                    // Reset the flag since we're not creating a new subagent
+                    multi_agent_components
+                        .new_user_task_created
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
 
                     return ResponseInputItem::FunctionCallOutput {
                         call_id,
