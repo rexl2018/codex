@@ -127,6 +127,7 @@ mod tests {
             ],
             max_turns: Some(10),
             timeout_ms: Some(60000),
+            network_access: None,
         };
         
         let task_id = manager.create_task(spec.clone()).await.unwrap();
@@ -173,6 +174,7 @@ mod tests {
             bootstrap_paths: vec![],
             max_turns: Some(5),
             timeout_ms: Some(30000),
+            network_access: None,
         };
         
         let task_id = manager.create_task(spec).await.unwrap();
@@ -208,6 +210,7 @@ mod tests {
             bootstrap_paths: vec![],
             max_turns: Some(5),
             timeout_ms: Some(30000),
+            network_access: None,
         };
         
         let spec2 = SubagentTaskSpec {
@@ -216,8 +219,9 @@ mod tests {
             description: "Second task".to_string(),
             context_refs: vec![],
             bootstrap_paths: vec![],
-            max_turns: Some(3),
-            timeout_ms: Some(20000),
+            max_turns: Some(5),
+            timeout_ms: Some(30000),
+            network_access: None,
         };
         
         let task_id1 = manager.create_task(spec1).await.unwrap();
@@ -300,6 +304,7 @@ mod tests {
             bootstrap_paths: vec![],
             max_turns: Some(3),
             timeout_ms: Some(15000),
+            network_access: None,
         };
         
         let task_id = manager.create_task(spec).await.unwrap();
@@ -357,6 +362,7 @@ mod tests {
                     bootstrap_paths: vec![],
                     max_turns: Some(3),
                     timeout_ms: Some(10000),
+                    network_access: None,
                 };
                 
                 manager_clone.create_task(spec).await

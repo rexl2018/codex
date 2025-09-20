@@ -333,6 +333,7 @@ fn make_chatwidget_manual() -> (
         suppress_session_configured_redraw: false,
         pending_notification: None,
         is_review_mode: false,
+        current_executor_id: None,
     };
     (widget, rx, op_rx)
 }

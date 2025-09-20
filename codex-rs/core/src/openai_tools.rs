@@ -31,7 +31,7 @@ impl From<codex_protocol::protocol::SubagentType> for AgentType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ResponsesApiTool {
     pub(crate) name: String,
     pub(crate) description: String,
@@ -881,12 +881,13 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
+            include_subagent_task_tool: false,
         });
         let tools = get_openai_tools(&config, Some(HashMap::new()), AgentType::Explorer);
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "update_plan", "web_search", "view_image"],
+            &["unified_exec", "update_plan", "web_search", "view_image", "read_file", "store_context"],
         );
     }
 
@@ -901,12 +902,13 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
+            include_subagent_task_tool: false,
         });
         let tools = get_openai_tools(&config, Some(HashMap::new()), AgentType::Explorer);
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "update_plan", "web_search", "view_image"],
+            &["unified_exec", "update_plan", "web_search", "view_image", "read_file", "store_context"],
         );
     }
 
@@ -921,6 +923,7 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
+            include_subagent_task_tool: false,
         });
         let tools = get_openai_tools(
             &config,
@@ -958,6 +961,7 @@ mod tests {
                     description: Some("Do something cool".to_string()),
                 },
             )])),
+            AgentType::Explorer,
         );
 
         assert_eq_tool_names(
@@ -966,12 +970,14 @@ mod tests {
                 "unified_exec",
                 "web_search",
                 "view_image",
+                "read_file",
+                "store_context",
                 "test_server/do_something_cool",
             ],
         );
 
         assert_eq!(
-            tools[3],
+            tools[5],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "test_server/do_something_cool".to_string(),
                 parameters: JsonSchema::Object {
@@ -1025,6 +1031,7 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
+            include_subagent_task_tool: false,
         });
 
         // Intentionally construct a map with keys that would sort alphabetically.
@@ -1076,13 +1083,15 @@ mod tests {
             ),
         ]);
 
-        let tools = get_openai_tools(&config, Some(tools_map));
+        let tools = get_openai_tools(&config, Some(tools_map), AgentType::Explorer);
         // Expect unified_exec first, followed by MCP tools sorted by fully-qualified name.
         assert_eq_tool_names(
             &tools,
             &[
                 "unified_exec",
                 "view_image",
+                "read_file",
+                "store_context",
                 "test_server/cool",
                 "test_server/do",
                 "test_server/something",
@@ -1101,8 +1110,8 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
+            include_subagent_task_tool: false,
         });
-
         let tools = get_openai_tools(
             &config,
             Some(HashMap::from([(
@@ -1124,15 +1133,16 @@ mod tests {
                     description: Some("Search docs".to_string()),
                 },
             )])),
+            AgentType::Explorer,
         );
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "web_search", "view_image", "dash/search"],
+            &["unified_exec", "web_search", "view_image", "read_file", "store_context", "dash/search"],
         );
 
         assert_eq!(
-            tools[3],
+            tools[5],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/search".to_string(),
                 parameters: JsonSchema::Object {
@@ -1162,6 +1172,7 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
+            include_subagent_task_tool: false,
         });
 
         let tools = get_openai_tools(
@@ -1183,14 +1194,15 @@ mod tests {
                     description: Some("Pagination".to_string()),
                 },
             )])),
+            AgentType::Explorer,
         );
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "web_search", "view_image", "dash/paginate"],
+            &["unified_exec", "web_search", "view_image", "read_file", "store_context", "dash/paginate"],
         );
         assert_eq!(
-            tools[3],
+            tools[5],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/paginate".to_string(),
                 parameters: JsonSchema::Object {
@@ -1218,6 +1230,7 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
+            include_subagent_task_tool: false,
         });
 
         let tools = get_openai_tools(
@@ -1239,14 +1252,15 @@ mod tests {
                     description: Some("Tags".to_string()),
                 },
             )])),
+            AgentType::Explorer,
         );
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "web_search", "view_image", "dash/tags"],
+            &["unified_exec", "web_search", "view_image", "read_file", "store_context", "dash/tags"],
         );
         assert_eq!(
-            tools[3],
+            tools[5],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/tags".to_string(),
                 parameters: JsonSchema::Object {
@@ -1277,6 +1291,7 @@ mod tests {
             use_streamable_shell_tool: false,
             include_view_image_tool: true,
             experimental_unified_exec_tool: true,
+            include_subagent_task_tool: false,
         });
 
         let tools = get_openai_tools(
@@ -1298,14 +1313,15 @@ mod tests {
                     description: Some("AnyOf Value".to_string()),
                 },
             )])),
+            AgentType::Explorer,
         );
 
         assert_eq_tool_names(
             &tools,
-            &["unified_exec", "web_search", "view_image", "dash/value"],
+            &["unified_exec", "web_search", "view_image", "read_file", "store_context", "dash/value"],
         );
         assert_eq!(
-            tools[3],
+            tools[5],
             OpenAiTool::Function(ResponsesApiTool {
                 name: "dash/value".to_string(),
                 parameters: JsonSchema::Object {
