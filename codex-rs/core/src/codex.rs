@@ -152,6 +152,8 @@ use codex_protocol::protocol::SaveContextsToFileResultEvent;
 use codex_protocol::protocol::SubagentMetadata;
 use codex_protocol::protocol::SubagentType;
 
+pub mod compact;
+
 /// Agent state based on recent subagent execution history
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentState {
@@ -1384,7 +1386,7 @@ impl AgentTask {
             let sub_id = sub_id.clone();
             let tc = Arc::clone(&turn_context);
             tokio::spawn(async move {
-                run_compact_task(sess, tc.as_ref(), sub_id, input, compact_instructions).await
+                compact::run_compact_task(sess, tc, sub_id, input, compact_instructions).await
             })
             .abort_handle()
         };
@@ -1703,21 +1705,19 @@ async fn submission_loop(
                 sess.send_event(event).await;
             }
             Op::Compact => {
-                // Create a summarization request as user input
-                const SUMMARIZATION_PROMPT: &str = include_str!("prompt_for_compact_command.md");
-
                 // Attempt to inject input into current task
-                if let Err(items) = sess.inject_input(vec![InputItem::Text {
-                    text: "Start Summarization".to_string(),
-                }]) {
-                    let task = AgentTask::compact(
+                if let Err(items) = sess
+                    .inject_input(vec![InputItem::Text {
+                        text: compact::COMPACT_TRIGGER_TEXT.to_string(),
+                    }])
+                {
+                    compact::spawn_compact_task(
                         sess.clone(),
                         Arc::clone(&turn_context),
                         sub.id,
                         items,
-                        SUMMARIZATION_PROMPT.to_string(),
-                    );
-                    sess.set_task(task);
+                    )
+                    .await;
                 }
             }
             Op::Shutdown => {
@@ -2799,92 +2799,7 @@ async fn try_run_turn(
     }
 }
 
-async fn run_compact_task(
-    sess: Arc<Session>,
-    turn_context: &TurnContext,
-    sub_id: String,
-    input: Vec<InputItem>,
-    compact_instructions: String,
-) {
-    let model_context_window = turn_context.client.get_model_context_window();
-    let start_event = Event {
-        id: sub_id.clone(),
-        msg: EventMsg::TaskStarted(TaskStartedEvent {
-            model_context_window,
-        }),
-    };
-    sess.send_event(start_event).await;
 
-    let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
-    let turn_input: Vec<ResponseItem> =
-        sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
-
-    let prompt = Prompt {
-        input: turn_input,
-        tools: Vec::new(),
-        base_instructions_override: Some(compact_instructions.clone()),
-        agent_state_info: None, // Compact tasks don't need state info
-    };
-
-    let max_retries = turn_context.client.get_provider().stream_max_retries();
-    let mut retries = 0;
-
-    loop {
-        let attempt_result = drain_to_completed(&sess, turn_context, &sub_id, &prompt).await;
-
-        match attempt_result {
-            Ok(()) => break,
-            Err(CodexErr::Interrupted) => return,
-            Err(e) => {
-                if retries < max_retries {
-                    retries += 1;
-                    let delay = backoff(retries);
-                    sess.notify_stream_error(
-                        &sub_id,
-                        format!(
-                            "stream error: {e}; retrying {retries}/{max_retries} in {delay:?}…"
-                        ),
-                    )
-                    .await;
-                    tokio::time::sleep(delay).await;
-                    continue;
-                } else {
-                    let event = Event {
-                        id: sub_id.clone(),
-                        msg: EventMsg::Error(ErrorEvent {
-                            message: e.to_string(),
-                        }),
-                    };
-                    sess.send_event(event).await;
-                    return;
-                }
-            }
-        }
-    }
-
-    sess.remove_task(&sub_id);
-
-    {
-        let mut state = sess.state.lock_unchecked();
-        // TODO: Implement keep_last_messages functionality if needed
-        // state.history.keep_last_messages(1);
-    }
-
-    let event = Event {
-        id: sub_id.clone(),
-        msg: EventMsg::AgentMessage(AgentMessageEvent {
-            message: "Compact task completed".to_string(),
-        }),
-    };
-    sess.send_event(event).await;
-    let event = Event {
-        id: sub_id.clone(),
-        msg: EventMsg::TaskComplete(TaskCompleteEvent {
-            last_agent_message: None,
-        }),
-    };
-    sess.send_event(event).await;
-}
 
 async fn handle_response_item(
     sess: &Session,

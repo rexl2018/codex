@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::AgentTask;
+use super::MutexExt;
 use super::Session;
 use super::TurnContext;
 use super::get_last_assistant_message_from_turn;
@@ -49,14 +50,14 @@ pub(super) async fn spawn_compact_task(
         input,
         SUMMARIZATION_PROMPT.to_string(),
     );
-    sess.set_task(task).await;
+    sess.set_task(task);
 }
 
 pub(super) async fn run_inline_auto_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
 ) {
-    let sub_id = sess.next_internal_sub_id();
+    let sub_id = format!("auto-compact-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
     let input = vec![InputItem::Text {
         text: COMPACT_TRIGGER_TEXT.to_string(),
     }];
@@ -114,13 +115,13 @@ async fn run_compact_task_inner(
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
     let instructions_override = compact_instructions;
     let turn_input = sess
-        .turn_input_with_history(vec![initial_input_for_turn.clone().into()])
-        .await;
+        .turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
 
     let prompt = Prompt {
         input: turn_input,
         tools: Vec::new(),
         base_instructions_override: Some(instructions_override),
+        agent_state_info: None, // Compact tasks don't need state info
     };
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();
@@ -174,10 +175,10 @@ async fn run_compact_task_inner(
     }
 
     if remove_task_on_completion {
-        sess.remove_task(&sub_id).await;
+        sess.remove_task(&sub_id);
     }
     let history_snapshot = {
-        let state = sess.state.lock().await;
+        let state = sess.state.lock_unchecked();
         state.history.contents()
     };
     let summary_text = get_last_assistant_message_from_turn(&history_snapshot).unwrap_or_default();
@@ -185,7 +186,7 @@ async fn run_compact_task_inner(
     let initial_context = sess.build_initial_context(turn_context.as_ref());
     let new_history = build_compacted_history(initial_context, &user_messages, &summary_text);
     {
-        let mut state = sess.state.lock().await;
+        let mut state = sess.state.lock_unchecked();
         state.history.replace(new_history);
     }
 
@@ -289,7 +290,7 @@ async fn drain_to_completed(
         };
         match event {
             Ok(ResponseEvent::OutputItemDone(item)) => {
-                let mut state = sess.state.lock().await;
+                let mut state = sess.state.lock_unchecked();
                 state.history.record_items(std::slice::from_ref(&item));
             }
             Ok(ResponseEvent::Completed { .. }) => {
