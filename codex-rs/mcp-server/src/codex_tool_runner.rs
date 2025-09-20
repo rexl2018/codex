@@ -222,7 +222,7 @@ async fn run_codex_tool_session_inner(
                     }
                     EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message }) => {
                         let text = match last_agent_message {
-                            Some(msg) => msg.clone(),
+                            Some(msg) => msg,
                             None => "".to_string(),
                         };
                         let result = CallToolResult {
@@ -293,7 +293,9 @@ async fn run_codex_tool_session_inner(
                     | EventMsg::MultiAgentStatus(_)
                     | EventMsg::SubagentForceCompleted(_)
                     | EventMsg::SubagentCancelled(_)
-                    | EventMsg::SubagentFallbackReport(_) => {
+                    | EventMsg::SubagentFallbackReport(_)
+                    | EventMsg::EnteredReviewMode(_)
+                    | EventMsg::ExitedReviewMode(_) => {
                         // For now, we do not do anything extra for these
                         // events. Note that
                         // send(codex_event_to_notification(&event)) above has

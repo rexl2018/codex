@@ -9,12 +9,14 @@ use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use crate::AuthManager;
+use crate::client_common::REVIEW_PROMPT;
 use crate::config_edit::CONFIG_KEY_EFFORT;
 use crate::config_edit::CONFIG_KEY_MODEL;
 use crate::config_edit::persist_non_null_overrides;
 use crate::context_store::IContextRepository;
 use crate::context_store::InMemoryContextRepository;
 use crate::event_mapping::map_response_item_to_event_messages;
+use crate::review_format::format_review_findings_block;
 use crate::multi_agent_coordinator::ExecutionPlan;
 use crate::multi_agent_coordinator::SharedContext;
 use crate::multi_agent_coordinator::SubtaskCoordinator;
@@ -546,6 +548,7 @@ pub(crate) struct Session {
     codex_linux_sandbox_exe: Option<PathBuf>,
     user_shell: shell::Shell,
     show_raw_agent_reasoning: bool,
+    next_internal_sub_id: AtomicU64,
 
     /// Multi-agent components (optional)
     multi_agent_components: Option<MultiAgentComponents>,
@@ -812,6 +815,7 @@ impl Session {
             codex_linux_sandbox_exe: config.codex_linux_sandbox_exe.clone(),
             user_shell: default_shell,
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
+            next_internal_sub_id: AtomicU64::new(0),
             multi_agent_components,
         });
 
