@@ -93,7 +93,7 @@ impl LLMSubagentExecutor {
 
         // Create a minimal tools config for subagents (they don't need all the main agent features)
         let tools_config = crate::openai_tools::ToolsConfig {
-            shell_type: crate::openai_tools::ConfigShellToolType::DefaultShell,
+            shell_type: crate::openai_tools::ConfigShellToolType::Default,
             plan_tool: false,
             apply_patch_tool_type: None,
             web_search_request: false,

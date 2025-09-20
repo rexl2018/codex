@@ -683,16 +683,13 @@ pub(crate) fn get_openai_tools(
                 tools.push(create_unified_exec_tool());
             } else {
                 match &config.shell_type {
-                    ConfigShellToolType::DefaultShell => {
+                    ConfigShellToolType::Default => {
                         tools.push(create_shell_tool());
                     }
-                    ConfigShellToolType::ShellWithRequest { sandbox_policy } => {
-                        tools.push(create_shell_tool_for_sandbox(sandbox_policy));
-                    }
-                    ConfigShellToolType::LocalShell => {
+                    ConfigShellToolType::Local => {
                         tools.push(OpenAiTool::LocalShell {});
                     }
-                    ConfigShellToolType::StreamableShell => {
+                    ConfigShellToolType::Streamable => {
                         tools.push(OpenAiTool::Function(
                             crate::exec_command::create_exec_command_tool_for_responses_api(),
                         ));
