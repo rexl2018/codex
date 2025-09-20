@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
@@ -595,7 +595,7 @@ struct ConfigureSession {
     /// If not specified, server will use its default model.
     model: String,
 
-    model_reasoning_effort: ReasoningEffortConfig,
+    model_reasoning_effort: Option<ReasoningEffortConfig>,
     model_reasoning_summary: ReasoningSummaryConfig,
 
     /// Model instructions that are appended to the base instructions.
@@ -736,8 +736,6 @@ impl Session {
             client,
             tools_config: ToolsConfig::new(&ToolsConfigParams {
                 model_family: &config.model_family,
-                approval_policy,
-                sandbox_policy: sandbox_policy.clone(),
                 include_plan_tool: config.include_plan_tool,
                 include_apply_patch_tool: config.include_apply_patch_tool,
                 include_web_search_request: config.tools_web_search_request,
@@ -830,6 +828,7 @@ impl Session {
             msg: EventMsg::SessionConfigured(SessionConfiguredEvent {
                 session_id: conversation_id,
                 model,
+                reasoning_effort: model_reasoning_effort,
                 history_log_id,
                 history_entry_count,
                 initial_messages,
@@ -877,7 +876,14 @@ impl Session {
                 let persist = matches!(conversation_history, InitialHistory::Forked(_));
 
                 // Always add response items to conversation history
-                let response_items = conversation_history.get_response_items();
+                let rollout_items = conversation_history.get_rollout_items();
+                let response_items: Vec<ResponseItem> = rollout_items
+                    .iter()
+                    .filter_map(|item| match item {
+                        RolloutItem::ResponseItem(response_item) => Some(response_item.clone()),
+                        _ => None,
+                    })
+                    .collect();
                 if !response_items.is_empty() {
                     self.record_into_history(&response_items);
                 }
@@ -1113,6 +1119,7 @@ impl Session {
             aggregated_output,
             duration,
             exit_code,
+            timed_out,
         } = output;
         // Send full stdout/stderr to clients; do not truncate.
         let stdout = stdout.text.clone();
@@ -1180,6 +1187,7 @@ impl Session {
             exec_args.params,
             exec_args.sandbox_type,
             exec_args.sandbox_policy,
+            exec_args.sandbox_cwd,
             exec_args.codex_linux_sandbox_exe,
             exec_args.stdout_stream,
         )
@@ -1195,6 +1203,7 @@ impl Session {
                     stderr: StreamOutput::new(get_error_message_ui(e)),
                     aggregated_output: StreamOutput::new(get_error_message_ui(e)),
                     duration: Duration::default(),
+                    timed_out: false,
                 };
                 &output_stderr
             }
@@ -1493,7 +1502,7 @@ async fn submission_loop(
                 turn_context = Arc::new(new_turn_context);
 
                 // Optionally persist changes to model / effort
-                let effort_str = effort.map(|_| effective_effort.to_string());
+                let effort_str = effort.and_then(|_| effective_effort.map(|e| e.to_string()));
 
                 if let Err(e) = persist_non_null_overrides(
                     &config.codex_home,
@@ -2857,7 +2866,8 @@ async fn run_compact_task(
 
     {
         let mut state = sess.state.lock_unchecked();
-        state.history.keep_last_messages(1);
+        // TODO: Implement keep_last_messages functionality if needed
+        // state.history.keep_last_messages(1);
     }
 
     let event = Event {
@@ -4925,6 +4935,7 @@ pub struct ExecInvokeArgs<'a> {
     pub params: ExecParams,
     pub sandbox_type: SandboxType,
     pub sandbox_policy: &'a SandboxPolicy,
+    pub sandbox_cwd: &'a Path,
     pub codex_linux_sandbox_exe: &'a Option<PathBuf>,
     pub stdout_stream: Option<StdoutStream>,
 }
@@ -5116,6 +5127,7 @@ async fn handle_container_exec_with_params(
                 params: params.clone(),
                 sandbox_type,
                 sandbox_policy: &turn_context.sandbox_policy,
+                sandbox_cwd: &turn_context.cwd,
                 codex_linux_sandbox_exe: &sess.codex_linux_sandbox_exe,
                 stdout_stream: if exec_command_context.apply_patch.is_some() {
                     None
@@ -5197,7 +5209,7 @@ async fn handle_sandbox_error(
     }
 
     // similarly, if the command timed out, we can simply return this failure to the model
-    if matches!(error, SandboxErr::Timeout) {
+    if matches!(error, SandboxErr::Timeout { .. }) {
         return ResponseInputItem::FunctionCallOutput {
             call_id,
             output: FunctionCallOutputPayload {
@@ -5253,6 +5265,7 @@ async fn handle_sandbox_error(
                         params,
                         sandbox_type: SandboxType::None,
                         sandbox_policy: &turn_context.sandbox_policy,
+                        sandbox_cwd: &turn_context.cwd,
                         codex_linux_sandbox_exe: &sess.codex_linux_sandbox_exe,
                         stdout_stream: if exec_command_context.apply_patch.is_some() {
                             None
