@@ -129,6 +129,7 @@ use crate::unified_exec::UnifiedExecSessionManager;
 use crate::user_instructions::UserInstructions;
 use crate::user_notification::UserNotification;
 use crate::util::backoff;
+use crate::agent_manager::{AgentManager, AgentRoutingResult};
 use codex_mcp_client::McpClient;
 use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -465,7 +466,7 @@ impl Codex {
         let conversation_id = session.conversation_id;
 
         // This task will run until Op::Shutdown is received.
-        tokio::spawn(submission_loop(
+        tokio::spawn(refactored_submission_loop(
             session.clone(),
             turn_context,
             config,
@@ -567,7 +568,7 @@ pub(crate) struct MultiAgentComponents {
 
 /// The context needed for a single turn of the conversation.
 #[derive(Debug)]
-pub(crate) struct TurnContext {
+pub struct TurnContext {
     pub(crate) client: ModelClient,
     /// The session's current working directory. All relative paths provided by
     /// the model as well as sandbox policies are resolved against this path
@@ -992,6 +993,21 @@ impl Session {
         state.approved_commands.insert(cmd);
     }
 
+    /// Get access to multi-agent components for agent coordination
+    pub fn get_multi_agent_components(&self) -> Option<&MultiAgentComponents> {
+        self.multi_agent_components.as_ref()
+    }
+
+    /// Get the conversation ID for this session
+    pub fn get_conversation_id(&self) -> ConversationId {
+        self.conversation_id
+    }
+
+    /// Get access to the MCP connection manager
+    pub fn get_mcp_connection_manager(&self) -> &McpConnectionManager {
+        &self.mcp_connection_manager
+    }
+
     /// Records input items: always append to conversation history and
     /// persist these response items to rollout.
     async fn record_conversation_items(&self, items: &[ResponseItem]) {
@@ -1285,7 +1301,7 @@ impl Session {
             .await
     }
 
-    fn interrupt_task(&self) {
+    pub fn interrupt_task(&self) {
         info!("interrupt received: abort current task, if any");
         let mut state = self.state.lock_unchecked();
         state.pending_approvals.clear();
@@ -1347,14 +1363,14 @@ pub(crate) struct ApplyPatchCommandContext {
 }
 
 /// A series of Turns in response to user input.
-pub(crate) struct AgentTask {
+pub struct AgentTask {
     sess: Arc<Session>,
     sub_id: String,
     handle: AbortHandle,
 }
 
 impl AgentTask {
-    fn spawn(
+    pub fn spawn(
         sess: Arc<Session>,
         turn_context: Arc<TurnContext>,
         sub_id: String,
@@ -1374,7 +1390,7 @@ impl AgentTask {
         }
     }
 
-    fn compact(
+    pub fn compact(
         sess: Arc<Session>,
         turn_context: Arc<TurnContext>,
         sub_id: String,
@@ -1413,7 +1429,84 @@ impl AgentTask {
     }
 }
 
+/// Refactored submission loop that uses the new agent architecture
+async fn refactored_submission_loop(
+    sess: Arc<Session>,
+    turn_context: TurnContext,
+    config: Arc<Config>,
+    rx_sub: Receiver<Submission>,
+) {
+    let agent_manager = AgentManager::new(sess.clone());
+    let turn_context = Arc::new(turn_context);
+    
+    // To break out of this loop, send Op::Shutdown.
+    while let Ok(sub) = rx_sub.recv().await {
+        debug!(?sub, "Submission");
+        
+        // Use the AgentManager to route submissions
+        match agent_manager.route_submission(sub.clone()) {
+            AgentRoutingResult::HandledByMainAgent => {
+                // Main agent handled the operation (session-level operations)
+                debug!("Submission handled by MainAgent: {}", sub.id);
+            }
+            AgentRoutingResult::HandledBySubAgent => {
+                // Sub agent handled the operation (subagent-specific operations)
+                debug!("Submission handled by SubAgent: {}", sub.id);
+            }
+            AgentRoutingResult::RequiresTaskCreation(submission) => {
+                // Handle user input operations that require task creation
+                match submission.op {
+                    Op::UserInput { items } => {
+                        // Try to inject input into current task
+                        if let Err(items) = sess.inject_input(items) {
+                            // No current task, spawn a new one
+                            tracing::debug!("Creating agent task for UserInput: sub_id={}", submission.id);
+                            let task = AgentTask::spawn(sess.clone(), turn_context.clone(), submission.id, items);
+                            sess.set_task(task);
+                        }
+                    }
+                    _ => {
+                        warn!("Unexpected operation in RequiresTaskCreation: {:?}", submission.op);
+                    }
+                }
+            }
+            AgentRoutingResult::Unhandled(submission) => {
+                // Handle operations that weren't routed to any agent
+                match submission.op {
+                    Op::Interrupt => {
+                        sess.interrupt_task();
+                    }
+                    Op::Shutdown => {
+                        info!("Shutting down Codex instance");
+                        let event = Event {
+                            id: submission.id.clone(),
+                            msg: EventMsg::ShutdownComplete,
+                        };
+                        sess.send_event(event).await;
+                        break;
+                    }
+                    _ => {
+                        // Fall back to original submission loop for unhandled operations
+                        warn!("Operation not yet handled by refactored submission loop: {:?}", submission.op);
+                    }
+                }
+            }
+        }
+    }
+    debug!("Refactored agent loop exited");
+}
+
 async fn submission_loop(
+    sess: Arc<Session>,
+    turn_context: TurnContext,
+    config: Arc<Config>,
+    rx_sub: Receiver<Submission>,
+) {
+    // Use the refactored submission loop
+    refactored_submission_loop(sess, turn_context, config, rx_sub).await;
+}
+
+async fn original_submission_loop(
     sess: Arc<Session>,
     turn_context: TurnContext,
     config: Arc<Config>,

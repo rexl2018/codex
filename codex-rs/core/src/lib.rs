@@ -6,6 +6,11 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 mod apply_patch;
+pub mod agent_task_factory;
+pub mod sub_agent;
+pub mod main_agent;
+pub mod agent;
+pub mod agent_manager;
 pub mod auth;
 pub mod bash;
 mod chat_completions;
@@ -25,7 +30,9 @@ mod conversation_history;
 pub mod custom_prompts;
 mod environment_context;
 pub mod error;
+pub mod error_handling;
 pub mod exec;
+pub mod performance;
 mod exec_command;
 pub mod exec_env;
 mod flags;
