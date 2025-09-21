@@ -73,6 +73,7 @@ impl LLMSubagentExecutor {
         let executor = Arc::new(CodexFunctionExecutor::new(
             context_repo.clone(),
             mcp_connection_manager.clone(),
+            None, // No subagent manager needed for subagent executor itself
             std::path::PathBuf::from("."), // Default working directory
         ));
 

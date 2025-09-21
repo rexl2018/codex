@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::protocol::{BootstrapPath, SubagentType};
 use serde_json;
 use tracing::{debug, error, info, warn};
 
@@ -16,6 +17,26 @@ use crate::unified_error_types::{
 use crate::unified_error_handler::{handle_error, GLOBAL_ERROR_HANDLER};
 use crate::context_store::IContextRepository;
 use crate::mcp_connection_manager::McpConnectionManager;
+use crate::subagent_manager::{ISubagentManager, SubagentTaskSpec};
+use serde::Deserialize;
+
+/// Arguments for create_subagent_task function call
+#[derive(Debug, Deserialize)]
+struct CreateSubagentTaskArgs {
+    agent_type: String,
+    title: String,
+    description: String,
+    #[serde(default)]
+    context_refs: Vec<String>,
+    #[serde(default)]
+    bootstrap_paths: Vec<BootstrapPath>,
+    #[serde(default = "default_auto_launch")]
+    auto_launch: bool,
+}
+
+fn default_auto_launch() -> bool {
+    true
+}
 
 /// Concrete implementation of UniversalFunctionExecutor that integrates with existing codex systems
 pub struct CodexFunctionExecutor {
@@ -23,6 +44,8 @@ pub struct CodexFunctionExecutor {
     context_repository: Arc<dyn IContextRepository>,
     /// MCP connection manager for MCP tool calls
     mcp_connection_manager: Option<Arc<McpConnectionManager>>,
+    /// Subagent manager for creating and managing subagents
+    subagent_manager: Option<Arc<dyn ISubagentManager>>,
     /// Working directory for file operations
     working_directory: PathBuf,
 }
@@ -32,11 +55,13 @@ impl CodexFunctionExecutor {
     pub fn new(
         context_repository: Arc<dyn IContextRepository>,
         mcp_connection_manager: Option<Arc<McpConnectionManager>>,
+        subagent_manager: Option<Arc<dyn ISubagentManager>>,
         working_directory: PathBuf,
     ) -> Self {
         Self {
             context_repository,
             mcp_connection_manager,
+            subagent_manager,
             working_directory,
         }
     }
@@ -430,13 +455,106 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-        // This would integrate with the existing subagent creation logic
-        // For now, return a placeholder implementation
-        warn!("Subagent creation not yet integrated with unified function executor");
-        
-        FunctionCallOutputPayload {
-            content: "Subagent creation functionality is being migrated to the unified system. Please use the existing create_subagent_task function for now.".to_string(),
-            success: Some(false),
+        let error_context = ErrorContext::new("CodexFunctionExecutor")
+            .with_function("execute_create_subagent_task")
+            .with_info("call_id", &context.call_id);
+
+        // Check if subagent manager is available
+        let subagent_manager = match &self.subagent_manager {
+            Some(manager) => manager,
+            None => {
+                let error_msg = "Subagent manager not available. Multi-agent functionality may not be enabled.";
+                warn!("{}", error_msg);
+                return FunctionCallOutputPayload {
+                    content: error_msg.to_string(),
+                    success: Some(false),
+                };
+            }
+        };
+
+        // Parse arguments
+        let args: CreateSubagentTaskArgs = match serde_json::from_str(&arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                let error_msg = format!("Failed to parse create_subagent_task arguments: {}", e);
+                error!("{}", error_msg);
+                return FunctionCallOutputPayload {
+                    content: error_msg,
+                    success: Some(false),
+                };
+            }
+        };
+
+        // Parse agent type
+        let agent_type = match args.agent_type.to_lowercase().as_str() {
+            "explorer" => SubagentType::Explorer,
+            "coder" => SubagentType::Coder,
+            _ => {
+                let error_msg = format!("Invalid agent_type '{}'. Must be 'explorer' or 'coder'", args.agent_type);
+                error!("{}", error_msg);
+                return FunctionCallOutputPayload {
+                    content: error_msg,
+                    success: Some(false),
+                };
+            }
+        };
+
+        // Create subagent task specification
+        let spec = SubagentTaskSpec {
+            agent_type: agent_type.clone(),
+            title: args.title.clone(),
+            description: args.description,
+            context_refs: args.context_refs,
+            bootstrap_paths: args.bootstrap_paths,
+            max_turns: Some(50), // Default max turns
+            timeout_ms: Some(300_000), // 5 minutes default timeout
+            network_access: None,
+        };
+
+        // Create the task
+        match subagent_manager.create_task(spec).await {
+            Ok(task_id) => {
+                info!("Successfully created subagent task '{}' with ID: {}", args.title, task_id);
+                
+                let mut response = format!("Successfully created {:?} subagent task '{}' with ID: {}", 
+                    agent_type, args.title, task_id);
+
+                // Auto-launch if requested
+                if args.auto_launch {
+                    match subagent_manager.launch_subagent(&task_id).await {
+                        Ok(_handle) => {
+                            info!("Auto-launched subagent: task_id={}", task_id);
+                            response.push_str("\nSubagent launched and executing task...");
+                        }
+                        Err(e) => {
+                            let error_msg = format!("Failed to auto-launch subagent: {}", e);
+                            warn!("{}", error_msg);
+                            response.push_str(&format!("\nWarning: {}", error_msg));
+                        }
+                    }
+                }
+
+                FunctionCallOutputPayload {
+                    content: response,
+                    success: Some(true),
+                }
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to create subagent task: {}", e);
+                error!("{}", error_msg);
+                
+                GLOBAL_ERROR_HANDLER
+                    .handle_error(
+                        UnifiedError::function_call(
+                            "create_subagent_task",
+                            error_msg.clone(),
+                            FunctionCallErrorCode::ExecutionFailed,
+                        ),
+                        Some(error_context),
+                        Some(context.call_id.clone()),
+                    )
+                    .await
+            }
         }
     }
 
@@ -550,6 +668,7 @@ mod tests {
         let executor = CodexFunctionExecutor::new(
             context_repo,
             None,
+            None, // No subagent manager for this test
             PathBuf::from("/tmp"),
         );
         
@@ -575,6 +694,7 @@ mod tests {
         let executor = CodexFunctionExecutor::new(
             context_repo.clone(),
             None,
+            None, // No subagent manager for this test
             PathBuf::from("/tmp"),
         );
         
