@@ -691,6 +691,7 @@ dependencies = [
  "eventsource-stream",
  "futures",
  "landlock",
+ "lazy_static",
  "libc",
  "maplit",
  "mcp-types",

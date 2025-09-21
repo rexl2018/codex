@@ -1,0 +1,602 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use codex_protocol::models::FunctionCallOutputPayload;
+use serde_json;
+use tracing::{debug, error, info, warn};
+
+use crate::unified_function_handler::{
+    UniversalFunctionCallContext, UniversalFunctionExecutor,
+};
+use crate::unified_error_types::{
+    UnifiedError, UnifiedResult, ErrorContext,
+    FunctionCallErrorCode, FileSystemErrorCode, ShellErrorCode,
+    ContextErrorCode, FileSystemOperation, ContextOperation,
+};
+use crate::unified_error_handler::{handle_error, GLOBAL_ERROR_HANDLER};
+use crate::context_store::IContextRepository;
+use crate::mcp_connection_manager::McpConnectionManager;
+
+/// Concrete implementation of UniversalFunctionExecutor that integrates with existing codex systems
+pub struct CodexFunctionExecutor {
+    /// Context repository for storing and retrieving contexts
+    context_repository: Arc<dyn IContextRepository>,
+    /// MCP connection manager for MCP tool calls
+    mcp_connection_manager: Option<Arc<McpConnectionManager>>,
+    /// Working directory for file operations
+    working_directory: PathBuf,
+}
+
+impl CodexFunctionExecutor {
+    /// Create a new CodexFunctionExecutor
+    pub fn new(
+        context_repository: Arc<dyn IContextRepository>,
+        mcp_connection_manager: Option<Arc<McpConnectionManager>>,
+        working_directory: PathBuf,
+    ) -> Self {
+        Self {
+            context_repository,
+            mcp_connection_manager,
+            working_directory,
+        }
+    }
+
+    /// Resolve file path relative to working directory
+    fn resolve_path(&self, file_path: &str) -> PathBuf {
+        if std::path::Path::new(file_path).is_absolute() {
+            PathBuf::from(file_path)
+        } else {
+            self.working_directory.join(file_path)
+        }
+    }
+
+    /// Validate file path for security
+    fn validate_file_path(&self, file_path: &str) -> UnifiedResult<PathBuf> {
+        let path = self.resolve_path(file_path);
+        
+        // Check for path traversal attempts
+        if file_path.contains("..") {
+            return Err(UnifiedError::file_system(
+                FileSystemOperation::Read,
+                file_path,
+                "Path traversal not allowed",
+                FileSystemErrorCode::InvalidPath,
+            ));
+        }
+        
+        // Check for restricted paths
+        let restricted_paths = [
+            "/etc/passwd",
+            "/etc/shadow",
+            "/etc/hosts",
+            "/proc/",
+            "/sys/",
+        ];
+        
+        let path_str = path.to_string_lossy();
+        for restricted in &restricted_paths {
+            if path_str.starts_with(restricted) {
+                return Err(UnifiedError::file_system(
+                    FileSystemOperation::Read,
+                    file_path,
+                    "Access to restricted path denied",
+                    FileSystemErrorCode::PermissionDenied,
+                ));
+            }
+        }
+        
+        Ok(path)
+    }
+
+    /// Execute shell command using existing codex shell infrastructure
+    async fn execute_shell_command(
+        &self,
+        command: &str,
+        context: &UniversalFunctionCallContext,
+    ) -> UnifiedResult<String> {
+        debug!("Executing shell command: {}", command);
+        
+        // Parse command into arguments
+        let args = match shlex::split(command) {
+            Some(args) => args,
+            None => {
+                return Err(UnifiedError::shell_execution(
+                    command,
+                    "Failed to parse shell command",
+                    None,
+                    ShellErrorCode::InvalidCommand,
+                ));
+            }
+        };
+        
+        if args.is_empty() {
+            return Err(UnifiedError::shell_execution(
+                command,
+                "Empty command",
+                None,
+                ShellErrorCode::InvalidCommand,
+            ));
+        }
+        
+        // Create exec params
+        let exec_params = crate::exec::ExecParams {
+            command: args,
+            cwd: context.cwd.clone(),
+            timeout_ms: Some(300000), // 5 minutes default
+            env: std::collections::HashMap::new(),
+            with_escalated_permissions: None,
+            justification: None,
+        };
+        
+        // Execute using existing exec infrastructure
+        match crate::exec::process_exec_tool_call(
+            exec_params,
+            crate::exec::SandboxType::None,
+            &crate::protocol::SandboxPolicy::ReadOnly,
+            &context.cwd,
+            &None,
+            None,
+        ).await {
+            Ok(output) => {
+                debug!("Shell command completed successfully");
+                Ok(format!("Command executed successfully.\n\nOutput:\n{}", output.aggregated_output.text))
+            }
+            Err(e) => {
+                error!("Shell command failed: {}", e);
+                Err(UnifiedError::shell_execution(
+                    command,
+                    format!("Command execution failed: {}", e),
+                    None,
+                    ShellErrorCode::ExecutionFailed,
+                ))
+            }
+        }
+    }
+
+    /// Read file content with size limits and validation
+    async fn read_file_content(&self, file_path: &str) -> UnifiedResult<String> {
+        let path = self.validate_file_path(file_path)?;
+        
+        // Check if file exists
+        if !path.exists() {
+            return Err(UnifiedError::file_system(
+                FileSystemOperation::Read,
+                file_path,
+                "File not found",
+                FileSystemErrorCode::FileNotFound,
+            ));
+        }
+        
+        // Check if it's a file (not a directory)
+        if !path.is_file() {
+            return Err(UnifiedError::file_system(
+                FileSystemOperation::Read,
+                file_path,
+                "Path is not a file",
+                FileSystemErrorCode::NotAFile,
+            ));
+        }
+        
+        // Check file size
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                return Err(UnifiedError::file_system(
+                    FileSystemOperation::Read,
+                    file_path,
+                    format!("Failed to read file metadata: {}", e),
+                    FileSystemErrorCode::IoError,
+                ));
+            }
+        };
+        
+        const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
+        if metadata.len() > MAX_FILE_SIZE {
+            return Err(UnifiedError::file_system(
+                FileSystemOperation::Read,
+                file_path,
+                format!("File too large: {} bytes (max: {} bytes)", metadata.len(), MAX_FILE_SIZE),
+                FileSystemErrorCode::FileTooLarge,
+            ));
+        }
+        
+        // Read file content
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                debug!("Successfully read file: {} ({} bytes)", file_path, content.len());
+                Ok(content)
+            }
+            Err(e) => {
+                error!("Failed to read file {}: {}", file_path, e);
+                Err(UnifiedError::file_system(
+                    FileSystemOperation::Read,
+                    file_path,
+                    format!("Failed to read file: {}", e),
+                    FileSystemErrorCode::IoError,
+                ))
+            }
+        }
+    }
+
+    /// Write file content with validation and backup
+    async fn write_file_content(
+        &self,
+        file_path: &str,
+        content: &str,
+    ) -> UnifiedResult<String> {
+        let path = self.validate_file_path(file_path)?;
+        
+        // Check content size
+        const MAX_CONTENT_SIZE: usize = 10 * 1024 * 1024; // 10MB
+        if content.len() > MAX_CONTENT_SIZE {
+            return Err(UnifiedError::file_system(
+                FileSystemOperation::Write,
+                file_path,
+                format!("Content too large: {} bytes (max: {} bytes)", content.len(), MAX_CONTENT_SIZE),
+                FileSystemErrorCode::FileTooLarge,
+            ));
+        }
+        
+        // Create parent directories if they don't exist
+        if let Some(parent) = path.parent() {
+            if !parent.exists() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    return Err(UnifiedError::file_system(
+                        FileSystemOperation::Write,
+                        file_path,
+                        format!("Failed to create parent directories: {}", e),
+                        FileSystemErrorCode::IoError,
+                    ));
+                }
+            }
+        }
+        
+        // Write file content
+        match std::fs::write(&path, content) {
+            Ok(()) => {
+                info!("Successfully wrote file: {} ({} bytes)", file_path, content.len());
+                Ok(format!("File written successfully: {} ({} bytes)", file_path, content.len()))
+            }
+            Err(e) => {
+                error!("Failed to write file {}: {}", file_path, e);
+                Err(UnifiedError::file_system(
+                    FileSystemOperation::Write,
+                    file_path,
+                    format!("Failed to write file: {}", e),
+                    FileSystemErrorCode::IoError,
+                ))
+            }
+        }
+    }
+
+    /// Store context using the context repository
+    async fn store_context_item(
+        &self,
+        id: &str,
+        summary: &str,
+        content: &str,
+    ) -> UnifiedResult<String> {
+        // Validate context ID
+        if id.is_empty() {
+            return Err(UnifiedError::context(
+                ContextOperation::Store,
+                Some(id.to_string()),
+                "Context ID cannot be empty",
+                ContextErrorCode::InvalidContextId,
+            ));
+        }
+        
+        // Validate content size
+        const MAX_CONTEXT_SIZE: usize = 1024 * 1024; // 1MB
+        if content.len() > MAX_CONTEXT_SIZE {
+            return Err(UnifiedError::context(
+                ContextOperation::Store,
+                Some(id.to_string()),
+                format!("Context content too large: {} bytes (max: {} bytes)", content.len(), MAX_CONTEXT_SIZE),
+                ContextErrorCode::ContentTooLarge,
+            ));
+        }
+        
+        // Create context item using the Context::new constructor
+        let context_item = crate::context_store::Context::new(
+            id.to_string(),
+            summary.to_string(),
+            content.to_string(),
+            "unified_executor".to_string(), // created_by
+            None, // task_id
+        );
+        
+        // Store context
+        match self.context_repository.store_context(context_item).await {
+            Ok(()) => {
+                info!("Successfully stored context: {} - {}", id, summary);
+                Ok(format!("Context stored successfully: {} - {}", id, summary))
+            }
+            Err(e) => {
+                error!("Failed to store context {}: {}", id, e);
+                Err(UnifiedError::context(
+                    ContextOperation::Store,
+                    Some(id.to_string()),
+                    format!("Failed to store context: {}", e),
+                    ContextErrorCode::StorageFull,
+                ))
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl UniversalFunctionExecutor for CodexFunctionExecutor {
+    async fn execute_shell(
+        &self,
+        command: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        let error_context = ErrorContext::new("CodexFunctionExecutor")
+            .with_function("execute_shell")
+            .with_info("command", &command)
+            .with_info("agent_type", &format!("{:?}", context.agent_type));
+        
+        match self.execute_shell_command(&command, context).await {
+            Ok(output) => FunctionCallOutputPayload {
+                content: output,
+                success: Some(true),
+            },
+            Err(error) => {
+                GLOBAL_ERROR_HANDLER
+                    .handle_error(error, Some(error_context), Some(context.call_id.clone()))
+                    .await
+            }
+        }
+    }
+
+    async fn execute_read_file(
+        &self,
+        file_path: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        let error_context = ErrorContext::new("CodexFunctionExecutor")
+            .with_function("execute_read_file")
+            .with_info("file_path", &file_path)
+            .with_info("agent_type", &format!("{:?}", context.agent_type));
+        
+        match self.read_file_content(&file_path).await {
+            Ok(content) => FunctionCallOutputPayload {
+                content: format!("File content of '{}':\n\n{}", file_path, content),
+                success: Some(true),
+            },
+            Err(error) => {
+                GLOBAL_ERROR_HANDLER
+                    .handle_error(error, Some(error_context), Some(context.call_id.clone()))
+                    .await
+            }
+        }
+    }
+
+    async fn execute_write_file(
+        &self,
+        file_path: String,
+        content: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        let error_context = ErrorContext::new("CodexFunctionExecutor")
+            .with_function("execute_write_file")
+            .with_info("file_path", &file_path)
+            .with_info("content_length", &content.len().to_string())
+            .with_info("agent_type", &format!("{:?}", context.agent_type));
+        
+        match self.write_file_content(&file_path, &content).await {
+            Ok(result) => FunctionCallOutputPayload {
+                content: result,
+                success: Some(true),
+            },
+            Err(error) => {
+                GLOBAL_ERROR_HANDLER
+                    .handle_error(error, Some(error_context), Some(context.call_id.clone()))
+                    .await
+            }
+        }
+    }
+
+    async fn execute_store_context(
+        &self,
+        id: String,
+        summary: String,
+        content: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        let error_context = ErrorContext::new("CodexFunctionExecutor")
+            .with_function("execute_store_context")
+            .with_info("context_id", &id)
+            .with_info("summary", &summary)
+            .with_info("content_length", &content.len().to_string())
+            .with_info("agent_type", &format!("{:?}", context.agent_type));
+        
+        match self.store_context_item(&id, &summary, &content).await {
+            Ok(result) => FunctionCallOutputPayload {
+                content: result,
+                success: Some(true),
+            },
+            Err(error) => {
+                GLOBAL_ERROR_HANDLER
+                    .handle_error(error, Some(error_context), Some(context.call_id.clone()))
+                    .await
+            }
+        }
+    }
+
+    async fn execute_create_subagent_task(
+        &self,
+        arguments: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        // This would integrate with the existing subagent creation logic
+        // For now, return a placeholder implementation
+        warn!("Subagent creation not yet integrated with unified function executor");
+        
+        FunctionCallOutputPayload {
+            content: "Subagent creation functionality is being migrated to the unified system. Please use the existing create_subagent_task function for now.".to_string(),
+            success: Some(false),
+        }
+    }
+
+    async fn execute_mcp_tool(
+        &self,
+        tool_name: String,
+        arguments: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        let error_context = ErrorContext::new("CodexFunctionExecutor")
+            .with_function("execute_mcp_tool")
+            .with_info("tool_name", &tool_name)
+            .with_info("agent_type", &format!("{:?}", context.agent_type));
+        
+        if let Some(mcp_manager) = &self.mcp_connection_manager {
+            // Parse server name and tool name
+            let (server_name, actual_tool_name) = if tool_name.contains('/') {
+                let parts: Vec<&str> = tool_name.splitn(2, '/').collect();
+                (parts[0].to_string(), parts[1].to_string())
+            } else {
+                ("default".to_string(), tool_name.clone())
+            };
+            
+            // Parse arguments
+            let args_value: serde_json::Value = match serde_json::from_str(&arguments) {
+                Ok(value) => value,
+                Err(e) => {
+                    let error = UnifiedError::mcp(
+                        &server_name,
+                        &actual_tool_name,
+                        format!("Failed to parse arguments: {}", e),
+                        crate::unified_error_types::McpErrorCode::RequestFailed,
+                    );
+                    return GLOBAL_ERROR_HANDLER
+                        .handle_error(error, Some(error_context), Some(context.call_id.clone()))
+                        .await;
+                }
+            };
+            
+            // Execute MCP tool
+            match mcp_manager.call_tool(&server_name, &actual_tool_name, Some(args_value), None).await {
+                Ok(result) => {
+                    // Format result for display
+                    let mut output = String::new();
+                    for content_block in &result.content {
+                        match content_block {
+                            mcp_types::ContentBlock::TextContent(text_content) => {
+                                output.push_str(&text_content.text);
+                                output.push('\n');
+                            }
+                            mcp_types::ContentBlock::ImageContent(_) => {
+                                output.push_str("[Image content]\n");
+                            }
+                            mcp_types::ContentBlock::AudioContent(_) => {
+                                output.push_str("[Audio content]\n");
+                            }
+                            mcp_types::ContentBlock::ResourceLink(_) => {
+                                output.push_str("[Resource link]\n");
+                            }
+                            mcp_types::ContentBlock::EmbeddedResource(_) => {
+                                output.push_str("[Embedded resource]\n");
+                            }
+                        }
+                    }
+                    
+                    if output.is_empty() {
+                        output = "MCP tool executed successfully (no output)".to_string();
+                    }
+                    
+                    FunctionCallOutputPayload {
+                        content: output.trim().to_string(),
+                        success: Some(!result.is_error.unwrap_or(false)),
+                    }
+                }
+                Err(e) => {
+                    let error = UnifiedError::mcp(
+                        &server_name,
+                        &actual_tool_name,
+                        format!("MCP tool execution failed: {}", e),
+                        crate::unified_error_types::McpErrorCode::RequestFailed,
+                    );
+                    GLOBAL_ERROR_HANDLER
+                        .handle_error(error, Some(error_context), Some(context.call_id.clone()))
+                        .await
+                }
+            }
+        } else {
+            let error = UnifiedError::mcp(
+                "unknown",
+                &tool_name,
+                "MCP connection manager not available",
+                crate::unified_error_types::McpErrorCode::ServerNotFound,
+            );
+            GLOBAL_ERROR_HANDLER
+                .handle_error(error, Some(error_context), Some(context.call_id.clone()))
+                .await
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context_store::InMemoryContextRepository;
+    use crate::unified_function_handler::{AgentType, FunctionPermissions};
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn test_file_operations() {
+        let context_repo = Arc::new(InMemoryContextRepository::new());
+        let executor = CodexFunctionExecutor::new(
+            context_repo,
+            None,
+            PathBuf::from("/tmp"),
+        );
+        
+        let context = UniversalFunctionCallContext {
+            cwd: PathBuf::from("/tmp"),
+            sub_id: "test".to_string(),
+            call_id: "call_123".to_string(),
+            agent_type: AgentType::Main,
+            permissions: FunctionPermissions::for_agent_type(&AgentType::Main),
+        };
+        
+        // Test path validation
+        let result = executor.validate_file_path("../etc/passwd");
+        assert!(result.is_err());
+        
+        let result = executor.validate_file_path("test.txt");
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_context_storage() {
+        let context_repo = Arc::new(InMemoryContextRepository::new());
+        let executor = CodexFunctionExecutor::new(
+            context_repo.clone(),
+            None,
+            PathBuf::from("/tmp"),
+        );
+        
+        let context = UniversalFunctionCallContext {
+            cwd: PathBuf::from("/tmp"),
+            sub_id: "test".to_string(),
+            call_id: "call_123".to_string(),
+            agent_type: AgentType::Main,
+            permissions: FunctionPermissions::for_agent_type(&AgentType::Main),
+        };
+        
+        let result = executor.execute_store_context(
+            "test_context".to_string(),
+            "Test summary".to_string(),
+            "Test content".to_string(),
+            &context,
+        ).await;
+        
+        assert_eq!(result.success, Some(true));
+        
+        // Verify context was stored
+        let stored_context = context_repo.get_context("test_context").await;
+        assert!(stored_context.is_ok());
+    }
+}

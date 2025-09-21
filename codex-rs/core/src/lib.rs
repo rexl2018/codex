@@ -10,7 +10,7 @@ pub mod agent_task_factory;
 pub mod sub_agent;
 pub mod main_agent;
 pub mod agent;
-pub mod agent_manager;
+
 pub mod auth;
 pub mod bash;
 mod chat_completions;
@@ -30,7 +30,7 @@ mod conversation_history;
 pub mod custom_prompts;
 mod environment_context;
 pub mod error;
-pub mod error_handling;
+
 pub mod exec;
 pub mod performance;
 mod exec_command;
@@ -64,7 +64,14 @@ pub use conversation_manager::NewConversation;
 pub use auth::AuthManager;
 pub use auth::CodexAuth;
 pub mod default_client;
-pub mod function_call_handler;
+
+pub mod unified_function_handler;
+pub mod function_call_router;
+pub mod tool_config;
+pub mod tool_registry;
+pub mod unified_error_types;
+pub mod unified_error_handler;
+pub mod unified_function_executor;
 pub mod llm_subagent_executor;
 pub mod mock_subagent_executor;
 pub mod model_family;

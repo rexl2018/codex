@@ -5,13 +5,14 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::client::ModelClient;
-use crate::context_store::Context;
 use crate::context_store::IContextRepository;
 use crate::context_store::InMemoryContextRepository;
-use crate::function_call_handler::FunctionCallContext;
-use crate::function_call_handler::FunctionCallHandler;
-use crate::function_call_handler::SubagentExecutor;
 use crate::mcp_connection_manager::McpConnectionManager;
+use crate::unified_function_handler::{
+    UniversalFunctionCallHandler, UniversalFunctionCallContext, AgentType, FunctionPermissions,
+};
+use crate::unified_function_executor::CodexFunctionExecutor;
+use crate::function_call_router::{FunctionCallRouter, FunctionCallRouterConfig};
 use crate::subagent_manager::MessageEntry;
 use crate::subagent_manager::SubagentReport;
 use crate::subagent_manager::SubagentTask;
@@ -26,9 +27,8 @@ pub struct LLMSubagentExecutor {
     context_repo: Arc<InMemoryContextRepository>,
     model_client: Arc<ModelClient>,
     max_turns: u32,
-    function_handler: FunctionCallHandler<SubagentExecutor>,
+    function_router: FunctionCallRouter<CodexFunctionExecutor>,
     mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
-    mcp_connection_manager: Option<Arc<McpConnectionManager>>,
     event_sender: tokio::sync::mpsc::UnboundedSender<codex_protocol::protocol::Event>,
 }
 
@@ -69,16 +69,35 @@ impl LLMSubagentExecutor {
         mcp_connection_manager: Option<Arc<McpConnectionManager>>,
         event_sender: tokio::sync::mpsc::UnboundedSender<codex_protocol::protocol::Event>,
     ) -> Self {
-        let executor = Arc::new(SubagentExecutor);
-        let function_handler = FunctionCallHandler::new(executor);
+        // Create the unified function executor
+        let executor = Arc::new(CodexFunctionExecutor::new(
+            context_repo.clone(),
+            mcp_connection_manager.clone(),
+            std::path::PathBuf::from("."), // Default working directory
+        ));
+
+        // Create router configuration for subagents (will be determined by task type)
+        let config = FunctionCallRouterConfig {
+            cwd: std::path::PathBuf::from("."),
+            agent_type: AgentType::Explorer, // Default, will be updated per task
+            enable_mcp_tools: mcp_tools.is_some(),
+            max_execution_time_ms: Some(300000), // 5 minutes
+        };
+
+        // Create the function call router
+        let function_router = FunctionCallRouter::new(
+            executor,
+            config,
+            mcp_connection_manager,
+            Some(context_repo.clone()),
+        );
 
         Self {
             context_repo,
             model_client,
             max_turns,
-            function_handler,
+            function_router,
             mcp_tools,
-            mcp_connection_manager,
             event_sender,
         }
     }
@@ -88,27 +107,31 @@ impl LLMSubagentExecutor {
         &self,
         agent_type: &SubagentType,
     ) -> Vec<crate::openai_tools::OpenAiTool> {
-        // Convert SubagentType to AgentType and use the unified tool configuration
-        let unified_agent_type = crate::openai_tools::AgentType::from(agent_type.clone());
-
-        // Create a minimal tools config for subagents (they don't need all the main agent features)
-        let tools_config = crate::openai_tools::ToolsConfig {
-            shell_type: crate::openai_tools::ConfigShellToolType::Default,
-            plan_tool: false,
-            apply_patch_tool_type: None,
-            web_search_request: false,
-            include_view_image_tool: false,
-            experimental_unified_exec_tool: false,
-            include_subagent_task_tool: false,
+        // Convert SubagentType to unified AgentType
+        let unified_agent_type = match agent_type {
+            SubagentType::Explorer => AgentType::Explorer,
+            SubagentType::Coder => AgentType::Coder,
         };
 
-        // Use the unified get_openai_tools function
-        crate::openai_tools::get_openai_tools(
-            &tools_config,
-            self.mcp_tools.clone(), // Subagents can use MCP tools
-            unified_agent_type,
-        )
+        // Use the unified tool registry to get tools for this agent type
+        match crate::tool_registry::GLOBAL_TOOL_REGISTRY.get_tools_for_agent(&unified_agent_type) {
+            Ok(tools) => {
+                tracing::info!(
+                    "Created {} tools for subagent using unified tool registry: {:?}",
+                    tools.len(),
+                    unified_agent_type
+                );
+                tools
+            }
+            Err(e) => {
+                tracing::error!("Failed to get tools from unified registry: {}", e);
+                // Return empty tools list if unified registry fails
+                vec![]
+            }
+        }
     }
+
+
 
     /// Send an event to the UI
     async fn send_event(&self, event: codex_protocol::protocol::Event) {
@@ -640,7 +663,7 @@ impl LLMSubagentExecutor {
         })
     }
 
-    /// Execute function calls and return results as ResponseItems
+    /// Execute function calls using the unified function call router
     async fn execute_function_calls(
         &self,
         function_calls: &[FunctionCall],
@@ -648,108 +671,84 @@ impl LLMSubagentExecutor {
     ) -> Vec<codex_protocol::models::ResponseItem> {
         let mut results = Vec::new();
 
+        // Determine agent type from task
+        let agent_type = match task.agent_type {
+            SubagentType::Explorer => AgentType::Explorer,
+            SubagentType::Coder => AgentType::Coder,
+        };
+
         for func_call in function_calls {
             tracing::info!(
-                "Executing function call: {}({})",
+                "Executing function call: {}({}) using unified router",
                 func_call.name,
                 func_call.arguments
             );
 
-            // Handle store_context specially to actually store in context repository
-            if func_call.name == "store_context" {
-                match self
-                    .handle_store_context_call(&func_call.arguments, task)
-                    .await
-                {
-                    Ok(content) => {
-                        results.push(codex_protocol::models::ResponseItem::Message {
-                            id: None,
-                            role: "user".to_string(),
-                            content: vec![codex_protocol::models::ContentItem::OutputText {
-                                text: content,
-                            }],
-                        });
-                    }
-                    Err(error) => {
-                        results.push(codex_protocol::models::ResponseItem::Message {
-                            id: None,
-                            role: "user".to_string(),
-                            content: vec![codex_protocol::models::ContentItem::OutputText {
-                                text: format!("Error storing context: {}", error),
-                            }],
-                        });
-                    }
-                }
-                continue;
-            }
-
-            // Debug: Log the original function call details from OpenAI
-            tracing::warn!(
-                "🔍 DEBUG: Function call from OpenAI - name: '{}', call_id: '{}'", 
-                func_call.name, 
-                func_call.call_id
-            );
-
-            // Check if this is an MCP tool call first
-            let result = if let Some(mcp_tools) = &self.mcp_tools {
-                if let Some((server_name, tool_name)) = self.parse_mcp_tool_name(&func_call.name) {
-                    // This is an MCP tool call
-                    tracing::info!("Executing MCP tool call: {}::{}", server_name, tool_name);
-                    tracing::warn!(
-                        "🔍 DEBUG: Parsed MCP tool - server: '{}', tool: '{}', original_call_id: '{}'", 
-                        server_name, 
-                        tool_name, 
-                        func_call.call_id
-                    );
-                    self.handle_mcp_tool_call(
-                        &server_name,
-                        &tool_name,
-                        &func_call.arguments,
-                        &func_call.call_id,
-                    )
-                    .await
-                } else {
-                    // Check if this looks like an unknown tool call
-                    self.handle_unknown_tool_call(&func_call, task).await
-                }
-            } else {
-                // No MCP tools available, handle normally
-                self.handle_regular_function_call(&func_call, task).await
-            };
-
-            // Convert result to message format
-            let result_content = match result {
-                codex_protocol::models::ResponseInputItem::FunctionCallOutput {
-                    output, ..
-                } => {
-                    if output.success.unwrap_or(false) {
-                        format!(
-                            "Function {} executed successfully:\n{}",
-                            func_call.name, output.content
-                        )
-                    } else {
-                        format!("Function {} failed:\n{}", func_call.name, output.content)
-                    }
-                }
-                codex_protocol::models::ResponseInputItem::Message { content, .. } => {
-                    format!("Function {} result: {:?}", func_call.name, content)
-                }
-                codex_protocol::models::ResponseInputItem::McpToolCallOutput { result, .. } => {
-                    format!("Function {} MCP result: {:?}", func_call.name, result)
-                }
-                codex_protocol::models::ResponseInputItem::CustomToolCallOutput {
-                    output, ..
-                } => {
-                    format!("Function {} custom result: {}", func_call.name, output)
-                }
-            };
-
-            // Create proper tool response using FunctionCallOutput
-            let tool_response = codex_protocol::models::ResponseItem::FunctionCallOutput {
+            // Create context for the function call
+            let context = UniversalFunctionCallContext {
+                cwd: std::path::PathBuf::from("."), // Use task working directory if available
+                sub_id: task.task_id.clone(),
                 call_id: func_call.call_id.clone(),
-                output: codex_protocol::models::FunctionCallOutputPayload {
-                    content: result_content,
-                    success: Some(true), // Assume success for now, could be refined based on actual result
+                agent_type: agent_type.clone(),
+                permissions: FunctionPermissions::for_agent_type(&agent_type),
+            };
+
+            // Use the unified function call router
+            let result = self.function_router.route_function_call(
+                func_call.name.clone(),
+                func_call.arguments.clone(),
+                task.task_id.clone(),
+                func_call.call_id.clone(),
+            ).await;
+
+            // Convert the result to the expected format
+            let tool_response = match result {
+                codex_protocol::models::ResponseInputItem::FunctionCallOutput {
+                    call_id,
+                    output,
+                } => codex_protocol::models::ResponseItem::FunctionCallOutput {
+                    call_id,
+                    output,
+                },
+                codex_protocol::models::ResponseInputItem::McpToolCallOutput { 
+                     call_id, 
+                     result 
+                 } => {
+                    // Convert MCP result to function call output
+                     let content = format!("MCP tool result: {:?}", result);
+                    codex_protocol::models::ResponseItem::FunctionCallOutput {
+                        call_id,
+                        output: codex_protocol::models::FunctionCallOutputPayload {
+                            content,
+                            success: Some(true),
+                        },
+                    }
+                },
+                codex_protocol::models::ResponseInputItem::Message { 
+                     role, 
+                     content 
+                 } => {
+                    // Convert message to function call output
+                    let content_str = format!("Message result: {:?}", content);
+                    codex_protocol::models::ResponseItem::FunctionCallOutput {
+                        call_id: func_call.call_id.clone(),
+                        output: codex_protocol::models::FunctionCallOutputPayload {
+                            content: content_str,
+                            success: Some(true),
+                        },
+                    }
+                },
+                codex_protocol::models::ResponseInputItem::CustomToolCallOutput { 
+                    call_id, 
+                    output 
+                } => {
+                    codex_protocol::models::ResponseItem::FunctionCallOutput {
+                        call_id,
+                        output: codex_protocol::models::FunctionCallOutputPayload {
+                            content: output,
+                            success: Some(true),
+                        },
+                    }
                 },
             };
 
@@ -963,342 +962,27 @@ impl LLMSubagentExecutor {
     /// 1. If tool_name has ":数字" suffix (e.g., "claude-tools__Read:0"), remove the suffix
     /// 2. If tool_name lacks "xxx__" prefix (e.g., "Read"), find and add the correct prefix
     fn parse_mcp_tool_name(&self, tool_name: &str) -> Option<(String, String)> {
-        if let Some(mcp_tools) = &self.mcp_tools {
-            // Step 1: Remove ":数字" suffix if present
-            let base_name = if let Some(colon_pos) = tool_name.find(':') {
-                let suffix = &tool_name[colon_pos + 1..];
-                // Only remove if suffix is purely numeric
-                if suffix.chars().all(|c| c.is_ascii_digit()) {
-                    &tool_name[..colon_pos]
-                } else {
-                    tool_name
-                }
-            } else {
-                tool_name
-            };
-            
-            // Step 2: Try exact match first
-            if mcp_tools.contains_key(base_name) {
-                // Split by "__" delimiter
-                if let Some(pos) = base_name.find("__") {
-                    let server_name = base_name[..pos].to_string();
-                    let actual_tool_name = base_name[pos + 2..].to_string();
-                    return Some((server_name, actual_tool_name));
-                }
-            }
-            
-            // Step 3: If no "__" prefix, try to find a tool that ends with the given name
-            // This handles cases where OpenAI returns "Read" but we registered "claude-tools__Read"
-            if !base_name.contains("__") {
-                for (full_name, _tool) in mcp_tools.iter() {
-                    if let Some(pos) = full_name.find("__") {
-                        let actual_tool_name = &full_name[pos + 2..];
-                        if actual_tool_name == base_name {
-                            let server_name = full_name[..pos].to_string();
-                            return Some((server_name, actual_tool_name.to_string()));
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Handle regular function calls (shell, read_file, write_file, etc.) and send events to TUI
-    async fn handle_unknown_tool_call(
-        &self,
-        func_call: &FunctionCall,
-        task: &SubagentTask,
-    ) -> codex_protocol::models::ResponseInputItem {
-        // Get list of available tools
-        let available_tools = self.create_subagent_tools(&task.agent_type);
-        let tool_names: Vec<String> = available_tools
-            .iter()
-            .map(|tool| match tool {
-                crate::openai_tools::OpenAiTool::Function(func) => func.name.clone(),
-                crate::openai_tools::OpenAiTool::LocalShell {} => "local_shell".to_string(),
-                crate::openai_tools::OpenAiTool::WebSearch {} => "web_search".to_string(),
-                crate::openai_tools::OpenAiTool::Freeform(freeform) => freeform.name.clone(),
-            })
-            .collect();
-
-        let error_message = format!(
-            "❌ Tool '{}' does not exist.\n\n📋 **Available tools:**\n{}\n\n💡 **Please use one of the available tools listed above.**",
-            func_call.name,
-            tool_names.iter().map(|name| format!("  • {}", name)).collect::<Vec<_>>().join("\n")
-        );
-
-        tracing::warn!("Unknown tool call: {} - Available tools: {:?}", func_call.name, tool_names);
-
-        codex_protocol::models::ResponseInputItem::FunctionCallOutput {
-            call_id: func_call.call_id.clone(),
-            output: codex_protocol::models::FunctionCallOutputPayload {
-                content: error_message,
-                success: Some(false),
-            },
-        }
-    }
-
-    async fn handle_regular_function_call(
-        &self,
-        func_call: &FunctionCall,
-        task: &SubagentTask,
-    ) -> codex_protocol::models::ResponseInputItem {
-        tracing::info!(
-            "Subagent executing function call: {} with args: {}",
-            func_call.name,
-            func_call.arguments
-        );
-
-        // Execute the function call
-        let context = crate::function_call_handler::FunctionCallContext {
-            cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-            sub_id: task.task_id.clone(),
-            call_id: func_call.call_id.clone(),
-        };
-
-        let result = self
-            .function_handler
-            .handle_function_call(func_call.name.clone(), func_call.arguments.clone(), context)
-            .await;
-
-        // Send single completion event to TUI with compact format including arguments
-        let completion_message = match &result {
-            codex_protocol::models::ResponseInputItem::FunctionCallOutput { output, .. } => {
-                if output.success.unwrap_or(false) {
-                    format!(
-                        "Subagent completed: {}({}) ✓",
-                        func_call.name, func_call.arguments
-                    )
-                } else {
-                    format!(
-                        "Subagent completed: {}({}) ✗",
-                        func_call.name, func_call.arguments
-                    )
-                }
-            }
-            _ => format!(
-                "Subagent completed: {}({})",
-                func_call.name, func_call.arguments
-            ),
-        };
-
-        let event = codex_protocol::protocol::EventMsg::BackgroundEvent(
-            codex_protocol::protocol::BackgroundEventEvent {
-                message: completion_message,
-            },
-        );
-
-        self.send_event(codex_protocol::protocol::Event {
-            id: "subagent".to_string(),
-            msg: event,
-        })
-        .await;
-
-        result
-    }
-
-    /// Handle MCP tool call - execute the tool directly if available
-    /// Subagents can execute MCP tools if they have access to the tool definitions
-    async fn handle_mcp_tool_call(
-        &self,
-        server_name: &str,
-        tool_name: &str,
-        arguments: &str,
-        call_id: &str,
-    ) -> codex_protocol::models::ResponseInputItem {
-        tracing::info!(
-            "Subagent executing MCP tool: {}::{} with args: {}",
-            server_name,
-            tool_name,
-            arguments
-        );
-
-        // Parse arguments as JSON to validate format
-        let arguments_value = if arguments.trim().is_empty() {
-            None
+        // This method is now handled by the unified function call router
+        // Keeping for backward compatibility if needed
+        if let Some(slash_pos) = tool_name.find('/') {
+            let server_name = tool_name[..slash_pos].to_string();
+            let tool_name = tool_name[slash_pos + 1..].to_string();
+            Some((server_name, tool_name))
         } else {
-            match serde_json::from_str::<serde_json::Value>(arguments) {
-                Ok(value) => Some(value),
-                Err(e) => {
-                    tracing::error!("Failed to parse MCP tool arguments: {}", e);
-                    return codex_protocol::models::ResponseInputItem::FunctionCallOutput {
-                        call_id: call_id.to_string(),
-                        output: codex_protocol::models::FunctionCallOutputPayload {
-                            content: format!("Failed to parse arguments: {}", e),
-                            success: Some(false),
-                        },
-                    };
-                }
-            }
-        };
-
-        // Send MCP tool call begin event to show in TUI
-        let invocation = codex_protocol::protocol::McpInvocation {
-            server: server_name.to_string(),
-            tool: tool_name.to_string(),
-            arguments: arguments_value.clone(),
-        };
-
-        let tool_call_begin_event = codex_protocol::protocol::EventMsg::McpToolCallBegin(
-            codex_protocol::protocol::McpToolCallBeginEvent {
-                call_id: call_id.to_string(),
-                invocation: invocation.clone(),
-            },
-        );
-
-        self.send_event(codex_protocol::protocol::Event {
-            id: "subagent".to_string(),
-            msg: tool_call_begin_event,
-        })
-        .await;
-
-        // Try to execute the MCP tool directly
-        let result = self
-            .execute_mcp_tool_directly(server_name, tool_name, arguments_value.as_ref())
-            .await;
-
-        // Send MCP tool call end event
-        let tool_call_end_event = codex_protocol::protocol::EventMsg::McpToolCallEnd(
-            codex_protocol::protocol::McpToolCallEndEvent {
-                call_id: call_id.to_string(),
-                invocation: invocation.clone(),
-                duration: std::time::Duration::from_millis(100), // Approximate duration
-                result: result.clone(),
-            },
-        );
-
-        self.send_event(codex_protocol::protocol::Event {
-            id: "subagent".to_string(),
-            msg: tool_call_end_event,
-        })
-        .await;
-
-        // Convert MCP tool result to FunctionCallOutput for OpenAI API compatibility
-        let output = match result {
-            Ok(call_result) => {
-                // Extract content from MCP result
-                let content = call_result
-                    .content
-                    .iter()
-                    .map(|content_item| match content_item {
-                        mcp_types::ContentBlock::TextContent(text) => text.text.clone(),
-                        mcp_types::ContentBlock::ImageContent(img) => format!("Image: {}", img.data),
-                        mcp_types::ContentBlock::AudioContent(audio) => format!("Audio: {}", audio.data),
-                        mcp_types::ContentBlock::ResourceLink(link) => {
-                            format!("Resource Link: {}", link.uri)
-                        }
-                        mcp_types::ContentBlock::EmbeddedResource(res) => {
-                            format!("Embedded Resource: {:?}", res.resource)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                codex_protocol::models::FunctionCallOutputPayload {
-                    content,
-                    success: Some(true),
-                }
-            }
-            Err(error_msg) => codex_protocol::models::FunctionCallOutputPayload {
-                content: format!("MCP tool call failed: {}", error_msg),
-                success: Some(false),
-            },
-        };
-
-        // Debug: Log what we're returning to OpenAI
-        tracing::warn!(
-            "🔍 DEBUG: Returning FunctionCallOutput to OpenAI - call_id: '{}', success: {:?}", 
-            call_id, 
-            output.success
-        );
-
-        // Return FunctionCallOutput instead of McpToolCallOutput for OpenAI API compatibility
-        codex_protocol::models::ResponseInputItem::FunctionCallOutput {
-            call_id: call_id.to_string(),
-            output,
+            None
         }
     }
 
-    /// Execute MCP tool directly using the MCP connection manager
-    async fn execute_mcp_tool_directly(
-        &self,
-        server_name: &str,
-        tool_name: &str,
-        arguments: Option<&serde_json::Value>,
-    ) -> Result<mcp_types::CallToolResult, String> {
-        // Check if we have MCP connection manager available
-        if let Some(mcp_manager) = &self.mcp_connection_manager {
-            let full_tool_name = format!("{}__{}", server_name, tool_name);
+    // Note: The following methods have been replaced by the unified function call router:
+    // - handle_unknown_tool_call
+    // - handle_regular_function_call  
+    // - handle_mcp_tool_call
+    // - execute_mcp_tool_directly
+    // - handle_store_context_call
+    //
+    // All function call handling is now done through self.function_router.route_function_call()
 
-            // Check if the tool is available in our tool definitions
-            if let Some(mcp_tools) = &self.mcp_tools {
-                if mcp_tools.contains_key(&full_tool_name) {
-                    // Use the MCP connection manager to call the tool
-                    let arguments_value = arguments.cloned();
 
-                    match mcp_manager
-                        .call_tool(server_name, tool_name, arguments_value, None)
-                        .await
-                    {
-                        Ok(result) => return Ok(result),
-                        Err(e) => {
-                            return Err(format!(
-                                "Failed to execute MCP tool {server_name}::{tool_name}: {e}"
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Tool not found or MCP manager not available
-        Err(format!(
-            "MCP tool {}::{} is not available or MCP connection manager is not configured.",
-            server_name, tool_name
-        ))
-    }
-
-    async fn handle_store_context_call(
-        &self,
-        arguments: &str,
-        task: &SubagentTask,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        use serde::Deserialize;
-
-        #[derive(Deserialize)]
-        struct StoreContextArgs {
-            id: String,
-            summary: String,
-            content: String,
-        }
-
-        let args: StoreContextArgs = serde_json::from_str(arguments)?;
-
-        // Create context object
-        let context = crate::context_store::Context::new(
-            args.id.clone(),
-            args.summary.clone(),
-            args.content.clone(),
-            task.task_id.clone(),       // created_by
-            Some(task.task_id.clone()), // task_id
-        );
-
-        // Store in context repository
-        self.context_repo.store_context(context).await?;
-
-        tracing::info!(
-            "Context stored successfully: id='{}', summary='{}', content_length={}",
-            args.id,
-            args.summary,
-            args.content.len()
-        );
-
-        Ok(format!(
-            "Context '{}' stored successfully. Summary: {}",
-            args.id, args.summary
-        ))
-    }
 }
 
 // Note: Tests are temporarily disabled due to compilation issues with dependencies

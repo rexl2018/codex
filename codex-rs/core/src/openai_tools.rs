@@ -3,13 +3,7 @@ use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 
-use crate::model_family::ModelFamily;
-use crate::plan_tool::PLAN_TOOL;
-use crate::tool_apply_patch::ApplyPatchToolType;
-use crate::tool_apply_patch::create_apply_patch_freeform_tool;
-use crate::tool_apply_patch::create_apply_patch_json_tool;
 
 /// Agent type for tool configuration
 #[derive(Debug, Clone, PartialEq)]
@@ -73,78 +67,11 @@ pub(crate) enum OpenAiTool {
     Freeform(FreeformTool),
 }
 
-#[derive(Debug, Clone)]
-pub enum ConfigShellToolType {
-    Default,
-    Local,
-    Streamable,
-}
 
-#[derive(Debug, Clone)]
-pub(crate) struct ToolsConfig {
-    pub shell_type: ConfigShellToolType,
-    pub plan_tool: bool,
-    pub apply_patch_tool_type: Option<ApplyPatchToolType>,
-    pub web_search_request: bool,
-    pub include_view_image_tool: bool,
-    pub experimental_unified_exec_tool: bool,
-    pub include_subagent_task_tool: bool,
-}
 
-pub(crate) struct ToolsConfigParams<'a> {
-    pub(crate) model_family: &'a ModelFamily,
-    pub(crate) include_plan_tool: bool,
-    pub(crate) include_apply_patch_tool: bool,
-    pub(crate) include_web_search_request: bool,
-    pub(crate) use_streamable_shell_tool: bool,
-    pub(crate) include_view_image_tool: bool,
-    pub(crate) experimental_unified_exec_tool: bool,
-    pub(crate) include_subagent_task_tool: bool,
-}
 
-impl ToolsConfig {
-    pub fn new(params: &ToolsConfigParams) -> Self {
-        let ToolsConfigParams {
-            model_family,
-            include_plan_tool,
-            include_apply_patch_tool,
-            include_web_search_request,
-            use_streamable_shell_tool,
-            include_view_image_tool,
-            experimental_unified_exec_tool,
-            include_subagent_task_tool,
-        } = params;
-        let shell_type = if *use_streamable_shell_tool {
-            ConfigShellToolType::Streamable
-        } else if model_family.uses_local_shell_tool {
-            ConfigShellToolType::Local
-        } else {
-            ConfigShellToolType::Default
-        };
 
-        let apply_patch_tool_type = match model_family.apply_patch_tool_type {
-            Some(ApplyPatchToolType::Freeform) => Some(ApplyPatchToolType::Freeform),
-            Some(ApplyPatchToolType::Function) => Some(ApplyPatchToolType::Function),
-            None => {
-                if *include_apply_patch_tool {
-                    Some(ApplyPatchToolType::Freeform)
-                } else {
-                    None
-                }
-            }
-        };
 
-        Self {
-            shell_type,
-            plan_tool: *include_plan_tool,
-            apply_patch_tool_type,
-            web_search_request: *include_web_search_request,
-            include_view_image_tool: *include_view_image_tool,
-            experimental_unified_exec_tool: *experimental_unified_exec_tool,
-            include_subagent_task_tool: *include_subagent_task_tool,
-        }
-    }
-}
 
 /// Generic JSON‑Schema subset needed for our tool definitions
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -229,7 +156,7 @@ fn create_unified_exec_tool() -> OpenAiTool {
     })
 }
 
-fn create_shell_tool() -> OpenAiTool {
+pub(crate) fn create_shell_tool() -> OpenAiTool {
     let mut properties = BTreeMap::new();
     properties.insert(
         "command".to_string(),
@@ -300,7 +227,7 @@ fn create_view_image_tool() -> OpenAiTool {
     })
 }
 
-fn create_subagent_task_tool() -> OpenAiTool {
+pub(crate) fn create_subagent_task_tool() -> OpenAiTool {
     let mut properties = BTreeMap::new();
 
     properties.insert(
@@ -604,739 +531,130 @@ fn sanitize_json_schema(value: &mut JsonValue) {
 /// - Main: `list_contexts`, `multi_retrieve_contexts`, and `create_subagent_task`.
 /// - Explorer: All tools except file_write, plus MCP tools
 /// - Coder: All tools including file_write, plus MCP tools
-pub(crate) fn get_openai_tools(
-    config: &ToolsConfig,
-    mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
-    agent_type: AgentType,
-) -> Vec<OpenAiTool> {
-    let mut tools: Vec<OpenAiTool> = Vec::new();
 
-    match agent_type {
-        AgentType::Main => {
-            // Main agent can use store_context and create_subagent_task tools
 
-            // Add list_contexts tool
-            tools.push(OpenAiTool::Function(ResponsesApiTool {
-                name: "list_contexts".to_string(),
-                description: "List all available context items. Context items are knowledge artifacts created by subagents containing analysis findings, discoveries, and insights from previous tasks. Each context item has an ID, summary, and detailed content that can be retrieved for reference when making decisions or understanding the codebase.".to_string(),
-                strict: false,
-                parameters: JsonSchema::Object {
-                    properties: BTreeMap::new(), // No parameters
-                    required: Some(vec![]),
-                    additional_properties: Some(false),
-                },
-            }));
+// Additional tool creation functions for the unified system
+pub(crate) fn create_read_file_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "file_path".to_string(),
+        JsonSchema::String {
+            description: Some("Path to the file to read".to_string()),
+        },
+    );
 
-            // Add multi_retrieve_contexts tool
-            let mut retrieve_context_properties = BTreeMap::new();
-            retrieve_context_properties.insert(
-                "ids".to_string(),
-                JsonSchema::Array {
-                    description: Some("List of context item IDs to retrieve".to_string()),
-                    items: Box::new(JsonSchema::String {
-                        description: Some("A context item ID".to_string()),
-                    }),
-                },
-            );
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "read_file".to_string(),
+        description: "Read the contents of a file".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["file_path".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
 
-            tools.push(OpenAiTool::Function(ResponsesApiTool {
-                name: "multi_retrieve_contexts".to_string(),
-                description: "Retrieve multiple context items by their IDs. Use this to get the full content of specific context items that contain relevant analysis, findings, or insights from previous subagent tasks. This allows you to access detailed information needed for decision-making or understanding the codebase.".to_string(),
-                strict: false,
-                parameters: JsonSchema::Object {
-                    properties: retrieve_context_properties,
-                    required: Some(vec!["ids".to_string()]),
-                    additional_properties: Some(false),
-                },
-            }));
+pub(crate) fn create_write_file_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "file_path".to_string(),
+        JsonSchema::String {
+            description: Some("Path to the file to write".to_string()),
+        },
+    );
+    properties.insert(
+        "content".to_string(),
+        JsonSchema::String {
+            description: Some("Content to write to the file".to_string()),
+        },
+    );
 
-            // Add create_subagent_task tool for multi-agent coordination
-            if config.include_subagent_task_tool {
-                tools.push(create_subagent_task_tool());
-            }
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "write_file".to_string(),
+        description: "Write content to a file".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["file_path".to_string(), "content".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
 
-            // Add execution tools for main agent
-            if config.experimental_unified_exec_tool {
-                tools.push(create_unified_exec_tool());
-            } else {
-                match &config.shell_type {
-                    ConfigShellToolType::Default => {
-                        tools.push(create_shell_tool());
-                    }
-                    ConfigShellToolType::Local => {
-                        tools.push(OpenAiTool::LocalShell {});
-                    }
-                    ConfigShellToolType::Streamable => {
-                        tools.push(OpenAiTool::Function(
-                            crate::exec_command::create_exec_command_tool_for_responses_api(),
-                        ));
-                        tools.push(OpenAiTool::Function(
-                            crate::exec_command::create_write_stdin_tool_for_responses_api(),
-                        ));
-                    }
-                }
-            }
-        }
-        AgentType::Explorer | AgentType::Coder => {
-            // Explorer and Coder agents can use all other tools
-            if config.experimental_unified_exec_tool {
-                tools.push(create_unified_exec_tool());
-            } else {
-                match &config.shell_type {
-                    ConfigShellToolType::Default => {
-                        tools.push(create_shell_tool());
-                    }
-                    ConfigShellToolType::Local => {
-                        tools.push(OpenAiTool::LocalShell {});
-                    }
-                    ConfigShellToolType::Streamable => {
-                        tools.push(OpenAiTool::Function(
-                            crate::exec_command::create_exec_command_tool_for_responses_api(),
-                        ));
-                        tools.push(OpenAiTool::Function(
-                            crate::exec_command::create_write_stdin_tool_for_responses_api(),
-                        ));
-                    }
-                }
-            }
+pub(crate) fn create_store_context_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "id".to_string(),
+        JsonSchema::String {
+            description: Some("Unique identifier for the context".to_string()),
+        },
+    );
+    properties.insert(
+        "summary".to_string(),
+        JsonSchema::String {
+            description: Some("Brief summary of the context".to_string()),
+        },
+    );
+    properties.insert(
+        "content".to_string(),
+        JsonSchema::String {
+            description: Some("Detailed content of the context".to_string()),
+        },
+    );
 
-            if config.plan_tool {
-                tools.push(PLAN_TOOL.clone());
-            }
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "store_context".to_string(),
+        description: "Store context information for later retrieval".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["id".to_string(), "summary".to_string(), "content".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
 
-            if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
-                match apply_patch_tool_type {
-                    ApplyPatchToolType::Freeform => {
-                        tools.push(create_apply_patch_freeform_tool());
-                    }
-                    ApplyPatchToolType::Function => {
-                        tools.push(create_apply_patch_json_tool());
-                    }
-                }
-            }
+pub(crate) fn create_list_contexts_tool() -> OpenAiTool {
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "list_contexts".to_string(),
+        description: "List all available context items".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties: BTreeMap::new(),
+            required: Some(vec![]),
+            additional_properties: Some(false),
+        },
+    })
+}
 
-            if config.web_search_request {
-                tools.push(OpenAiTool::WebSearch {});
-            }
+pub(crate) fn create_multi_retrieve_contexts_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "context_ids".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String {
+                description: Some("Context ID".to_string()),
+            }),
+            description: Some("List of context IDs to retrieve".to_string()),
+        },
+    );
 
-            // Include the view_image tool so the agent can attach images to context.
-            if config.include_view_image_tool {
-                tools.push(create_view_image_tool());
-            }
-
-            // Note: create_subagent_task tool is only available to Main agent, not subagents
-
-            // Add read_file tool for both Explorer and Coder agents
-            let mut read_properties = BTreeMap::new();
-            read_properties.insert(
-                "file_path".to_string(),
-                JsonSchema::String {
-                    description: Some("Path to the file to read".to_string()),
-                },
-            );
-
-            tools.push(OpenAiTool::Function(ResponsesApiTool {
-                name: "read_file".to_string(),
-                description: "Read the contents of a file".to_string(),
-                strict: false,
-                parameters: JsonSchema::Object {
-                    properties: read_properties,
-                    required: Some(vec!["file_path".to_string()]),
-                    additional_properties: Some(false),
-                },
-            }));
-
-            // Add write_file tool only for Coder agents
-            if matches!(agent_type, AgentType::Coder) {
-                let mut write_properties = BTreeMap::new();
-                write_properties.insert(
-                    "file_path".to_string(),
-                    JsonSchema::String {
-                        description: Some("Path to the file to write".to_string()),
-                    },
-                );
-                write_properties.insert(
-                    "content".to_string(),
-                    JsonSchema::String {
-                        description: Some("Content to write to the file".to_string()),
-                    },
-                );
-
-                tools.push(OpenAiTool::Function(ResponsesApiTool {
-                    name: "write_file".to_string(),
-                    description: "Write content to a file".to_string(),
-                    strict: false,
-                    parameters: JsonSchema::Object {
-                        properties: write_properties,
-                        required: Some(vec!["file_path".to_string(), "content".to_string()]),
-                        additional_properties: Some(false),
-                    },
-                }));
-            }
-
-            // Add store_context tool for subagents as well
-            let mut context_properties = BTreeMap::new();
-            context_properties.insert(
-                "id".to_string(),
-                JsonSchema::String {
-                    description: Some(
-                        "Unique identifier for the context item (use snake_case)".to_string(),
-                    ),
-                },
-            );
-            context_properties.insert(
-                "summary".to_string(),
-                JsonSchema::String {
-                    description: Some("Brief summary of the context content".to_string()),
-                },
-            );
-            context_properties.insert(
-                "content".to_string(),
-                JsonSchema::String {
-                    description: Some("Detailed content of the context item".to_string()),
-                },
-            );
-
-            tools.push(OpenAiTool::Function(ResponsesApiTool {
-                name: "store_context".to_string(),
-                description:
-                    "Store a context item containing important findings or analysis for future use"
-                        .to_string(),
-                strict: false,
-                parameters: JsonSchema::Object {
-                    properties: context_properties,
-                    required: Some(vec![
-                        "id".to_string(),
-                        "summary".to_string(),
-                        "content".to_string(),
-                    ]),
-                    additional_properties: Some(false),
-                },
-            }));
-
-            // Add MCP tools for subagents
-            if let Some(mcp_tools) = mcp_tools {
-                // Ensure deterministic ordering to maximize prompt cache hits.
-                let mut entries: Vec<(String, mcp_types::Tool)> = mcp_tools.into_iter().collect();
-                entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-                for (name, tool) in entries.into_iter() {
-                    match mcp_tool_to_openai_tool(name.clone(), tool.clone()) {
-                        Ok(converted_tool) => tools.push(OpenAiTool::Function(converted_tool)),
-                        Err(e) => {
-                            tracing::error!(
-                                "Failed to convert {name:?} MCP tool to OpenAI tool: {e:?}"
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    tools
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "multi_retrieve_contexts".to_string(),
+        description: "Retrieve multiple context items by their IDs".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["context_ids".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::model_family::find_family_for_model;
-    use mcp_types::ToolInputSchema;
-    use pretty_assertions::assert_eq;
-
     use super::*;
-
-    fn assert_eq_tool_names(tools: &[OpenAiTool], expected_names: &[&str]) {
-        let tool_names = tools
-            .iter()
-            .map(|tool| match tool {
-                OpenAiTool::Function(ResponsesApiTool { name, .. }) => name,
-                OpenAiTool::LocalShell {} => "local_shell",
-                OpenAiTool::WebSearch {} => "web_search",
-                OpenAiTool::Freeform(FreeformTool { name, .. }) => name,
-            })
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            tool_names.len(),
-            expected_names.len(),
-            "tool_name mismatch, {tool_names:?}, {expected_names:?}",
-        );
-        for (name, expected_name) in tool_names.iter().zip(expected_names.iter()) {
-            assert_eq!(
-                name, expected_name,
-                "tool_name mismatch, {name:?}, {expected_name:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_get_openai_tools() {
-        let model_family = find_family_for_model("codex-mini-latest")
-            .expect("codex-mini-latest should be a valid model family");
-        let config = ToolsConfig::new(&ToolsConfigParams {
-            model_family: &model_family,
-            include_plan_tool: true,
-            include_apply_patch_tool: false,
-            include_web_search_request: true,
-            use_streamable_shell_tool: false,
-            include_view_image_tool: true,
-            experimental_unified_exec_tool: true,
-            include_subagent_task_tool: false,
-        });
-        let tools = get_openai_tools(&config, Some(HashMap::new()), AgentType::Explorer);
-
-        assert_eq_tool_names(
-            &tools,
-            &["unified_exec", "update_plan", "web_search", "view_image", "read_file", "store_context"],
-        );
-    }
-
-    #[test]
-    fn test_get_openai_tools_default_shell() {
-        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(&ToolsConfigParams {
-            model_family: &model_family,
-            include_plan_tool: true,
-            include_apply_patch_tool: false,
-            include_web_search_request: true,
-            use_streamable_shell_tool: false,
-            include_view_image_tool: true,
-            experimental_unified_exec_tool: true,
-            include_subagent_task_tool: false,
-        });
-        let tools = get_openai_tools(&config, Some(HashMap::new()), AgentType::Explorer);
-
-        assert_eq_tool_names(
-            &tools,
-            &["unified_exec", "update_plan", "web_search", "view_image", "read_file", "store_context"],
-        );
-    }
-
-    #[test]
-    fn test_get_openai_tools_mcp_tools() {
-        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(&ToolsConfigParams {
-            model_family: &model_family,
-            include_plan_tool: false,
-            include_apply_patch_tool: false,
-            include_web_search_request: true,
-            use_streamable_shell_tool: false,
-            include_view_image_tool: true,
-            experimental_unified_exec_tool: true,
-            include_subagent_task_tool: false,
-        });
-        let tools = get_openai_tools(
-            &config,
-            Some(HashMap::from([(
-                "test_server/do_something_cool".to_string(),
-                mcp_types::Tool {
-                    name: "do_something_cool".to_string(),
-                    input_schema: ToolInputSchema {
-                        properties: Some(serde_json::json!({
-                            "string_argument": {
-                                "type": "string",
-                            },
-                            "number_argument": {
-                                "type": "number",
-                            },
-                            "object_argument": {
-                                "type": "object",
-                                "properties": {
-                                    "string_property": { "type": "string" },
-                                    "number_property": { "type": "number" },
-                                },
-                                "required": [
-                                    "string_property",
-                                    "number_property",
-                                ],
-                                "additionalProperties": Some(false),
-                            },
-                        })),
-                        required: None,
-                        r#type: "object".to_string(),
-                    },
-                    output_schema: None,
-                    title: None,
-                    annotations: None,
-                    description: Some("Do something cool".to_string()),
-                },
-            )])),
-            AgentType::Explorer,
-        );
-
-        assert_eq_tool_names(
-            &tools,
-            &[
-                "unified_exec",
-                "web_search",
-                "view_image",
-                "read_file",
-                "store_context",
-                "test_server/do_something_cool",
-            ],
-        );
-
-        assert_eq!(
-            tools[5],
-            OpenAiTool::Function(ResponsesApiTool {
-                name: "test_server/do_something_cool".to_string(),
-                parameters: JsonSchema::Object {
-                    properties: BTreeMap::from([
-                        (
-                            "string_argument".to_string(),
-                            JsonSchema::String { description: None }
-                        ),
-                        (
-                            "number_argument".to_string(),
-                            JsonSchema::Number { description: None }
-                        ),
-                        (
-                            "object_argument".to_string(),
-                            JsonSchema::Object {
-                                properties: BTreeMap::from([
-                                    (
-                                        "string_property".to_string(),
-                                        JsonSchema::String { description: None }
-                                    ),
-                                    (
-                                        "number_property".to_string(),
-                                        JsonSchema::Number { description: None }
-                                    ),
-                                ]),
-                                required: Some(vec![
-                                    "string_property".to_string(),
-                                    "number_property".to_string(),
-                                ]),
-                                additional_properties: Some(false),
-                            },
-                        ),
-                    ]),
-                    required: None,
-                    additional_properties: None,
-                },
-                description: "Do something cool".to_string(),
-                strict: false,
-            })
-        );
-    }
-
-    #[test]
-    fn test_get_openai_tools_mcp_tools_sorted_by_name() {
-        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(&ToolsConfigParams {
-            model_family: &model_family,
-            include_plan_tool: false,
-            include_apply_patch_tool: false,
-            include_web_search_request: false,
-            use_streamable_shell_tool: false,
-            include_view_image_tool: true,
-            experimental_unified_exec_tool: true,
-            include_subagent_task_tool: false,
-        });
-
-        // Intentionally construct a map with keys that would sort alphabetically.
-        let tools_map: HashMap<String, mcp_types::Tool> = HashMap::from([
-            (
-                "test_server/do".to_string(),
-                mcp_types::Tool {
-                    name: "a".to_string(),
-                    input_schema: ToolInputSchema {
-                        properties: Some(serde_json::json!({})),
-                        required: None,
-                        r#type: "object".to_string(),
-                    },
-                    output_schema: None,
-                    title: None,
-                    annotations: None,
-                    description: Some("a".to_string()),
-                },
-            ),
-            (
-                "test_server/something".to_string(),
-                mcp_types::Tool {
-                    name: "b".to_string(),
-                    input_schema: ToolInputSchema {
-                        properties: Some(serde_json::json!({})),
-                        required: None,
-                        r#type: "object".to_string(),
-                    },
-                    output_schema: None,
-                    title: None,
-                    annotations: None,
-                    description: Some("b".to_string()),
-                },
-            ),
-            (
-                "test_server/cool".to_string(),
-                mcp_types::Tool {
-                    name: "c".to_string(),
-                    input_schema: ToolInputSchema {
-                        properties: Some(serde_json::json!({})),
-                        required: None,
-                        r#type: "object".to_string(),
-                    },
-                    output_schema: None,
-                    title: None,
-                    annotations: None,
-                    description: Some("c".to_string()),
-                },
-            ),
-        ]);
-
-        let tools = get_openai_tools(&config, Some(tools_map), AgentType::Explorer);
-        // Expect unified_exec first, followed by MCP tools sorted by fully-qualified name.
-        assert_eq_tool_names(
-            &tools,
-            &[
-                "unified_exec",
-                "view_image",
-                "read_file",
-                "store_context",
-                "test_server/cool",
-                "test_server/do",
-                "test_server/something",
-            ],
-        );
-    }
-
-    #[test]
-    fn test_mcp_tool_property_missing_type_defaults_to_string() {
-        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(&ToolsConfigParams {
-            model_family: &model_family,
-            include_plan_tool: false,
-            include_apply_patch_tool: false,
-            include_web_search_request: true,
-            use_streamable_shell_tool: false,
-            include_view_image_tool: true,
-            experimental_unified_exec_tool: true,
-            include_subagent_task_tool: false,
-        });
-        let tools = get_openai_tools(
-            &config,
-            Some(HashMap::from([(
-                "dash/search".to_string(),
-                mcp_types::Tool {
-                    name: "search".to_string(),
-                    input_schema: ToolInputSchema {
-                        properties: Some(serde_json::json!({
-                            "query": {
-                                "description": "search query"
-                            }
-                        })),
-                        required: None,
-                        r#type: "object".to_string(),
-                    },
-                    output_schema: None,
-                    title: None,
-                    annotations: None,
-                    description: Some("Search docs".to_string()),
-                },
-            )])),
-            AgentType::Explorer,
-        );
-
-        assert_eq_tool_names(
-            &tools,
-            &["unified_exec", "web_search", "view_image", "read_file", "store_context", "dash/search"],
-        );
-
-        assert_eq!(
-            tools[5],
-            OpenAiTool::Function(ResponsesApiTool {
-                name: "dash/search".to_string(),
-                parameters: JsonSchema::Object {
-                    properties: BTreeMap::from([(
-                        "query".to_string(),
-                        JsonSchema::String {
-                            description: Some("search query".to_string())
-                        }
-                    )]),
-                    required: None,
-                    additional_properties: None,
-                },
-                description: "Search docs".to_string(),
-                strict: false,
-            })
-        );
-    }
-
-    #[test]
-    fn test_mcp_tool_integer_normalized_to_number() {
-        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(&ToolsConfigParams {
-            model_family: &model_family,
-            include_plan_tool: false,
-            include_apply_patch_tool: false,
-            include_web_search_request: true,
-            use_streamable_shell_tool: false,
-            include_view_image_tool: true,
-            experimental_unified_exec_tool: true,
-            include_subagent_task_tool: false,
-        });
-
-        let tools = get_openai_tools(
-            &config,
-            Some(HashMap::from([(
-                "dash/paginate".to_string(),
-                mcp_types::Tool {
-                    name: "paginate".to_string(),
-                    input_schema: ToolInputSchema {
-                        properties: Some(serde_json::json!({
-                            "page": { "type": "integer" }
-                        })),
-                        required: None,
-                        r#type: "object".to_string(),
-                    },
-                    output_schema: None,
-                    title: None,
-                    annotations: None,
-                    description: Some("Pagination".to_string()),
-                },
-            )])),
-            AgentType::Explorer,
-        );
-
-        assert_eq_tool_names(
-            &tools,
-            &["unified_exec", "web_search", "view_image", "read_file", "store_context", "dash/paginate"],
-        );
-        assert_eq!(
-            tools[5],
-            OpenAiTool::Function(ResponsesApiTool {
-                name: "dash/paginate".to_string(),
-                parameters: JsonSchema::Object {
-                    properties: BTreeMap::from([(
-                        "page".to_string(),
-                        JsonSchema::Number { description: None }
-                    )]),
-                    required: None,
-                    additional_properties: None,
-                },
-                description: "Pagination".to_string(),
-                strict: false,
-            })
-        );
-    }
-
-    #[test]
-    fn test_mcp_tool_array_without_items_gets_default_string_items() {
-        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(&ToolsConfigParams {
-            model_family: &model_family,
-            include_plan_tool: false,
-            include_apply_patch_tool: false,
-            include_web_search_request: true,
-            use_streamable_shell_tool: false,
-            include_view_image_tool: true,
-            experimental_unified_exec_tool: true,
-            include_subagent_task_tool: false,
-        });
-
-        let tools = get_openai_tools(
-            &config,
-            Some(HashMap::from([(
-                "dash/tags".to_string(),
-                mcp_types::Tool {
-                    name: "tags".to_string(),
-                    input_schema: ToolInputSchema {
-                        properties: Some(serde_json::json!({
-                            "tags": { "type": "array" }
-                        })),
-                        required: None,
-                        r#type: "object".to_string(),
-                    },
-                    output_schema: None,
-                    title: None,
-                    annotations: None,
-                    description: Some("Tags".to_string()),
-                },
-            )])),
-            AgentType::Explorer,
-        );
-
-        assert_eq_tool_names(
-            &tools,
-            &["unified_exec", "web_search", "view_image", "read_file", "store_context", "dash/tags"],
-        );
-        assert_eq!(
-            tools[5],
-            OpenAiTool::Function(ResponsesApiTool {
-                name: "dash/tags".to_string(),
-                parameters: JsonSchema::Object {
-                    properties: BTreeMap::from([(
-                        "tags".to_string(),
-                        JsonSchema::Array {
-                            items: Box::new(JsonSchema::String { description: None }),
-                            description: None
-                        }
-                    )]),
-                    required: None,
-                    additional_properties: None,
-                },
-                description: "Tags".to_string(),
-                strict: false,
-            })
-        );
-    }
-
-    #[test]
-    fn test_mcp_tool_anyof_defaults_to_string() {
-        let model_family = find_family_for_model("o3").expect("o3 should be a valid model family");
-        let config = ToolsConfig::new(&ToolsConfigParams {
-            model_family: &model_family,
-            include_plan_tool: false,
-            include_apply_patch_tool: false,
-            include_web_search_request: true,
-            use_streamable_shell_tool: false,
-            include_view_image_tool: true,
-            experimental_unified_exec_tool: true,
-            include_subagent_task_tool: false,
-        });
-
-        let tools = get_openai_tools(
-            &config,
-            Some(HashMap::from([(
-                "dash/value".to_string(),
-                mcp_types::Tool {
-                    name: "value".to_string(),
-                    input_schema: ToolInputSchema {
-                        properties: Some(serde_json::json!({
-                            "value": { "anyOf": [ { "type": "string" }, { "type": "number" } ] }
-                        })),
-                        required: None,
-                        r#type: "object".to_string(),
-                    },
-                    output_schema: None,
-                    title: None,
-                    annotations: None,
-                    description: Some("AnyOf Value".to_string()),
-                },
-            )])),
-            AgentType::Explorer,
-        );
-
-        assert_eq_tool_names(
-            &tools,
-            &["unified_exec", "web_search", "view_image", "read_file", "store_context", "dash/value"],
-        );
-        assert_eq!(
-            tools[5],
-            OpenAiTool::Function(ResponsesApiTool {
-                name: "dash/value".to_string(),
-                parameters: JsonSchema::Object {
-                    properties: BTreeMap::from([(
-                        "value".to_string(),
-                        JsonSchema::String { description: None }
-                    )]),
-                    required: None,
-                    additional_properties: None,
-                },
-                description: "AnyOf Value".to_string(),
-                strict: false,
-            })
-        );
-    }
 
     #[test]
     fn test_shell_tool() {

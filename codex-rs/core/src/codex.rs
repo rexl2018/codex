@@ -83,9 +83,9 @@ use crate::mcp_tool_call::handle_mcp_tool_call;
 use crate::model_family::find_family_for_model;
 use crate::openai_model_info::get_model_info;
 use crate::openai_tools::ApplyPatchToolArgs;
-use crate::openai_tools::ToolsConfig;
-use crate::openai_tools::ToolsConfigParams;
-use crate::openai_tools::get_openai_tools;
+use crate::tool_config::UnifiedToolConfig;
+use crate::tool_registry::GLOBAL_TOOL_REGISTRY;
+use crate::unified_function_handler::AgentType;
 use crate::parse_command::parse_command;
 use crate::plan_tool::handle_update_plan;
 use crate::project_doc::get_user_instructions;
@@ -129,7 +129,8 @@ use crate::unified_exec::UnifiedExecSessionManager;
 use crate::user_instructions::UserInstructions;
 use crate::user_notification::UserNotification;
 use crate::util::backoff;
-use crate::agent_manager::{AgentManager, AgentRoutingResult};
+use crate::main_agent::MainAgent;
+use crate::sub_agent::SubAgent;
 use codex_mcp_client::McpClient;
 use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
@@ -579,7 +580,7 @@ pub struct TurnContext {
     pub(crate) approval_policy: AskForApproval,
     pub(crate) sandbox_policy: SandboxPolicy,
     pub(crate) shell_environment_policy: ShellEnvironmentPolicy,
-    pub(crate) tools_config: ToolsConfig,
+    pub(crate) unified_tool_config: UnifiedToolConfig,
 }
 
 impl TurnContext {
@@ -737,16 +738,7 @@ impl Session {
         );
         let turn_context = TurnContext {
             client,
-            tools_config: ToolsConfig::new(&ToolsConfigParams {
-                model_family: &config.model_family,
-                include_plan_tool: config.include_plan_tool,
-                include_apply_patch_tool: config.include_apply_patch_tool,
-                include_web_search_request: config.tools_web_search_request,
-                use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
-                include_view_image_tool: config.include_view_image_tool,
-                experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
-                include_subagent_task_tool: config.include_subagent_task_tool,
-            }),
+            unified_tool_config: UnifiedToolConfig::default(),
             user_instructions,
             base_instructions,
             approval_policy,
@@ -1436,59 +1428,52 @@ async fn refactored_submission_loop(
     config: Arc<Config>,
     rx_sub: Receiver<Submission>,
 ) {
-    let agent_manager = AgentManager::new(sess.clone());
+    let main_agent = MainAgent::new(sess.clone());
+    let sub_agent = SubAgent::new(sess.clone());
     let turn_context = Arc::new(turn_context);
     
     // To break out of this loop, send Op::Shutdown.
     while let Ok(sub) = rx_sub.recv().await {
         debug!(?sub, "Submission");
         
-        // Use the AgentManager to route submissions
-        match agent_manager.route_submission(sub.clone()) {
-            AgentRoutingResult::HandledByMainAgent => {
-                // Main agent handled the operation (session-level operations)
-                debug!("Submission handled by MainAgent: {}", sub.id);
-            }
-            AgentRoutingResult::HandledBySubAgent => {
-                // Sub agent handled the operation (subagent-specific operations)
-                debug!("Submission handled by SubAgent: {}", sub.id);
-            }
-            AgentRoutingResult::RequiresTaskCreation(submission) => {
-                // Handle user input operations that require task creation
-                match submission.op {
-                    Op::UserInput { items } => {
-                        // Try to inject input into current task
-                        if let Err(items) = sess.inject_input(items) {
-                            // No current task, spawn a new one
-                            tracing::debug!("Creating agent task for UserInput: sub_id={}", submission.id);
-                            let task = AgentTask::spawn(sess.clone(), turn_context.clone(), submission.id, items);
-                            sess.set_task(task);
-                        }
-                    }
-                    _ => {
-                        warn!("Unexpected operation in RequiresTaskCreation: {:?}", submission.op);
+        // Route submissions directly without AgentManager
+        let handled = if main_agent.handle_session_operation(sub.clone()) {
+            debug!("Submission handled by MainAgent: {}", sub.id);
+            true
+        } else if sub_agent.handle_subagent_operation(sub.clone()) {
+            debug!("Submission handled by SubAgent: {}", sub.id);
+            true
+        } else {
+            false
+        };
+        
+        if !handled {
+            // Handle operations that require task creation or are unhandled
+            match sub.op {
+                Op::UserInput { items } => {
+                    // Try to inject input into current task
+                    if let Err(items) = sess.inject_input(items) {
+                        // No current task, spawn a new one
+                        tracing::debug!("Creating agent task for UserInput: sub_id={}", sub.id);
+                        let task = AgentTask::spawn(sess.clone(), turn_context.clone(), sub.id, items);
+                        sess.set_task(task);
                     }
                 }
-            }
-            AgentRoutingResult::Unhandled(submission) => {
-                // Handle operations that weren't routed to any agent
-                match submission.op {
-                    Op::Interrupt => {
-                        sess.interrupt_task();
-                    }
-                    Op::Shutdown => {
-                        info!("Shutting down Codex instance");
-                        let event = Event {
-                            id: submission.id.clone(),
-                            msg: EventMsg::ShutdownComplete,
-                        };
-                        sess.send_event(event).await;
-                        break;
-                    }
-                    _ => {
-                        // Fall back to original submission loop for unhandled operations
-                        warn!("Operation not yet handled by refactored submission loop: {:?}", submission.op);
-                    }
+                Op::Interrupt => {
+                    sess.interrupt_task();
+                }
+                Op::Shutdown => {
+                    info!("Shutting down Codex instance");
+                    let event = Event {
+                        id: sub.id.clone(),
+                        msg: EventMsg::ShutdownComplete,
+                    };
+                    sess.send_event(event).await;
+                    break;
+                }
+                _ => {
+                    // Fall back to original submission loop for unhandled operations
+                    warn!("Operation not yet handled by refactored submission loop: {:?}", sub.op);
                 }
             }
         }
@@ -1571,20 +1556,9 @@ async fn original_submission_loop(
                     .unwrap_or(prev.sandbox_policy.clone());
                 let new_cwd = cwd.clone().unwrap_or_else(|| prev.cwd.clone());
 
-                let tools_config = ToolsConfig::new(&ToolsConfigParams {
-                    model_family: &effective_family,
-                    include_plan_tool: config.include_plan_tool,
-                    include_apply_patch_tool: config.include_apply_patch_tool,
-                    include_web_search_request: config.tools_web_search_request,
-                    use_streamable_shell_tool: config.use_experimental_streamable_shell_tool,
-                    include_view_image_tool: config.include_view_image_tool,
-                    experimental_unified_exec_tool: config.use_experimental_unified_exec_tool,
-                    include_subagent_task_tool: config.include_subagent_task_tool,
-                });
-
                 let new_turn_context = TurnContext {
                     client,
-                    tools_config,
+                    unified_tool_config: UnifiedToolConfig::default(),
                     user_instructions: prev.user_instructions.clone(),
                     base_instructions: prev.base_instructions.clone(),
                     approval_policy: new_approval_policy,
@@ -1682,18 +1656,7 @@ async fn original_submission_loop(
 
                     let fresh_turn_context = TurnContext {
                         client,
-                        tools_config: ToolsConfig::new(&ToolsConfigParams {
-                            model_family: &model_family,
-                            include_plan_tool: config.include_plan_tool,
-                            include_apply_patch_tool: config.include_apply_patch_tool,
-                            include_web_search_request: config.tools_web_search_request,
-                            use_streamable_shell_tool: config
-                                .use_experimental_streamable_shell_tool,
-                            include_view_image_tool: config.include_view_image_tool,
-                            experimental_unified_exec_tool: config
-                                .use_experimental_unified_exec_tool,
-                            include_subagent_task_tool: config.include_subagent_task_tool,
-                        }),
+                        unified_tool_config: UnifiedToolConfig::default(),
                         user_instructions: turn_context.user_instructions.clone(),
                         base_instructions: turn_context.base_instructions.clone(),
                         approval_policy,
@@ -2599,11 +2562,14 @@ async fn run_turn(
     sub_id: String,
     input: Vec<ResponseItem>,
 ) -> CodexResult<Vec<ProcessedResponseItem>> {
-    let tools = get_openai_tools(
-        &turn_context.tools_config,
-        None, // Main agent cannot use MCP tools
-        crate::openai_tools::AgentType::Main,
-    );
+    let tools = match GLOBAL_TOOL_REGISTRY.get_tools_for_agent(&AgentType::Main) {
+        Ok(tools) => tools,
+        Err(e) => {
+            tracing::error!("Failed to get tools from unified registry: {}", e);
+            // Fallback to empty tools list
+            vec![]
+        }
+    };
 
     // Detect current agent state and create state information
     let agent_state = detect_agent_state(&sess.multi_agent_components).await;
@@ -4578,11 +4544,13 @@ async fn handle_function_call(
     call_id: String,
 ) -> ResponseInputItem {
     // Check if the tool is allowed for main agent
-    let allowed_tools = get_openai_tools(
-        &turn_context.tools_config,
-        None, // Main agent cannot use MCP tools
-        crate::openai_tools::AgentType::Main,
-    );
+    let allowed_tools = match GLOBAL_TOOL_REGISTRY.get_tools_for_agent(&AgentType::Main) {
+        Ok(tools) => tools,
+        Err(e) => {
+            tracing::error!("Failed to get tools from unified registry: {}", e);
+            vec![]
+        }
+    };
 
     let tool_allowed = allowed_tools.iter().any(|tool| match tool {
         crate::openai_tools::OpenAiTool::Function(func) => func.name == name,
@@ -4782,11 +4750,13 @@ async fn handle_function_call(
                 }
                 None => {
                     // Get list of available tools for better error message
-                    let available_tools = get_openai_tools(
-                        &turn_context.tools_config,
-                        Some(sess.mcp_connection_manager.list_all_tools()),
-                        crate::openai_tools::AgentType::Main,
-                    );
+                    let available_tools = match GLOBAL_TOOL_REGISTRY.get_tools_for_agent(&AgentType::Main) {
+                        Ok(tools) => tools,
+                        Err(e) => {
+                            tracing::error!("Failed to get tools from unified registry: {}", e);
+                            vec![]
+                        }
+                    };
                     let tool_names: Vec<String> = available_tools
                         .iter()
                         .map(|tool| match tool {

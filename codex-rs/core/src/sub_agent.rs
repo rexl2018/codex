@@ -2,7 +2,8 @@ use std::sync::Arc;
 use crate::agent::Agent;
 use crate::codex::{AgentTask, TurnContext, Session};
 use crate::error::CodexErr;
-use crate::error_handling::{SubagentErrorHandler, SubagentError, ErrorSeverity, RecoveryStrategy};
+use crate::unified_error_handler::handle_error;
+use crate::unified_error_types::{UnifiedError, ErrorContext};
 use crate::performance::{PerformanceOptimizer, OptimizedEventSender, TaskPool};
 use crate::context_store::{IContextRepository, Context};
 use crate::subagent_manager::{ISubagentManager, SubagentTaskSpec};
@@ -13,7 +14,6 @@ use codex_protocol::protocol::{
 
 pub struct SubAgent {
     session: Arc<Session>,
-    error_handler: SubagentErrorHandler,
     performance_optimizer: Arc<PerformanceOptimizer>,
     task_pool: Arc<TaskPool>,
     event_sender: OptimizedEventSender,
@@ -27,21 +27,6 @@ impl SubAgent {
         
         Self { 
             session,
-            error_handler: SubagentErrorHandler::default(),
-            performance_optimizer,
-            task_pool,
-            event_sender,
-        }
-    }
-
-    pub fn with_error_handler(session: Arc<Session>, error_handler: SubagentErrorHandler) -> Self {
-        let performance_optimizer = Arc::new(PerformanceOptimizer::new(10));
-        let task_pool = Arc::new(TaskPool::new(5));
-        let event_sender = OptimizedEventSender::new(session.clone(), performance_optimizer.clone());
-        
-        Self {
-            session,
-            error_handler,
             performance_optimizer,
             task_pool,
             event_sender,
@@ -50,7 +35,6 @@ impl SubAgent {
 
     pub fn with_performance_config(
         session: Arc<Session>, 
-        error_handler: SubagentErrorHandler,
         max_concurrent_ops: usize,
         max_concurrent_tasks: usize,
     ) -> Self {
@@ -60,7 +44,6 @@ impl SubAgent {
         
         Self {
             session,
-            error_handler,
             performance_optimizer,
             task_pool,
             event_sender,
@@ -194,19 +177,14 @@ impl SubAgent {
             let session = self.session.clone();
             let subagent_manager = multi_agent_components.subagent_manager.clone();
             let task_id_clone = task_id.clone();
-            let error_handler = self.error_handler.clone();
             
-            // Spawn async task to launch subagent with enhanced error handling
+            // Spawn async task to launch subagent with unified error handling
             tokio::spawn(async move {
-                let operation_name = format!("launch_subagent_{}", task_id_clone);
+                let context = ErrorContext::new("SubAgent::launch_subagent")
+                    .with_function("handle_launch_subagent")
+                    .with_info("task_id", &task_id_clone);
                 
-                let result = error_handler.execute_with_retry(&operation_name, || {
-                    let manager = subagent_manager.clone();
-                    let task_id = task_id_clone.clone();
-                    Box::pin(async move {
-                        manager.launch_subagent(&task_id).await
-                    })
-                }).await;
+                let result = subagent_manager.launch_subagent(&task_id_clone).await;
                 
                 match result {
                     Ok(handle) => {
@@ -218,54 +196,31 @@ impl SubAgent {
                             msg: EventMsg::SubagentStarted(SubagentStartedEvent {
                                 task_id: handle.task_id,
                                 agent_type: handle.agent_type,
-                                title: "Subagent Task".to_string(), // We'd need to get this from the task
+                                title: "Subagent Task".to_string(),
                             }),
                         };
                         session.send_event(event).await;
                     }
-                    Err(subagent_error) => {
-                        tracing::error!("Failed to launch subagent {}: {}", task_id_clone, subagent_error);
+                    Err(error) => {
+                        tracing::error!("Failed to launch subagent {}: {}", task_id_clone, error);
                         
-                        // Send detailed error event with recovery suggestions
-                        let recovery_strategy = subagent_error.recovery_strategy();
-                        let user_message = subagent_error.user_message();
+                        // Use unified error handling
+                        let unified_error = UnifiedError::internal(
+                            "SubAgent",
+                            format!("Failed to launch subagent: {}", error),
+                            Some("SUBAGENT_LAUNCH_FAILED".to_string()),
+                        );
                         
-                        let error_message = match recovery_strategy {
-                            RecoveryStrategy::Retry => {
-                                format!("{} (Will retry automatically)", user_message)
-                            }
-                            RecoveryStrategy::Reset => {
-                                format!("{} (Task will be reset)", user_message)
-                            }
-                            RecoveryStrategy::Fallback => {
-                                format!("{} (Trying alternative approach)", user_message)
-                            }
-                            RecoveryStrategy::Escalate => {
-                                format!("{} (Manual intervention required)", user_message)
-                            }
-                            RecoveryStrategy::Ignore => {
-                                format!("{} (Continuing with other tasks)", user_message)
-                            }
-                        };
+                        let response = handle_error(unified_error, Some(context), Some(sub_id.clone())).await;
                         
+                        // Send the error response as an event
                         let event = Event {
-                            id: sub_id.clone(),
+                            id: sub_id,
                             msg: EventMsg::Error(codex_protocol::protocol::ErrorEvent {
-                                message: error_message,
+                                message: response.content,
                             }),
                         };
                         session.send_event(event).await;
-                        
-                        // If it's a critical error, send additional warning
-                        if subagent_error.is_critical() {
-                            let warning_event = Event {
-                                id: sub_id,
-                                msg: EventMsg::BackgroundEvent(codex_protocol::protocol::BackgroundEventEvent {
-                                    message: "Critical error detected. Please check system configuration.".to_string(),
-                                }),
-                            };
-                            session.send_event(warning_event).await;
-                        }
                     }
                 }
             });
