@@ -1,5 +1,7 @@
 use std::sync::Arc;
-use crate::codex::{AgentTask, TurnContext, Session};
+use crate::agent_task::AgentTask;
+use crate::session::Session;
+use crate::turn_context::TurnContext;
 use codex_protocol::protocol::InputItem;
 
 pub struct AgentTaskFactory;

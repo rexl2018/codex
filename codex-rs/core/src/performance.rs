@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, RwLock, Semaphore};
 use tokio::time::interval;
 use tracing::{debug, warn, info};
 use codex_protocol::protocol::{Event, EventMsg};
-use crate::codex::Session;
+use crate::session::Session;
 
 /// Performance optimization utilities for agent communication and coordination
 pub struct PerformanceOptimizer {

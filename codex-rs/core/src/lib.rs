@@ -10,6 +10,13 @@ pub mod agent_task_factory;
 pub mod sub_agent;
 pub mod main_agent;
 pub mod agent;
+mod agent_task;
+mod events;
+mod session;
+mod state;
+mod submission_loop;
+mod turn_context;
+mod types;
 
 pub mod auth;
 pub mod bash;

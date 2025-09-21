@@ -1,7 +1,9 @@
 use std::sync::Arc;
 use crate::agent::Agent;
 use crate::agent_task_factory::AgentTaskFactory;
-use crate::codex::{AgentTask, TurnContext, Session};
+use crate::agent_task::AgentTask;
+use crate::session::Session;
+use crate::turn_context::TurnContext;
 use crate::error::CodexErr;
 use codex_protocol::protocol::{InputItem, Submission, Op, ReviewDecision};
 

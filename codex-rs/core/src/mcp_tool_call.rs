@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use tracing::error;
 
-use crate::codex::Session;
+use crate::session::Session;
 use crate::protocol::Event;
 use crate::protocol::EventMsg;
 use crate::protocol::McpInvocation;

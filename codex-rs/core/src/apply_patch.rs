@@ -1,5 +1,5 @@
-use crate::codex::Session;
-use crate::codex::TurnContext;
+use crate::session::Session;
+use crate::turn_context::TurnContext;
 use crate::protocol::FileChange;
 use crate::protocol::ReviewDecision;
 use crate::safety::SafetyCheck;

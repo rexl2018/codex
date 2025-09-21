@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use crate::agent::Agent;
-use crate::codex::{AgentTask, TurnContext, Session};
+use crate::agent_task::AgentTask;
+use crate::session::Session;
+use crate::turn_context::TurnContext;
 use crate::error::CodexErr;
 use crate::unified_error_handler::handle_error;
 use crate::unified_error_types::{UnifiedError, ErrorContext};
