@@ -1,11 +1,13 @@
-use serde::{Serialize, Deserialize};
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashMap;
 
 use crate::exec::ExecToolCallOutput;
-use codex_protocol::protocol::{InputItem, SubagentType};
+use codex_protocol::protocol::InputItem;
+use codex_protocol::protocol::SubagentType;
 
 /// Agent orchestration events for the event-driven architecture
-/// 
+///
 /// These events drive the MainAgent's state machine and enable loose coupling
 /// between the MainAgent and SubAgents as described in the orchestration design.
 #[derive(Debug, Clone, Serialize, Deserialize)]

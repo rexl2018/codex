@@ -258,6 +258,24 @@ impl Context {
     }
 }
 
+impl From<Context> for codex_protocol::protocol::ContextSummary {
+    fn from(context: Context) -> Self {
+        let size_bytes = context.size_bytes();
+        Self {
+            id: context.id,
+            summary: context.summary,
+            created_by: context.created_by,
+            created_at: context
+                .created_at
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .to_string(),
+            size_bytes,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

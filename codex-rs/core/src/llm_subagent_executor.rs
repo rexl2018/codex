@@ -335,6 +335,17 @@ impl LLMSubagentExecutor {
         sections.push(format!("# Task: {}", task.title));
         sections.push(task.description.clone());
 
+        // Include context store contexts (from context_refs)
+        if !task.ctx_store_contexts.is_empty() {
+            sections.push("## Available Context Information".to_string());
+            sections.push("The following context information has been provided to help with this task:".to_string());
+            for (context_id, context_content) in &task.ctx_store_contexts {
+                sections.push(format!("### Context: {}", context_id));
+                sections.push(context_content.clone());
+                sections.push("---".to_string()); // Separator between contexts
+            }
+        }
+
         // Include bootstrap files/dirs
         if !task.bootstrap_contexts.is_empty() {
             sections.push("## Relevant Files/Directories".to_string());
@@ -379,6 +390,7 @@ impl LLMSubagentExecutor {
             tools,
             base_instructions_override: Some(subagent_base_instructions.to_string()),
             agent_state_info: None, // Subagents don't need state info
+            available_contexts: None, // Subagents don't need context info in this implementation
         };
 
         // Call the real LLM

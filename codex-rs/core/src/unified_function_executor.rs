@@ -2,23 +2,33 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use codex_protocol::models::FunctionCallOutputPayload;
-use codex_protocol::protocol::{BootstrapPath, SubagentType};
+use codex_protocol::protocol::BootstrapPath;
+use codex_protocol::protocol::SubagentType;
 use serde_json;
-use tracing::{debug, error, info, warn};
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
 
-use crate::unified_function_handler::{
-    UniversalFunctionCallContext, UniversalFunctionExecutor,
-};
-use crate::unified_error_types::{
-    UnifiedError, UnifiedResult, ErrorContext,
-    FunctionCallErrorCode, FileSystemErrorCode, ShellErrorCode,
-    ContextErrorCode, FileSystemOperation, ContextOperation,
-};
-use crate::unified_error_handler::{handle_error, GLOBAL_ERROR_HANDLER};
 use crate::context_store::IContextRepository;
 use crate::mcp_connection_manager::McpConnectionManager;
-use crate::subagent_manager::{ISubagentManager, SubagentTaskSpec};
-use crate::subagent_completion_tracker::{SubagentCompletionTracker, SubagentCompletionStatus};
+use crate::subagent_completion_tracker::SubagentCompletionStatus;
+use crate::subagent_completion_tracker::SubagentCompletionTracker;
+use crate::subagent_manager::ISubagentManager;
+use crate::subagent_manager::SubagentTaskSpec;
+use crate::unified_error_handler::GLOBAL_ERROR_HANDLER;
+use crate::unified_error_handler::handle_error;
+use crate::unified_error_types::ContextErrorCode;
+use crate::unified_error_types::ContextOperation;
+use crate::unified_error_types::ErrorContext;
+use crate::unified_error_types::FileSystemErrorCode;
+use crate::unified_error_types::FileSystemOperation;
+use crate::unified_error_types::FunctionCallErrorCode;
+use crate::unified_error_types::ShellErrorCode;
+use crate::unified_error_types::UnifiedError;
+use crate::unified_error_types::UnifiedResult;
+use crate::unified_function_handler::UniversalFunctionCallContext;
+use crate::unified_function_handler::UniversalFunctionExecutor;
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -80,7 +90,7 @@ impl CodexFunctionExecutor {
     /// Validate file path for security
     fn validate_file_path(&self, file_path: &str) -> UnifiedResult<PathBuf> {
         let path = self.resolve_path(file_path);
-        
+
         // Check for path traversal attempts
         if file_path.contains("..") {
             return Err(UnifiedError::file_system(
@@ -90,7 +100,7 @@ impl CodexFunctionExecutor {
                 FileSystemErrorCode::InvalidPath,
             ));
         }
-        
+
         // Check for restricted paths
         let restricted_paths = [
             "/etc/passwd",
@@ -99,7 +109,7 @@ impl CodexFunctionExecutor {
             "/proc/",
             "/sys/",
         ];
-        
+
         let path_str = path.to_string_lossy();
         for restricted in &restricted_paths {
             if path_str.starts_with(restricted) {
@@ -111,7 +121,7 @@ impl CodexFunctionExecutor {
                 ));
             }
         }
-        
+
         Ok(path)
     }
 
@@ -122,7 +132,7 @@ impl CodexFunctionExecutor {
         context: &UniversalFunctionCallContext,
     ) -> UnifiedResult<String> {
         debug!("Executing shell command: {}", command);
-        
+
         // Parse command into arguments
         let args = match shlex::split(command) {
             Some(args) => args,
@@ -135,7 +145,7 @@ impl CodexFunctionExecutor {
                 ));
             }
         };
-        
+
         if args.is_empty() {
             return Err(UnifiedError::shell_execution(
                 command,
@@ -144,7 +154,7 @@ impl CodexFunctionExecutor {
                 ShellErrorCode::InvalidCommand,
             ));
         }
-        
+
         // Create exec params
         let exec_params = crate::exec::ExecParams {
             command: args,
@@ -154,7 +164,7 @@ impl CodexFunctionExecutor {
             with_escalated_permissions: None,
             justification: None,
         };
-        
+
         // Execute using existing exec infrastructure
         match crate::exec::process_exec_tool_call(
             exec_params,
@@ -163,10 +173,15 @@ impl CodexFunctionExecutor {
             &context.cwd,
             &None,
             None,
-        ).await {
+        )
+        .await
+        {
             Ok(output) => {
                 debug!("Shell command completed successfully");
-                Ok(format!("Command executed successfully.\n\nOutput:\n{}", output.aggregated_output.text))
+                Ok(format!(
+                    "Command executed successfully.\n\nOutput:\n{}",
+                    output.aggregated_output.text
+                ))
             }
             Err(e) => {
                 error!("Shell command failed: {}", e);
@@ -183,7 +198,7 @@ impl CodexFunctionExecutor {
     /// Read file content with size limits and validation
     async fn read_file_content(&self, file_path: &str) -> UnifiedResult<String> {
         let path = self.validate_file_path(file_path)?;
-        
+
         // Check if file exists
         if !path.exists() {
             return Err(UnifiedError::file_system(
@@ -193,7 +208,7 @@ impl CodexFunctionExecutor {
                 FileSystemErrorCode::FileNotFound,
             ));
         }
-        
+
         // Check if it's a file (not a directory)
         if !path.is_file() {
             return Err(UnifiedError::file_system(
@@ -203,7 +218,7 @@ impl CodexFunctionExecutor {
                 FileSystemErrorCode::NotAFile,
             ));
         }
-        
+
         // Check file size
         let metadata = match std::fs::metadata(&path) {
             Ok(metadata) => metadata,
@@ -216,21 +231,29 @@ impl CodexFunctionExecutor {
                 ));
             }
         };
-        
+
         const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
         if metadata.len() > MAX_FILE_SIZE {
             return Err(UnifiedError::file_system(
                 FileSystemOperation::Read,
                 file_path,
-                format!("File too large: {} bytes (max: {} bytes)", metadata.len(), MAX_FILE_SIZE),
+                format!(
+                    "File too large: {} bytes (max: {} bytes)",
+                    metadata.len(),
+                    MAX_FILE_SIZE
+                ),
                 FileSystemErrorCode::FileTooLarge,
             ));
         }
-        
+
         // Read file content
         match std::fs::read_to_string(&path) {
             Ok(content) => {
-                debug!("Successfully read file: {} ({} bytes)", file_path, content.len());
+                debug!(
+                    "Successfully read file: {} ({} bytes)",
+                    file_path,
+                    content.len()
+                );
                 Ok(content)
             }
             Err(e) => {
@@ -246,24 +269,24 @@ impl CodexFunctionExecutor {
     }
 
     /// Write file content with validation and backup
-    async fn write_file_content(
-        &self,
-        file_path: &str,
-        content: &str,
-    ) -> UnifiedResult<String> {
+    async fn write_file_content(&self, file_path: &str, content: &str) -> UnifiedResult<String> {
         let path = self.validate_file_path(file_path)?;
-        
+
         // Check content size
         const MAX_CONTENT_SIZE: usize = 10 * 1024 * 1024; // 10MB
         if content.len() > MAX_CONTENT_SIZE {
             return Err(UnifiedError::file_system(
                 FileSystemOperation::Write,
                 file_path,
-                format!("Content too large: {} bytes (max: {} bytes)", content.len(), MAX_CONTENT_SIZE),
+                format!(
+                    "Content too large: {} bytes (max: {} bytes)",
+                    content.len(),
+                    MAX_CONTENT_SIZE
+                ),
                 FileSystemErrorCode::FileTooLarge,
             ));
         }
-        
+
         // Create parent directories if they don't exist
         if let Some(parent) = path.parent() {
             if !parent.exists() {
@@ -277,12 +300,20 @@ impl CodexFunctionExecutor {
                 }
             }
         }
-        
+
         // Write file content
         match std::fs::write(&path, content) {
             Ok(()) => {
-                info!("Successfully wrote file: {} ({} bytes)", file_path, content.len());
-                Ok(format!("File written successfully: {} ({} bytes)", file_path, content.len()))
+                info!(
+                    "Successfully wrote file: {} ({} bytes)",
+                    file_path,
+                    content.len()
+                );
+                Ok(format!(
+                    "File written successfully: {} ({} bytes)",
+                    file_path,
+                    content.len()
+                ))
             }
             Err(e) => {
                 error!("Failed to write file {}: {}", file_path, e);
@@ -312,27 +343,31 @@ impl CodexFunctionExecutor {
                 ContextErrorCode::InvalidContextId,
             ));
         }
-        
+
         // Validate content size
         const MAX_CONTEXT_SIZE: usize = 1024 * 1024; // 1MB
         if content.len() > MAX_CONTEXT_SIZE {
             return Err(UnifiedError::context(
                 ContextOperation::Store,
                 Some(id.to_string()),
-                format!("Context content too large: {} bytes (max: {} bytes)", content.len(), MAX_CONTEXT_SIZE),
+                format!(
+                    "Context content too large: {} bytes (max: {} bytes)",
+                    content.len(),
+                    MAX_CONTEXT_SIZE
+                ),
                 ContextErrorCode::ContentTooLarge,
             ));
         }
-        
+
         // Create context item using the Context::new constructor
         let context_item = crate::context_store::Context::new(
             id.to_string(),
             summary.to_string(),
             content.to_string(),
             "unified_executor".to_string(), // created_by
-            None, // task_id
+            None,                           // task_id
         );
-        
+
         // Store context
         match self.context_repository.store_context(context_item).await {
             Ok(()) => {
@@ -350,8 +385,6 @@ impl CodexFunctionExecutor {
             }
         }
     }
-
-
 }
 
 #[async_trait::async_trait]
@@ -365,7 +398,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             .with_function("execute_shell")
             .with_info("command", &command)
             .with_info("agent_type", &format!("{:?}", context.agent_type));
-        
+
         match self.execute_shell_command(&command, context).await {
             Ok(output) => FunctionCallOutputPayload {
                 content: output,
@@ -388,7 +421,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             .with_function("execute_read_file")
             .with_info("file_path", &file_path)
             .with_info("agent_type", &format!("{:?}", context.agent_type));
-        
+
         match self.read_file_content(&file_path).await {
             Ok(content) => FunctionCallOutputPayload {
                 content: format!("File content of '{}':\n\n{}", file_path, content),
@@ -413,7 +446,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             .with_info("file_path", &file_path)
             .with_info("content_length", &content.len().to_string())
             .with_info("agent_type", &format!("{:?}", context.agent_type));
-        
+
         match self.write_file_content(&file_path, &content).await {
             Ok(result) => FunctionCallOutputPayload {
                 content: result,
@@ -440,7 +473,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             .with_info("summary", &summary)
             .with_info("content_length", &content.len().to_string())
             .with_info("agent_type", &format!("{:?}", context.agent_type));
-        
+
         match self.store_context_item(&id, &summary, &content).await {
             Ok(result) => FunctionCallOutputPayload {
                 content: result,
@@ -459,10 +492,15 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-        info!("🚀 [UNIFIED_EXECUTOR] Creating subagent task with arguments: {}", arguments);
-        info!("🔧 [UNIFIED_EXECUTOR] Context: sub_id={}, call_id={}, agent_type={:?}", 
-              context.sub_id, context.call_id, context.agent_type);
-        
+        info!(
+            "🚀 [UNIFIED_EXECUTOR] Creating subagent task with arguments: {}",
+            arguments
+        );
+        info!(
+            "🔧 [UNIFIED_EXECUTOR] Context: sub_id={}, call_id={}, agent_type={:?}",
+            context.sub_id, context.call_id, context.agent_type
+        );
+
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_create_subagent_task")
             .with_info("call_id", &context.call_id);
@@ -471,7 +509,8 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         let subagent_manager = match &self.subagent_manager {
             Some(manager) => manager,
             None => {
-                let error_msg = "Subagent manager not available. Multi-agent functionality may not be enabled.";
+                let error_msg =
+                    "Subagent manager not available. Multi-agent functionality may not be enabled.";
                 warn!("{}", error_msg);
                 return FunctionCallOutputPayload {
                     content: error_msg.to_string(),
@@ -498,7 +537,10 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             "explorer" => SubagentType::Explorer,
             "coder" => SubagentType::Coder,
             _ => {
-                let error_msg = format!("Invalid agent_type '{}'. Must be 'explorer' or 'coder'", args.agent_type);
+                let error_msg = format!(
+                    "Invalid agent_type '{}'. Must be 'explorer' or 'coder'",
+                    args.agent_type
+                );
                 error!("{}", error_msg);
                 return FunctionCallOutputPayload {
                     content: error_msg,
@@ -514,7 +556,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             description: args.description,
             context_refs: args.context_refs,
             bootstrap_paths: args.bootstrap_paths,
-            max_turns: Some(50), // Default max turns
+            max_turns: Some(50),       // Default max turns
             timeout_ms: Some(300_000), // 5 minutes default timeout
             network_access: None,
         };
@@ -522,17 +564,22 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         // Create the task
         match subagent_manager.create_task(spec).await {
             Ok(task_id) => {
-                info!("Successfully created subagent task '{}' with ID: {}", args.title, task_id);
-                
-                let mut response = format!("Successfully created {:?} subagent task '{}' with ID: {}", 
-                    agent_type, args.title, task_id);
+                info!(
+                    "Successfully created subagent task '{}' with ID: {}",
+                    args.title, task_id
+                );
+
+                let mut response = format!(
+                    "Successfully created {:?} subagent task '{}' with ID: {}",
+                    agent_type, args.title, task_id
+                );
 
                 // Auto-launch if requested
                 if args.auto_launch {
                     match subagent_manager.launch_subagent(&task_id).await {
                         Ok(_handle) => {
                             info!("Auto-launched subagent: task_id={}", task_id);
-                            
+
                             // Return a special response that includes a function call to keep main agent running
                             return FunctionCallOutputPayload {
                                 content: format!(
@@ -558,7 +605,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             Err(e) => {
                 let error_msg = format!("Failed to create subagent task: {}", e);
                 error!("{}", error_msg);
-                
+
                 GLOBAL_ERROR_HANDLER
                     .handle_error(
                         UnifiedError::function_call(
@@ -584,7 +631,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             .with_function("execute_mcp_tool")
             .with_info("tool_name", &tool_name)
             .with_info("agent_type", &format!("{:?}", context.agent_type));
-        
+
         if let Some(mcp_manager) = &self.mcp_connection_manager {
             // Parse server name and tool name using MCP delimiter "__"
             let (server_name, actual_tool_name) = if tool_name.contains("__") {
@@ -593,7 +640,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             } else {
                 ("default".to_string(), tool_name.clone())
             };
-            
+
             // Parse arguments
             let args_value: serde_json::Value = match serde_json::from_str(&arguments) {
                 Ok(value) => value,
@@ -609,9 +656,12 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
                         .await;
                 }
             };
-            
+
             // Execute MCP tool
-            match mcp_manager.call_tool(&server_name, &actual_tool_name, Some(args_value), None).await {
+            match mcp_manager
+                .call_tool(&server_name, &actual_tool_name, Some(args_value), None)
+                .await
+            {
                 Ok(result) => {
                     // Format result for display
                     let mut output = String::new();
@@ -635,11 +685,11 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
                             }
                         }
                     }
-                    
+
                     if output.is_empty() {
                         output = "MCP tool executed successfully (no output)".to_string();
                     }
-                    
+
                     FunctionCallOutputPayload {
                         content: output.trim().to_string(),
                         success: Some(!result.is_error.unwrap_or(false)),
@@ -675,7 +725,8 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
 mod tests {
     use super::*;
     use crate::context_store::InMemoryContextRepository;
-    use crate::unified_function_handler::{AgentType, FunctionPermissions};
+    use crate::unified_function_handler::AgentType;
+    use crate::unified_function_handler::FunctionPermissions;
     use std::path::PathBuf;
 
     #[tokio::test]
@@ -687,7 +738,7 @@ mod tests {
             None, // No subagent manager for this test
             PathBuf::from("/tmp"),
         );
-        
+
         let context = UniversalFunctionCallContext {
             cwd: PathBuf::from("/tmp"),
             sub_id: "test".to_string(),
@@ -695,11 +746,11 @@ mod tests {
             agent_type: AgentType::Main,
             permissions: FunctionPermissions::for_agent_type(&AgentType::Main),
         };
-        
+
         // Test path validation
         let result = executor.validate_file_path("../etc/passwd");
         assert!(result.is_err());
-        
+
         let result = executor.validate_file_path("test.txt");
         assert!(result.is_ok());
     }
@@ -713,7 +764,7 @@ mod tests {
             None, // No subagent manager for this test
             PathBuf::from("/tmp"),
         );
-        
+
         let context = UniversalFunctionCallContext {
             cwd: PathBuf::from("/tmp"),
             sub_id: "test".to_string(),
@@ -721,16 +772,18 @@ mod tests {
             agent_type: AgentType::Main,
             permissions: FunctionPermissions::for_agent_type(&AgentType::Main),
         };
-        
-        let result = executor.execute_store_context(
-            "test_context".to_string(),
-            "Test summary".to_string(),
-            "Test content".to_string(),
-            &context,
-        ).await;
-        
+
+        let result = executor
+            .execute_store_context(
+                "test_context".to_string(),
+                "Test summary".to_string(),
+                "Test content".to_string(),
+                &context,
+            )
+            .await;
+
         assert_eq!(result.success, Some(true));
-        
+
         // Verify context was stored
         let stored_context = context_repo.get_context("test_context").await;
         assert!(stored_context.is_ok());

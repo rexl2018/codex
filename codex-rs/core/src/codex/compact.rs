@@ -122,6 +122,7 @@ async fn run_compact_task_inner(
         tools: Vec::new(),
         base_instructions_override: Some(instructions_override),
         agent_state_info: None, // Compact tasks don't need state info
+        available_contexts: None, // Compact tasks don't need context info
     };
 
     let max_retries = turn_context.client.get_provider().stream_max_retries();

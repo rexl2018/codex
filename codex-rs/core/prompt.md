@@ -192,6 +192,24 @@ The tool parameters include:
 - `bootstrap_paths`: Files/directories to read into the subagent's context at startup
 - `auto_launch`: When true (default), automatically launches the subagent after creation
 
+**CRITICAL: Smart Context Reference Selection**
+
+When creating subagent tasks, you MUST intelligently select relevant context references from the "Available Contexts" section provided in your prompt. This is essential for subagent effectiveness:
+
+- **Always review available contexts**: Before creating any subagent, examine the "Available Contexts" section to identify relevant background information
+- **Select related contexts**: Include context IDs in `context_refs` that are relevant to the subagent's task (e.g., if analyzing authentication, include contexts about security, user management, etc.)
+- **Provide sufficient context**: Don't leave `context_refs` empty unless no relevant contexts exist - subagents perform much better with background knowledge
+- **Match context to task type**: 
+  - For Explorer subagents: Include contexts about similar analysis, architecture, or related system components
+  - For Coder subagents: Include contexts about implementation patterns, related code, or architectural decisions
+- **Use context summaries**: Read the context summaries to determine relevance - include contexts that provide background, related analysis, or complementary information
+
+**Example of smart context selection:**
+- Task: "Analyze authentication system"
+- Available contexts: "user_management_analysis", "security_patterns", "database_schema", "frontend_components"
+- Smart selection: Include "user_management_analysis" and "security_patterns" in `context_refs`
+- Result: Subagent receives relevant background knowledge and performs more informed analysis
+
 Example scenarios (only if your current state allows the specific subagent type):
 - "Create an explorer subagent to analyze the authentication system in src/auth/ and document its architecture and key components" *(only if Explorer creation is allowed)*
 - "Create a coder subagent to implement the user registration feature with proper validation and error handling" *(only if Coder creation is allowed)*

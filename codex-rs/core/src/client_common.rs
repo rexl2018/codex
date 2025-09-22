@@ -7,6 +7,7 @@ use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::ContextSummary;
 use futures::Stream;
 use serde::Serialize;
 use std::borrow::Cow;
@@ -34,6 +35,9 @@ pub struct Prompt {
 
     /// Optional agent state information to inject into the prompt
     pub agent_state_info: Option<String>,
+
+    /// Optional list of available contexts to inject into the prompt
+    pub available_contexts: Option<Vec<ContextSummary>>,
 }
 
 impl Prompt {
@@ -47,6 +51,18 @@ impl Prompt {
         // Add agent state information if provided
         if let Some(state_info) = &self.agent_state_info {
             sections.push(format!("\n## Current Agent State\n\n{}", state_info));
+        }
+
+        // Add available contexts information if provided
+        if let Some(contexts) = &self.available_contexts {
+            if !contexts.is_empty() {
+                let context_list = contexts
+                    .iter()
+                    .map(|ctx| format!("- ID: {}\n  Summary: {}\n  Created by: {}\n  Created at: {}\n  Size: {} bytes", ctx.id, ctx.summary, ctx.created_by, ctx.created_at, ctx.size_bytes))
+                    .collect::<Vec<String>>()
+                    .join("\n\n");
+                sections.push(format!("\n## Available Contexts\n\n{}", context_list));
+            }
         }
 
         // When there are no custom instructions, add apply_patch_tool_instructions if:

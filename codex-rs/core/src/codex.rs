@@ -646,11 +646,32 @@ async fn run_turn(
         }
     );
 
+    // Get available contexts to provide to the LLM
+    let available_contexts = if let Some(components) = &sess.multi_agent_components {
+        use crate::context_store::ContextQuery as StoreContextQuery;
+        let query = StoreContextQuery {
+            ids: None,
+            tags: None,
+            created_by: None,
+            limit: None,
+        };
+        match components.context_repo.query_contexts(&query).await {
+            Ok(contexts) => Some(contexts.into_iter().map(|c| c.into()).collect()),
+            Err(e) => {
+                warn!("Failed to get available contexts: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let prompt = Prompt {
         input,
         tools,
         base_instructions_override: turn_context.base_instructions.clone(),
         agent_state_info: Some(agent_state_info),
+        available_contexts,
     };
 
     let mut retries = 0;
