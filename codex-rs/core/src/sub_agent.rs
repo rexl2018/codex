@@ -163,11 +163,32 @@ impl SubAgent {
                     }
                     Err(e) => {
                         tracing::error!("Failed to create subagent task: {}", e);
+                        
+                        // Send error event to make failure visible in UI
+                        let error_event = Event {
+                            id: sub_id.clone(),
+                            msg: EventMsg::Error(codex_protocol::protocol::ErrorEvent {
+                                message: format!("❌ Failed to create subagent task: {}", e),
+                            }),
+                        };
+                        session.send_event(error_event).await;
                     }
                 }
             });
         } else {
             tracing::warn!("No multi-agent components available");
+            
+            // Send error event to make this visible in UI
+            let session = self.session.clone();
+            tokio::spawn(async move {
+                let error_event = Event {
+                    id: sub_id,
+                    msg: EventMsg::Error(codex_protocol::protocol::ErrorEvent {
+                        message: "❌ Multi-agent functionality is not enabled. Subagent creation failed.".to_string(),
+                    }),
+                };
+                session.send_event(error_event).await;
+            });
         }
     }
 

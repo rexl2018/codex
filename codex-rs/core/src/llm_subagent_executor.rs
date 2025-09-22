@@ -7,17 +7,19 @@ use std::time::SystemTime;
 use crate::client::ModelClient;
 use crate::context_store::IContextRepository;
 use crate::context_store::InMemoryContextRepository;
+use crate::function_call_router::FunctionCallRouter;
+use crate::function_call_router::FunctionCallRouterConfig;
 use crate::mcp_connection_manager::McpConnectionManager;
-use crate::unified_function_handler::{
-    UniversalFunctionCallHandler, UniversalFunctionCallContext, AgentType, FunctionPermissions,
-};
-use crate::unified_function_executor::CodexFunctionExecutor;
-use crate::function_call_router::{FunctionCallRouter, FunctionCallRouterConfig};
 use crate::subagent_manager::MessageEntry;
 use crate::subagent_manager::SubagentReport;
 use crate::subagent_manager::SubagentTask;
 use crate::subagent_system_messages::get_coder_system_message;
 use crate::subagent_system_messages::get_explorer_system_message_with_network_access;
+use crate::unified_function_executor::CodexFunctionExecutor;
+use crate::unified_function_handler::AgentType;
+use crate::unified_function_handler::FunctionPermissions;
+use crate::unified_function_handler::UniversalFunctionCallContext;
+use crate::unified_function_handler::UniversalFunctionCallHandler;
 use codex_protocol::protocol::ContextItem;
 use codex_protocol::protocol::SubagentMetadata;
 use codex_protocol::protocol::SubagentType;
@@ -114,13 +116,22 @@ impl LLMSubagentExecutor {
             SubagentType::Coder => AgentType::Coder,
         };
 
-        // Use the unified tool registry to get tools for this agent type
+        // Use the unified tool registry to get tools for this agent type, including MCP tools
         match crate::tool_registry::GLOBAL_TOOL_REGISTRY.get_tools_for_agent(&unified_agent_type) {
             Ok(tools) => {
-                tracing::info!(
-                    "Created {} tools for subagent using unified tool registry: {:?}",
+                tracing::debug!(
+                    "Retrieved {} tools for {:?} subagent: {:?}",
                     tools.len(),
-                    unified_agent_type
+                    unified_agent_type,
+                    tools
+                        .iter()
+                        .map(|t| match t {
+                            crate::openai_tools::OpenAiTool::Function(f) => &f.name,
+                            crate::openai_tools::OpenAiTool::LocalShell { .. } => "local_shell",
+                            crate::openai_tools::OpenAiTool::WebSearch { .. } => "web_search",
+                            crate::openai_tools::OpenAiTool::Freeform(_) => "freeform",
+                        })
+                        .collect::<Vec<_>>()
                 );
                 tools
             }
@@ -131,8 +142,6 @@ impl LLMSubagentExecutor {
             }
         }
     }
-
-
 
     /// Send an event to the UI
     async fn send_event(&self, event: codex_protocol::protocol::Event) {
@@ -217,11 +226,13 @@ impl LLMSubagentExecutor {
         );
 
         // Main execution loop
+        let mut completed_naturally = false;
         for turn in 1..=self.max_turns {
             turn_count = turn;
             tracing::debug!("LLM Subagent turn {}/{}", turn, self.max_turns);
 
             // Get LLM response
+            tracing::info!("Requesting LLM response for turn {}/{}", turn, self.max_turns);
             match self.get_llm_response(&messages, task).await {
                 Ok(llm_response) => {
                     tracing::debug!(
@@ -242,8 +253,10 @@ impl LLMSubagentExecutor {
                     // Check if we have function calls to execute
                     if !llm_response.function_calls.is_empty() {
                         tracing::info!(
-                            "Executing {} function calls",
-                            llm_response.function_calls.len()
+                            "Turn {}: Executing {} function calls: {:?}",
+                            turn,
+                            llm_response.function_calls.len(),
+                            llm_response.function_calls.iter().map(|fc| &fc.name).collect::<Vec<_>>()
                         );
 
                         // First, add the function calls to message history so OpenAI knows about them
@@ -268,6 +281,7 @@ impl LLMSubagentExecutor {
 
                     // If no function calls, this might be a final response
                     tracing::info!("No function calls found - treating as final response");
+                    completed_naturally = true;
                     break;
                 }
                 Err(e) => {
@@ -283,13 +297,22 @@ impl LLMSubagentExecutor {
             }
         }
 
-        // Force completion if max turns reached
-        tracing::warn!(
-            "LLM Subagent reached max turns ({}), forcing completion",
-            self.max_turns
-        );
-        self.force_completion(&mut messages, task, turn_count, start_time)
-            .await
+        // Handle completion based on how the loop ended
+        if completed_naturally {
+            tracing::info!("LLM Subagent completed naturally after {} turns", turn_count);
+            // For natural completion, we still call force_completion to handle final context generation
+            // but with a different message indicating natural completion
+            self.handle_natural_completion(&mut messages, task, turn_count, start_time)
+                .await
+        } else {
+            // Force completion if max turns reached
+            tracing::warn!(
+                "LLM Subagent reached max turns ({}), forcing completion",
+                self.max_turns
+            );
+            self.force_completion(&mut messages, task, turn_count, start_time)
+                .await
+        }
     }
 
     /// Build initial conversation messages
@@ -297,15 +320,11 @@ impl LLMSubagentExecutor {
     fn build_initial_messages(&self, task: &SubagentTask) -> Vec<Message> {
         let task_prompt = self.build_task_prompt(task);
 
-        vec![
-            codex_protocol::models::ResponseItem::Message {
-                id: None,
-                role: "user".to_string(),
-                content: vec![codex_protocol::models::ContentItem::OutputText {
-                    text: task_prompt,
-                }],
-            },
-        ]
+        vec![codex_protocol::models::ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![codex_protocol::models::ContentItem::OutputText { text: task_prompt }],
+        }]
     }
 
     /// Build task prompt similar to reference implementation
@@ -346,23 +365,12 @@ impl LLMSubagentExecutor {
 
         // Create tools for subagent based on agent type
         let tools = self.create_subagent_tools(&task.agent_type);
-        tracing::info!(
-            "Created {} tools for subagent: {:?}",
-            tools.len(),
-            tools
-                .iter()
-                .map(|t| match t {
-                    crate::openai_tools::OpenAiTool::Function(f) => &f.name,
-                    crate::openai_tools::OpenAiTool::LocalShell { .. } => "local_shell",
-                    crate::openai_tools::OpenAiTool::WebSearch { .. } => "web_search",
-                    crate::openai_tools::OpenAiTool::Freeform(_) => "freeform",
-                })
-                .collect::<Vec<_>>()
-        );
 
         // Use subagent-specific system message as base instructions to avoid inheriting main agent's prompt
         let subagent_base_instructions = match task.agent_type {
-            SubagentType::Explorer => get_explorer_system_message_with_network_access(task.network_access.clone()),
+            SubagentType::Explorer => {
+                get_explorer_system_message_with_network_access(task.network_access.clone())
+            }
             SubagentType::Coder => get_coder_system_message(),
         };
 
@@ -516,9 +524,8 @@ impl LLMSubagentExecutor {
                             } = item
                             {
                                 tracing::info!(
-                                    "Function call received: {}({}) with call_id={}",
+                                    "Function call received: {} (call_id={})",
                                     name,
-                                    arguments,
                                     call_id
                                 );
                                 function_calls.push(FunctionCall {
@@ -634,9 +641,7 @@ impl LLMSubagentExecutor {
             tracing::trace!("Full LLM response: {}", full_response);
         }
 
-        // DEBUG: Force output full response for debugging (can be removed in production)
-        tracing::info!("DEBUG - Full LLM response content:\n{}", full_response);
-        tracing::info!("DEBUG - Function calls received: {}", function_calls.len());
+        tracing::debug!("LLM response received: {} chars, {} function calls", full_response.len(), function_calls.len());
 
         // Send final AgentMessage event to properly close the message in TUI
         if !full_response.is_empty() || prefix_sent {
@@ -695,28 +700,28 @@ impl LLMSubagentExecutor {
             };
 
             // Use the unified function call router
-            let result = self.function_router.route_function_call(
-                func_call.name.clone(),
-                func_call.arguments.clone(),
-                task.task_id.clone(),
-                func_call.call_id.clone(),
-            ).await;
+            let result = self
+                .function_router
+                .route_function_call(
+                    func_call.name.clone(),
+                    func_call.arguments.clone(),
+                    task.task_id.clone(),
+                    func_call.call_id.clone(),
+                )
+                .await;
 
             // Convert the result to the expected format
             let tool_response = match result {
                 codex_protocol::models::ResponseInputItem::FunctionCallOutput {
                     call_id,
                     output,
-                } => codex_protocol::models::ResponseItem::FunctionCallOutput {
+                } => codex_protocol::models::ResponseItem::FunctionCallOutput { call_id, output },
+                codex_protocol::models::ResponseInputItem::McpToolCallOutput {
                     call_id,
-                    output,
-                },
-                codex_protocol::models::ResponseInputItem::McpToolCallOutput { 
-                     call_id, 
-                     result 
-                 } => {
+                    result,
+                } => {
                     // Convert MCP result to function call output
-                     let content = format!("MCP tool result: {:?}", result);
+                    let content = format!("MCP tool result: {:?}", result);
                     codex_protocol::models::ResponseItem::FunctionCallOutput {
                         call_id,
                         output: codex_protocol::models::FunctionCallOutputPayload {
@@ -724,11 +729,8 @@ impl LLMSubagentExecutor {
                             success: Some(true),
                         },
                     }
-                },
-                codex_protocol::models::ResponseInputItem::Message { 
-                     role, 
-                     content 
-                 } => {
+                }
+                codex_protocol::models::ResponseInputItem::Message { role, content } => {
                     // Convert message to function call output
                     let content_str = format!("Message result: {:?}", content);
                     codex_protocol::models::ResponseItem::FunctionCallOutput {
@@ -738,20 +740,36 @@ impl LLMSubagentExecutor {
                             success: Some(true),
                         },
                     }
-                },
-                codex_protocol::models::ResponseInputItem::CustomToolCallOutput { 
-                    call_id, 
-                    output 
-                } => {
-                    codex_protocol::models::ResponseItem::FunctionCallOutput {
-                        call_id,
-                        output: codex_protocol::models::FunctionCallOutputPayload {
-                            content: output,
-                            success: Some(true),
-                        },
-                    }
+                }
+                codex_protocol::models::ResponseInputItem::CustomToolCallOutput {
+                    call_id,
+                    output,
+                } => codex_protocol::models::ResponseItem::FunctionCallOutput {
+                    call_id,
+                    output: codex_protocol::models::FunctionCallOutputPayload {
+                        content: output,
+                        success: Some(true),
+                    },
                 },
             };
+
+            // Log the function call result for debugging
+            let response_content = match &tool_response {
+                codex_protocol::models::ResponseItem::FunctionCallOutput { output, .. } => {
+                    &output.content
+                }
+                _ => "Unknown response type",
+            };
+            let truncated_content = if response_content.len() > 100 {
+                format!("{}...", &response_content[..100])
+            } else {
+                response_content.to_string()
+            };
+            tracing::info!(
+                "Function call {} completed, response: {}",
+                func_call.name,
+                truncated_content
+            );
 
             results.push(tool_response);
         }
@@ -783,6 +801,121 @@ impl LLMSubagentExecutor {
             actions_executed: Vec::new(),
             env_responses: Vec::new(),
             report: None,
+        }
+    }
+
+    /// Handle natural completion when LLM provides final response without function calls
+    async fn handle_natural_completion(
+        &self,
+        messages: &mut Vec<Message>,
+        task: &SubagentTask,
+        turn_count: u32,
+        start_time: SystemTime,
+    ) -> SubagentReport {
+        tracing::info!("Subagent completed naturally, checking for final context generation");
+
+        // Add a message prompting the LLM to create context items if needed
+        let completion_prompt = format!(
+            "You have completed your task successfully. If you discovered any important findings or analysis during this task that haven't been saved yet, please use the `store_context` function to save them. Create context items for:\n\
+            1. Key findings about the codebase/system\n\
+            2. Important patterns or structures you identified\n\
+            3. Any analysis that would be useful for future tasks\n\
+            \n\
+            If you have already stored all relevant contexts, simply confirm completion."
+        );
+
+        messages.push(codex_protocol::models::ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![codex_protocol::models::ContentItem::OutputText {
+                text: completion_prompt,
+            }],
+        });
+
+        // Try to get one more LLM response to generate contexts if needed
+        match self.get_llm_response(messages, task).await {
+            Ok(llm_response) => {
+                tracing::info!("Got final LLM response for natural completion");
+
+                // Add assistant message to history
+                messages.push(codex_protocol::models::ResponseItem::Message {
+                    id: None,
+                    role: "assistant".to_string(),
+                    content: vec![codex_protocol::models::ContentItem::OutputText {
+                        text: llm_response.text.clone(),
+                    }],
+                });
+
+                // Execute any function calls (especially store_context)
+                if !llm_response.function_calls.is_empty() {
+                    tracing::info!(
+                        "Executing {} final function calls for natural completion",
+                        llm_response.function_calls.len()
+                    );
+
+                    let function_results = self
+                        .execute_function_calls(&llm_response.function_calls, task)
+                        .await;
+                    messages.extend(function_results);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to get final LLM response for natural completion: {}", e);
+            }
+        }
+
+        // Create a completion report for natural completion
+        SubagentReport {
+            task_id: "".to_string(), // Will be set by caller
+            contexts: Vec::new(),    // Contexts are stored via store_context function calls
+            comments: format!(
+                "Task completed naturally after {} turns. Contexts were generated through function calls during execution.",
+                turn_count
+            ),
+            success: true, // Consider it successful since it completed naturally
+            metadata: SubagentMetadata {
+                num_turns: turn_count,
+                max_turns: self.max_turns,
+                input_tokens: 0,
+                output_tokens: 0,
+                duration_ms: start_time.elapsed().unwrap_or_default().as_millis() as u64,
+                reached_max_turns: false, // Natural completion, not forced
+                force_completed: false,
+                error_message: None,
+            },
+            trajectory: Some(
+                messages
+                    .iter()
+                    .filter_map(|msg| {
+                        if let codex_protocol::models::ResponseItem::Message {
+                            role, content, ..
+                        } = msg
+                        {
+                            let text_content = content
+                                .iter()
+                                .filter_map(|item| match item {
+                                    codex_protocol::models::ContentItem::OutputText { text } => {
+                                        Some(text.clone())
+                                    }
+                                    codex_protocol::models::ContentItem::InputText { text } => {
+                                        Some(text.clone())
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+
+                            Some(MessageEntry {
+                                role: role.clone(),
+                                content: text_content,
+                                timestamp: SystemTime::now(),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+            ),
         }
     }
 
@@ -976,14 +1109,12 @@ impl LLMSubagentExecutor {
 
     // Note: The following methods have been replaced by the unified function call router:
     // - handle_unknown_tool_call
-    // - handle_regular_function_call  
+    // - handle_regular_function_call
     // - handle_mcp_tool_call
     // - execute_mcp_tool_directly
     // - handle_store_context_call
     //
     // All function call handling is now done through self.function_router.route_function_call()
-
-
 }
 
 // Note: Tests are temporarily disabled due to compilation issues with dependencies

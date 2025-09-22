@@ -170,6 +170,30 @@ impl ToolFactory for WebSearchToolFactory {
     }
 }
 
+/// Factory for MCP tools
+pub struct McpToolFactory;
+
+impl ToolFactory for McpToolFactory {
+    fn create_openai_tool(&self, definition: &ToolDefinition) -> Result<OpenAiTool, String> {
+        if definition.tool_type != ToolType::Mcp {
+            return Err("Invalid tool type for McpToolFactory".to_string());
+        }
+
+        // MCP tools are handled dynamically, so we create a placeholder
+        // The actual MCP tool conversion happens in get_legacy_openai_tools
+        Err("MCP tools are handled dynamically".to_string())
+    }
+
+    fn tool_type(&self) -> ToolType {
+        ToolType::Mcp
+    }
+
+    fn validate_config(&self, _definition: &ToolDefinition) -> Result<(), String> {
+        // MCP tools are validated by the MCP connection manager
+        Ok(())
+    }
+}
+
 impl ToolRegistry {
     /// Create a new tool registry with default configurations
     pub fn new() -> Self {
@@ -227,7 +251,7 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// Get tools for a specific agent type
+    /// Get tools for a specific agent type, including MCP tools if available
     pub fn get_tools_for_agent(&self, agent_type: &AgentType) -> Result<Vec<OpenAiTool>, String> {
         let configs = self.configs.read().unwrap();
         let config = configs.get(agent_type)
@@ -251,6 +275,24 @@ impl ToolRegistry {
                 tools.push(tool);
             } else {
                 return Err(format!("No factory registered for tool: {}", definition.name));
+            }
+        }
+
+        // Add MCP tools if agent has MCP access permission and MCP tools are available
+        let agent_permissions = config.get_agent_permissions(agent_type);
+        if agent_permissions.contains(&crate::tool_config::Permission::McpAccess) {
+            if let Some(mcp_tools_map) = self.get_mcp_tools() {
+                // Convert MCP tools to OpenAI tools
+                for (name, mcp_tool) in mcp_tools_map {
+                    match crate::openai_tools::mcp_tool_to_openai_tool(name, mcp_tool) {
+                        Ok(openai_tool) => {
+                            tools.push(crate::openai_tools::OpenAiTool::Function(openai_tool));
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to convert MCP tool to OpenAI tool: {}", e);
+                        }
+                    }
+                }
             }
         }
 
@@ -304,29 +346,7 @@ impl ToolRegistry {
         cache.clone()
     }
 
-    /// Create OpenAI tools from tool definitions
-    pub fn get_legacy_openai_tools(
-        &self,
-        agent_type: &AgentType,
-        mcp_tools: Option<HashMap<String, mcp_types::Tool>>,
-    ) -> Result<Vec<OpenAiTool>, String> {
-        let mut tools = self.get_tools_for_agent(agent_type)?;
 
-        // Add MCP tools if provided
-        if let Some(mcp_tools_map) = mcp_tools {
-            // Store MCP tools in cache
-            self.set_mcp_tools(mcp_tools_map.clone());
-
-            // Convert MCP tools to OpenAI tools
-            for (name, mcp_tool) in mcp_tools_map {
-                // Create a wrapper OpenAI tool for MCP tools
-                // This would need to be implemented based on how MCP tools are currently handled
-                // For now, we'll skip this as it requires more integration work
-            }
-        }
-
-        Ok(tools)
-    }
 
     /// Validate all registered tools
     pub fn validate_all_tools(&self) -> Result<(), String> {
@@ -402,10 +422,14 @@ mod tests {
     fn test_permission_checking() {
         let registry = ToolRegistry::new();
         
-        // Test permission checking
-        assert!(registry.has_permission(&AgentType::Main, "read_file"));
-        assert!(registry.has_permission(&AgentType::Main, "write_file"));
+        // Test permission checking - Main agent should only have coordinator permissions (no base tools)
+        assert!(!registry.has_permission(&AgentType::Main, "read_file")); // Main agent should NOT have read_file
+        assert!(!registry.has_permission(&AgentType::Main, "write_file")); // Main agent no longer has write permission
+        assert!(!registry.has_permission(&AgentType::Main, "shell")); // Main agent no longer has shell permission
+        assert!(!registry.has_permission(&AgentType::Main, "store_context")); // Main agent should NOT have store_context
         assert!(registry.has_permission(&AgentType::Main, "create_subagent_task"));
+        assert!(registry.has_permission(&AgentType::Main, "list_contexts"));
+        assert!(registry.has_permission(&AgentType::Main, "multi_retrieve_contexts"));
         
         assert!(registry.has_permission(&AgentType::Explorer, "read_file"));
         assert!(!registry.has_permission(&AgentType::Explorer, "write_file"));

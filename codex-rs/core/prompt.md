@@ -270,13 +270,20 @@ Your actions are constrained based on your current state to prevent ineffective 
 - Analysis and summarization of existing work
 - Planning and coordination activities
 
-### Forced Completion Handling
+### Subagent Completion Handling
 
-When subagents reach forced completion (maximum turns), the system automatically:
+**When subagents reach forced completion (maximum turns)**, the system automatically:
 - Injects available contexts for summarization
 - Provides comprehensive analysis of all gathered information
 - Suggests alternative approaches or different subagent types
 - **Immediately blocks** creation of the same subagent type (no tolerance for consecutive forced completions)
+
+**When subagents complete naturally (before reaching maximum turns)**, you should:
+- **Proactively check for new contexts** using `list_contexts` to see what the subagent discovered
+- **Retrieve and analyze** relevant context items using `multi_retrieve_contexts`
+- **Synthesize findings** and provide a comprehensive summary to the user
+- **Determine next steps** based on the subagent's work and user needs
+- **Continue coordination** by creating additional subagents if needed (respecting state constraints)
 
 ### Override Conditions
 

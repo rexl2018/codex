@@ -39,6 +39,7 @@ use crate::{
     shell,
     state::State,
     subagent_manager::{ExecutorType, InMemorySubagentManager},
+    subagent_completion_tracker::SubagentCompletionTracker,
     tool_config::UnifiedToolConfig,
     turn_context::TurnContext,
     turn_diff_tracker::TurnDiffTracker,
@@ -69,6 +70,8 @@ pub(crate) struct MultiAgentComponents {
     pub context_repo: Arc<InMemoryContextRepository>,
     pub subagent_manager: Arc<InMemorySubagentManager>,
     pub subtask_coordinator: Option<crate::multi_agent_coordinator::SubtaskCoordinator>,
+    /// Event-driven subagent completion tracker
+    pub subagent_completion_tracker: Arc<SubagentCompletionTracker>,
     /// Flag to track if a new user task has been created
     pub new_user_task_created: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -262,6 +265,10 @@ impl Session {
         // Create Arc for mcp_connection_manager to be used in both subagent and main session
         let mcp_connection_manager_arc = Arc::new(mcp_connection_manager);
 
+        // Set MCP tools in the global tool registry for use by subagents
+        let mcp_tools = mcp_connection_manager_arc.list_all_tools();
+        crate::tool_registry::GLOBAL_TOOL_REGISTRY.set_mcp_tools(mcp_tools);
+
         // Initialize multi-agent components if subagent task tool is enabled
         let multi_agent_components = if config.include_subagent_task_tool {
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -286,10 +293,34 @@ impl Session {
                 }, // Use LLM executor for production with MCP tools
             ));
 
-            // Spawn a task to handle subagent events
+            // Create a separate event channel for the completion tracker
+            let (completion_event_tx, completion_event_rx) = tokio::sync::mpsc::unbounded_channel();
+            let subagent_completion_tracker = Arc::new(SubagentCompletionTracker::new(
+                completion_event_rx,
+                subagent_manager.clone(),
+            ));
+
+            // Start the completion tracker
+            subagent_completion_tracker.start().await;
+
+            // Spawn a task to handle subagent events and forward completion events to tracker
             let tx_event_clone = tx_event.clone();
+            let completion_event_tx_clone = completion_event_tx.clone();
             tokio::spawn(async move {
                 while let Some(event) = event_rx.recv().await {
+                    // Forward completion-related events to the tracker
+                    match &event.msg {
+                        EventMsg::SubagentCompleted(_) | 
+                        EventMsg::SubagentForceCompleted(_) | 
+                        EventMsg::SubagentCancelled(_) => {
+                            if let Err(e) = completion_event_tx_clone.send(event.clone()) {
+                                tracing::error!("Failed to send event to completion tracker: {}", e);
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    // Forward all events to the main event channel
                     if let Err(e) = tx_event_clone.send(event).await {
                         tracing::error!("Failed to send subagent event: {}", e);
                         break;
@@ -301,6 +332,7 @@ impl Session {
                 context_repo,
                 subagent_manager,
                 subtask_coordinator: None,
+                subagent_completion_tracker,
                 new_user_task_created: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             })
         } else {

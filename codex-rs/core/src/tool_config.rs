@@ -206,16 +206,21 @@ impl UnifiedToolConfig {
 
     /// Get tools available for a specific agent type
     pub fn get_tools_for_agent(&self, agent_type: &AgentType) -> Vec<ToolDefinition> {
-        let mut tools = self.base_tools.clone();
+        let mut tools = Vec::new();
 
         match agent_type {
             AgentType::Main => {
+                // Main agent only gets its specific tools, no base tools
                 tools.extend(self.main_agent_tools.clone());
             }
             AgentType::Explorer => {
+                // Subagents get base tools + their specific tools
+                tools.extend(self.base_tools.clone());
                 tools.extend(self.explorer_agent_tools.clone());
             }
             AgentType::Coder => {
+                // Subagents get base tools + their specific tools
+                tools.extend(self.base_tools.clone());
                 tools.extend(self.coder_agent_tools.clone());
             }
         }
@@ -242,13 +247,12 @@ impl UnifiedToolConfig {
     pub fn get_agent_permissions(&self, agent_type: &AgentType) -> Vec<Permission> {
         match agent_type {
             AgentType::Main => vec![
-                Permission::ReadFiles,
-                Permission::WriteFiles,
-                Permission::ExecuteShell,
+                // Main agent should primarily be a coordinator
+                // Only allow context management and subagent creation
                 Permission::StoreContext,
                 Permission::CreateSubagents,
-                Permission::NetworkAccess,
-                Permission::McpAccess,
+                // Allow limited read access for context gathering
+                Permission::ReadFiles,
             ],
             AgentType::Explorer => vec![
                 Permission::ReadFiles,
@@ -256,6 +260,7 @@ impl UnifiedToolConfig {
                 Permission::StoreContext,
                 Permission::NetworkAccess,
                 Permission::McpAccess,
+                // Note: Explorer should NOT have WriteFiles permission
             ],
             AgentType::Coder => vec![
                 Permission::ReadFiles,
@@ -336,29 +341,43 @@ impl UnifiedToolConfig {
     /// Create tools specific to main agents
     fn create_main_agent_tools() -> Vec<ToolDefinition> {
         vec![
+            // Main agent should primarily be a coordinator
+            // Remove write_file and shell tools to force delegation to subagents
             ToolDefinition {
-                name: "write_file".to_string(),
-                description: "Write content to a file".to_string(),
-                tool_type: ToolType::FileSystem,
+                name: "list_contexts".to_string(),
+                description: "List available context items".to_string(),
+                tool_type: ToolType::Context,
                 enabled: true,
                 config: ToolSpecificConfig {
                     shell: None,
-                    filesystem: Some(FileSystemToolConfig {
-                        max_read_size_bytes: None,
-                        max_write_size_bytes: Some(10 * 1024 * 1024), // 10MB
-                        allowed_read_extensions: vec![],
-                        allowed_write_extensions: vec![], // Allow all
-                        restricted_paths: vec![
-                            "/etc/".to_string(),
-                            "/usr/".to_string(),
-                            "/sys/".to_string(),
-                        ],
+                    filesystem: None,
+                    context: Some(ContextToolConfig {
+                        max_contexts: Some(100),
+                        max_content_size_bytes: Some(1024 * 1024), // 1MB
+                        enable_search: true,
                     }),
-                    context: None,
                     mcp: None,
                     custom: None,
                 },
-                required_permissions: vec![Permission::WriteFiles],
+                required_permissions: vec![Permission::StoreContext],
+            },
+            ToolDefinition {
+                name: "multi_retrieve_contexts".to_string(),
+                description: "Retrieve multiple context items by their IDs".to_string(),
+                tool_type: ToolType::Context,
+                enabled: true,
+                config: ToolSpecificConfig {
+                    shell: None,
+                    filesystem: None,
+                    context: Some(ContextToolConfig {
+                        max_contexts: Some(100),
+                        max_content_size_bytes: Some(1024 * 1024), // 1MB
+                        enable_search: true,
+                    }),
+                    mcp: None,
+                    custom: None,
+                },
+                required_permissions: vec![Permission::StoreContext],
             },
             ToolDefinition {
                 name: "create_subagent_task".to_string(),
@@ -463,8 +482,8 @@ mod tests {
         assert!(main_tools.len() >= explorer_tools.len());
         assert!(main_tools.len() >= coder_tools.len());
         
-        // All should have base tools
-        assert!(main_tools.iter().any(|t| t.name == "read_file"));
+        // Check that subagents have basic tools, but main agent doesn't
+        assert!(!main_tools.iter().any(|t| t.name == "read_file")); // Main agent should NOT have read_file
         assert!(explorer_tools.iter().any(|t| t.name == "read_file"));
         assert!(coder_tools.iter().any(|t| t.name == "read_file"));
     }
@@ -473,19 +492,24 @@ mod tests {
     fn test_permission_checking() {
         let config = UnifiedToolConfig::default();
         
-        // Main agent should have permission for all tools
-        assert!(config.has_permission(&AgentType::Main, "read_file"));
-        assert!(config.has_permission(&AgentType::Main, "write_file"));
+        // Main agent should only have coordinator permissions (no base tools)
+        assert!(!config.has_permission(&AgentType::Main, "read_file")); // Main agent should NOT have read_file
+        assert!(!config.has_permission(&AgentType::Main, "shell")); // No shell access
+        assert!(!config.has_permission(&AgentType::Main, "store_context")); // No store_context access
         assert!(config.has_permission(&AgentType::Main, "create_subagent_task"));
+        assert!(config.has_permission(&AgentType::Main, "list_contexts"));
+        assert!(config.has_permission(&AgentType::Main, "multi_retrieve_contexts"));
         
         // Explorer should not have write permissions
         assert!(config.has_permission(&AgentType::Explorer, "read_file"));
-        assert!(!config.has_permission(&AgentType::Explorer, "write_file"));
+        assert!(!config.has_permission(&AgentType::Explorer, "write_file")); // Explorer should NOT have write_file
+        assert!(config.has_permission(&AgentType::Explorer, "shell")); // Explorer can use shell
         assert!(!config.has_permission(&AgentType::Explorer, "create_subagent_task"));
         
         // Coder should have write but not subagent creation
         assert!(config.has_permission(&AgentType::Coder, "read_file"));
-        assert!(config.has_permission(&AgentType::Coder, "write_file"));
+        assert!(config.has_permission(&AgentType::Coder, "write_file")); // Coder should have write_file
+        assert!(config.has_permission(&AgentType::Coder, "shell")); // Coder can use shell
         assert!(!config.has_permission(&AgentType::Coder, "create_subagent_task"));
     }
 }

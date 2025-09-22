@@ -1,13 +1,11 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::context_store::{InMemoryContextRepository, IContextRepository, ContextQuery, Context};
     use crate::subagent_manager::{InMemorySubagentManager, ISubagentManager, SubagentTaskSpec};
     use crate::multi_agent_coordinator::{SubtaskCoordinator, TaskPlanner};
     use codex_protocol::protocol::{
-        SubagentType, BootstrapPath, EventMsg, Event, ContextItem,
-        SubagentTaskCreatedEvent, SubagentStartedEvent,
-        SubagentCompletedEvent, SubagentForceCompletedEvent, SubagentCancelledEvent
+        SubagentType, BootstrapPath, EventMsg,
+        SubagentTaskCreatedEvent,
     };
     use std::path::PathBuf;
     use std::sync::Arc;

@@ -468,11 +468,17 @@ impl ChatWidget {
             "🤖 Subagent task created: {} ({:?}) - {} context refs, {} bootstrap paths",
             ev.title, ev.agent_type, ev.context_refs_count, ev.bootstrap_paths_count
         );
+        // Use agent message instead of background event for better visibility
+        self.on_agent_message(format!("📋 {}", message));
+        // Also keep as background event for logging
         self.on_background_event(message);
     }
 
     fn on_subagent_started(&mut self, ev: SubagentStartedEvent) {
         let message = format!("▶️ Subagent started: {} ({:?})", ev.title, ev.agent_type);
+        // Use agent message for better visibility
+        self.on_agent_message(format!("🚀 {}", message));
+        // Also keep as background event for logging
         self.on_background_event(message);
     }
 

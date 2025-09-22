@@ -4,7 +4,6 @@ use serde_json::Value as JsonValue;
 use serde_json::json;
 use std::collections::BTreeMap;
 
-
 /// Agent type for tool configuration
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum AgentType {
@@ -66,12 +65,6 @@ pub(crate) enum OpenAiTool {
     #[serde(rename = "custom")]
     Freeform(FreeformTool),
 }
-
-
-
-
-
-
 
 /// Generic JSON‑Schema subset needed for our tool definitions
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -532,7 +525,6 @@ fn sanitize_json_schema(value: &mut JsonValue) {
 /// - Explorer: All tools except file_write, plus MCP tools
 /// - Coder: All tools including file_write, plus MCP tools
 
-
 // Additional tool creation functions for the unified system
 pub(crate) fn create_read_file_tool() -> OpenAiTool {
     let mut properties = BTreeMap::new();
@@ -609,7 +601,11 @@ pub(crate) fn create_store_context_tool() -> OpenAiTool {
         strict: false,
         parameters: JsonSchema::Object {
             properties,
-            required: Some(vec!["id".to_string(), "summary".to_string(), "content".to_string()]),
+            required: Some(vec![
+                "id".to_string(),
+                "summary".to_string(),
+                "content".to_string(),
+            ]),
             additional_properties: Some(false),
         },
     })
@@ -631,7 +627,7 @@ pub(crate) fn create_list_contexts_tool() -> OpenAiTool {
 pub(crate) fn create_multi_retrieve_contexts_tool() -> OpenAiTool {
     let mut properties = BTreeMap::new();
     properties.insert(
-        "context_ids".to_string(),
+        "ids".to_string(),
         JsonSchema::Array {
             items: Box::new(JsonSchema::String {
                 description: Some("Context ID".to_string()),
@@ -646,7 +642,7 @@ pub(crate) fn create_multi_retrieve_contexts_tool() -> OpenAiTool {
         strict: false,
         parameters: JsonSchema::Object {
             properties,
-            required: Some(vec!["context_ids".to_string()]),
+            required: Some(vec!["ids".to_string()]),
             additional_properties: Some(false),
         },
     })

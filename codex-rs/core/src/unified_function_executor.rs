@@ -18,10 +18,12 @@ use crate::unified_error_handler::{handle_error, GLOBAL_ERROR_HANDLER};
 use crate::context_store::IContextRepository;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::subagent_manager::{ISubagentManager, SubagentTaskSpec};
+use crate::subagent_completion_tracker::{SubagentCompletionTracker, SubagentCompletionStatus};
 use serde::Deserialize;
+use std::time::Duration;
 
 /// Arguments for create_subagent_task function call
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct CreateSubagentTaskArgs {
     agent_type: String,
     title: String,
@@ -42,9 +44,9 @@ fn default_auto_launch() -> bool {
 pub struct CodexFunctionExecutor {
     /// Context repository for storing and retrieving contexts
     context_repository: Arc<dyn IContextRepository>,
-    /// MCP connection manager for MCP tool calls
+    /// Optional MCP connection manager for external tool integration
     mcp_connection_manager: Option<Arc<McpConnectionManager>>,
-    /// Subagent manager for creating and managing subagents
+    /// Optional subagent manager for multi-agent coordination
     subagent_manager: Option<Arc<dyn ISubagentManager>>,
     /// Working directory for file operations
     working_directory: PathBuf,
@@ -348,6 +350,8 @@ impl CodexFunctionExecutor {
             }
         }
     }
+
+
 }
 
 #[async_trait::async_trait]
@@ -455,6 +459,10 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+        info!("🚀 [UNIFIED_EXECUTOR] Creating subagent task with arguments: {}", arguments);
+        info!("🔧 [UNIFIED_EXECUTOR] Context: sub_id={}, call_id={}, agent_type={:?}", 
+              context.sub_id, context.call_id, context.agent_type);
+        
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_create_subagent_task")
             .with_info("call_id", &context.call_id);
@@ -524,7 +532,15 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
                     match subagent_manager.launch_subagent(&task_id).await {
                         Ok(_handle) => {
                             info!("Auto-launched subagent: task_id={}", task_id);
-                            response.push_str("\nSubagent launched and executing task...");
+                            
+                            // Return a special response that includes a function call to keep main agent running
+                            return FunctionCallOutputPayload {
+                                content: format!(
+                                    "🚀 Subagent launched and executing task...\n📋 Task ID: {}\n⏳ The subagent will run in the background.\n\n**IMPORTANT**: You should now wait for the subagent to complete, then use `list_contexts` to check for new context items and provide a comprehensive summary of the subagent's findings.",
+                                    task_id
+                                ),
+                                success: Some(true),
+                            };
                         }
                         Err(e) => {
                             let error_msg = format!("Failed to auto-launch subagent: {}", e);
@@ -570,9 +586,9 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             .with_info("agent_type", &format!("{:?}", context.agent_type));
         
         if let Some(mcp_manager) = &self.mcp_connection_manager {
-            // Parse server name and tool name
-            let (server_name, actual_tool_name) = if tool_name.contains('/') {
-                let parts: Vec<&str> = tool_name.splitn(2, '/').collect();
+            // Parse server name and tool name using MCP delimiter "__"
+            let (server_name, actual_tool_name) = if tool_name.contains("__") {
+                let parts: Vec<&str> = tool_name.splitn(2, "__").collect();
                 (parts[0].to_string(), parts[1].to_string())
             } else {
                 ("default".to_string(), tool_name.clone())
