@@ -429,6 +429,12 @@ pub(crate) async fn run_task(
         .await
         {
             Ok(turn_output) => {
+                // If turn_output is empty, it means we're waiting for subagent
+                // Add a short delay to avoid busy waiting
+                if turn_output.is_empty() {
+                    tokio::time::sleep(Duration::from_millis(900)).await;
+                    continue;
+                }
                 let mut items_to_record_in_conversation_history = Vec::<ResponseItem>::new();
                 let mut responses = Vec::<ResponseInputItem>::new();
                 for processed_response_item in turn_output {
@@ -581,6 +587,20 @@ async fn run_turn(
 
     // Detect current agent state and create state information
     let agent_state = detect_agent_state(&sess.multi_agent_components).await;
+
+    // Check if we're in WaitingForSubagent state - if so, pause LLM interaction
+    if let AgentState::WaitingForSubagent { subagent_id } = &agent_state {
+        tracing::trace!(
+            "🔍 WAITING FOR SUBAGENT: Current State: {:?}, pausing LLM interaction until subagent {} completes",
+            agent_state,
+            subagent_id
+        );
+
+        // Return empty response to avoid LLM interaction while waiting for subagent
+        // The main task loop will continue but won't make LLM calls
+        return Ok(vec![]);
+    }
+
     let agent_state_info = if !agent_state.can_create_explorer() || !agent_state.can_create_coder()
     {
         format!(

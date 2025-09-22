@@ -1,6 +1,167 @@
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
 
 use crate::exec::ExecToolCallOutput;
+use codex_protocol::protocol::{InputItem, SubagentType};
+
+/// Agent orchestration events for the event-driven architecture
+/// 
+/// These events drive the MainAgent's state machine and enable loose coupling
+/// between the MainAgent and SubAgents as described in the orchestration design.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AgentEvent {
+    /// Signals a new request for the MainAgent
+    UserInputReceived {
+        /// The user input items
+        input: Vec<InputItem>,
+        /// Submission ID for tracking
+        sub_id: String,
+    },
+
+    /// Fired when a SubAgent successfully finishes its task
+    SubagentCompleted {
+        /// ID of the completed subagent
+        subagent_id: String,
+        /// Type of the subagent that completed
+        agent_type: SubagentType,
+        /// Results and any new context items from the subagent
+        results: SubagentCompletionResult,
+    },
+
+    /// Fired if a SubAgent encounters an error
+    SubagentFailed {
+        /// ID of the failed subagent
+        subagent_id: String,
+        /// Type of the subagent that failed
+        agent_type: SubagentType,
+        /// Error message describing the failure
+        error: String,
+        /// Partial results if any were produced before failure
+        partial_results: Option<SubagentCompletionResult>,
+    },
+
+    /// Fired when a SubAgent is cancelled
+    SubagentCancelled {
+        /// ID of the cancelled subagent
+        subagent_id: String,
+        /// Type of the subagent that was cancelled
+        agent_type: SubagentType,
+        /// Reason for cancellation
+        reason: String,
+    },
+
+    /// Internal event for MainAgent to transition states
+    StateTransitionRequested {
+        /// The target state to transition to
+        target_state: crate::types::AgentState,
+        /// Reason for the transition
+        reason: String,
+    },
+
+    /// Event fired when summarization is requested
+    SummarizationRequested {
+        /// Context items to include in summarization
+        context_items: Vec<String>,
+        /// Whether this is the final summarization
+        is_final: bool,
+    },
+}
+
+/// Results from a completed subagent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentCompletionResult {
+    /// Context items created by the subagent
+    pub context_items: Vec<String>,
+    /// Summary of work performed
+    pub summary: String,
+    /// Key findings or outputs
+    pub outputs: HashMap<String, String>,
+    /// Whether the subagent completed successfully
+    pub success: bool,
+    /// Number of turns used
+    pub turns_used: u32,
+    /// Whether the subagent reached its turn limit
+    pub reached_turn_limit: bool,
+}
+
+impl AgentEvent {
+    /// Create a UserInputReceived event
+    pub fn user_input_received(input: Vec<InputItem>, sub_id: String) -> Self {
+        Self::UserInputReceived { input, sub_id }
+    }
+
+    /// Create a SubagentCompleted event
+    pub fn subagent_completed(
+        subagent_id: String,
+        agent_type: SubagentType,
+        results: SubagentCompletionResult,
+    ) -> Self {
+        Self::SubagentCompleted {
+            subagent_id,
+            agent_type,
+            results,
+        }
+    }
+
+    /// Create a SubagentFailed event
+    pub fn subagent_failed(
+        subagent_id: String,
+        agent_type: SubagentType,
+        error: String,
+        partial_results: Option<SubagentCompletionResult>,
+    ) -> Self {
+        Self::SubagentFailed {
+            subagent_id,
+            agent_type,
+            error,
+            partial_results,
+        }
+    }
+
+    /// Create a SubagentCancelled event
+    pub fn subagent_cancelled(
+        subagent_id: String,
+        agent_type: SubagentType,
+        reason: String,
+    ) -> Self {
+        Self::SubagentCancelled {
+            subagent_id,
+            agent_type,
+            reason,
+        }
+    }
+
+    /// Create a StateTransitionRequested event
+    pub fn state_transition_requested(
+        target_state: crate::types::AgentState,
+        reason: String,
+    ) -> Self {
+        Self::StateTransitionRequested {
+            target_state,
+            reason,
+        }
+    }
+
+    /// Create a SummarizationRequested event
+    pub fn summarization_requested(context_items: Vec<String>, is_final: bool) -> Self {
+        Self::SummarizationRequested {
+            context_items,
+            is_final,
+        }
+    }
+
+    /// Get the event type as a string for logging
+    pub fn event_type(&self) -> &'static str {
+        match self {
+            AgentEvent::UserInputReceived { .. } => "UserInputReceived",
+            AgentEvent::SubagentCompleted { .. } => "SubagentCompleted",
+            AgentEvent::SubagentFailed { .. } => "SubagentFailed",
+            AgentEvent::SubagentCancelled { .. } => "SubagentCancelled",
+            AgentEvent::StateTransitionRequested { .. } => "StateTransitionRequested",
+            AgentEvent::SummarizationRequested { .. } => "SummarizationRequested",
+        }
+    }
+}
 
 // Constants for output formatting
 pub(crate) const MODEL_FORMAT_MAX_BYTES: usize = 10 * 1024; // 10 KiB

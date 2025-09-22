@@ -9,24 +9,45 @@ use crate::subagent_manager::ISubagentManager;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::SubagentType;
 
-/// Agent state based on recent subagent execution history
+/// Unified agent state that combines execution status and orchestration workflow
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AgentState {
-    /// No subagent execution history exists
+    /// The agent is idle and waiting for new user input.
+    Idle,
+
+    /// The agent is actively deciding the next step, likely involving an LLM call.
+    DecidingNextStep,
+
+    /// The agent has dispatched a sub-agent and is waiting for it to complete.
+    WaitingForSubagent { subagent_id: String },
+
+    /// All tasks are complete, and the agent is summarizing the final result.
+    Summarizing,
+
+    // Legacy states for backward compatibility - these will be mapped to the unified states
+    /// No subagent execution history exists (maps to Idle)
+    #[deprecated(note = "Use Idle instead")]
     Initialization,
-    /// A new user instruction has been received and a new agent task has been created.
+    /// A new user instruction has been received and a new agent task has been created (maps to DecidingNextStep)
+    #[deprecated(note = "Use DecidingNextStep instead")]
     AgentTaskCreated,
-    /// An Explorer subagent has been created and is currently running
+    /// An Explorer subagent has been created and is currently running (maps to WaitingForSubagent)
+    #[deprecated(note = "Use WaitingForSubagent instead")]
     ExplorerCreated,
-    /// A Coder subagent has been created and is currently running
+    /// A Coder subagent has been created and is currently running (maps to WaitingForSubagent)
+    #[deprecated(note = "Use WaitingForSubagent instead")]
     CoderCreated,
-    /// Last Explorer subagent completed successfully without reaching turn limits
+    /// Last Explorer subagent completed successfully (maps to DecidingNextStep)
+    #[deprecated(note = "Use DecidingNextStep instead")]
     ExplorerNormalCompletion,
-    /// Last Explorer subagent was forced to complete due to reaching maximum turns
+    /// Last Explorer subagent was forced to complete (maps to DecidingNextStep)
+    #[deprecated(note = "Use DecidingNextStep instead")]
     ExplorerForcedCompletion,
-    /// Last Coder subagent completed successfully without reaching turn limits
+    /// Last Coder subagent completed successfully (maps to DecidingNextStep or Summarizing)
+    #[deprecated(note = "Use DecidingNextStep or Summarizing instead")]
     CoderNormalCompletion,
-    /// Last Coder subagent was forced to complete due to reaching maximum turns
+    /// Last Coder subagent was forced to complete (maps to DecidingNextStep or Summarizing)
+    #[deprecated(note = "Use DecidingNextStep or Summarizing instead")]
     CoderForcedCompletion,
 }
 
@@ -34,57 +55,124 @@ impl AgentState {
     /// Get a human-readable description of the current state
     pub fn description(&self) -> &'static str {
         match self {
+            // Unified states
+            AgentState::Idle => "Idle - The agent is waiting for new user input",
+            AgentState::DecidingNextStep => "Deciding Next Step - The agent is actively deciding the next action",
+            AgentState::WaitingForSubagent { subagent_id } => "Waiting for Subagent - The agent has dispatched a sub-agent and is waiting for completion",
+            AgentState::Summarizing => "Summarizing - The agent is compiling the final result",
+            
+            // Legacy states (deprecated)
+            #[allow(deprecated)]
             AgentState::Initialization => "Initialization - No subagent execution history",
+            #[allow(deprecated)]
             AgentState::AgentTaskCreated => {
                 "AgentTaskCreated - A new user instruction has been received and a new agent task has been created."
             }
+            #[allow(deprecated)]
             AgentState::ExplorerCreated => {
                 "Explorer Created - An Explorer subagent has been created and is currently running"
             }
+            #[allow(deprecated)]
             AgentState::CoderCreated => {
                 "Coder Created - A Coder subagent has been created and is currently running"
             }
+            #[allow(deprecated)]
             AgentState::ExplorerNormalCompletion => {
                 "Explorer Normal Completion - Last Explorer subagent completed successfully"
             }
+            #[allow(deprecated)]
             AgentState::ExplorerForcedCompletion => {
                 "Explorer Forced Completion - Last Explorer subagent reached turn limit"
             }
+            #[allow(deprecated)]
             AgentState::CoderNormalCompletion => {
                 "Coder Normal Completion - Last Coder subagent completed successfully"
             }
+            #[allow(deprecated)]
             AgentState::CoderForcedCompletion => {
                 "Coder Forced Completion - Last Coder subagent reached turn limit"
             }
         }
     }
 
+    /// Convert legacy states to unified states
+    pub fn to_unified(&self) -> AgentState {
+        match self {
+            // Already unified states
+            AgentState::Idle | AgentState::DecidingNextStep | AgentState::WaitingForSubagent { .. } | AgentState::Summarizing => self.clone(),
+            
+            // Legacy state mappings
+            #[allow(deprecated)]
+            AgentState::Initialization => AgentState::Idle,
+            #[allow(deprecated)]
+            AgentState::AgentTaskCreated => AgentState::DecidingNextStep,
+            #[allow(deprecated)]
+            AgentState::ExplorerCreated => AgentState::WaitingForSubagent { subagent_id: "unknown".to_string() },
+            #[allow(deprecated)]
+            AgentState::CoderCreated => AgentState::WaitingForSubagent { subagent_id: "unknown".to_string() },
+            #[allow(deprecated)]
+            AgentState::ExplorerNormalCompletion | AgentState::ExplorerForcedCompletion => AgentState::DecidingNextStep,
+            #[allow(deprecated)]
+            AgentState::CoderNormalCompletion | AgentState::CoderForcedCompletion => AgentState::DecidingNextStep,
+        }
+    }
+
     /// Check if creating an Explorer subagent is allowed in this state
     pub fn can_create_explorer(&self) -> bool {
-        match self {
-            AgentState::Initialization => true,
-            AgentState::AgentTaskCreated => true,
-            AgentState::ExplorerCreated => false,
-            AgentState::CoderCreated => false,
-            AgentState::ExplorerNormalCompletion => false,
-            AgentState::ExplorerForcedCompletion => false,
-            AgentState::CoderNormalCompletion => true,
-            AgentState::CoderForcedCompletion => true,
+        match self.to_unified() {
+            AgentState::Idle | AgentState::DecidingNextStep => true,
+            AgentState::WaitingForSubagent { .. } | AgentState::Summarizing => false,
+            // These should not occur after to_unified(), but handle them for completeness
+            #[allow(deprecated)]
+            AgentState::Initialization | AgentState::AgentTaskCreated => true,
+            #[allow(deprecated)]
+            AgentState::ExplorerCreated | AgentState::CoderCreated => false,
+            #[allow(deprecated)]
+            AgentState::ExplorerNormalCompletion | AgentState::ExplorerForcedCompletion => false,
+            #[allow(deprecated)]
+            AgentState::CoderNormalCompletion | AgentState::CoderForcedCompletion => true,
         }
     }
 
     /// Check if creating a Coder subagent is allowed in this state
     pub fn can_create_coder(&self) -> bool {
-        match self {
-            AgentState::Initialization => true,
-            AgentState::AgentTaskCreated => true,
-            AgentState::ExplorerCreated => false,
-            AgentState::CoderCreated => false,
-            AgentState::ExplorerNormalCompletion => true,
-            AgentState::ExplorerForcedCompletion => true,
-            AgentState::CoderNormalCompletion => false,
-            AgentState::CoderForcedCompletion => false,
+        match self.to_unified() {
+            AgentState::Idle | AgentState::DecidingNextStep => true,
+            AgentState::WaitingForSubagent { .. } | AgentState::Summarizing => false,
+            // These should not occur after to_unified(), but handle them for completeness
+            #[allow(deprecated)]
+            AgentState::Initialization | AgentState::AgentTaskCreated => true,
+            #[allow(deprecated)]
+            AgentState::ExplorerCreated | AgentState::CoderCreated => false,
+            #[allow(deprecated)]
+            AgentState::ExplorerNormalCompletion | AgentState::ExplorerForcedCompletion => true,
+            #[allow(deprecated)]
+            AgentState::CoderNormalCompletion | AgentState::CoderForcedCompletion => false,
         }
+    }
+
+    /// Check if the agent can transition to the summarizing state
+    pub fn can_summarize(&self) -> bool {
+        match self.to_unified() {
+            AgentState::DecidingNextStep => true,
+            AgentState::Idle | AgentState::WaitingForSubagent { .. } | AgentState::Summarizing => false,
+            // These should not occur after to_unified(), but handle them for completeness
+            #[allow(deprecated)]
+            AgentState::Initialization => false,
+            #[allow(deprecated)]
+            AgentState::AgentTaskCreated => true,
+            #[allow(deprecated)]
+            AgentState::ExplorerCreated | AgentState::CoderCreated => false,
+            #[allow(deprecated)]
+            AgentState::ExplorerNormalCompletion | AgentState::ExplorerForcedCompletion => true,
+            #[allow(deprecated)]
+            AgentState::CoderNormalCompletion | AgentState::CoderForcedCompletion => true,
+        }
+    }
+
+    /// Check if the agent is currently busy (not idle)
+    pub fn is_busy(&self) -> bool {
+        !matches!(self.to_unified(), AgentState::Idle)
     }
 
     /// Get suggested alternative actions when subagent creation is blocked
@@ -113,61 +201,49 @@ impl AgentState {
     }
 }
 
-/// Detect current agent state based on recent subagent execution history
+/// Detect current agent state based on the unified state manager
+/// 
+/// This function now primarily delegates to the unified state manager,
+/// but maintains backward compatibility by checking subagent status when needed.
 pub async fn detect_agent_state(multi_agent_components: &Option<crate::session::MultiAgentComponents>) -> AgentState {
     let Some(components) = multi_agent_components else {
+        #[allow(deprecated)]
         return AgentState::Initialization;
     };
 
-    // First check for currently running subagents (highest priority)
-    match ISubagentManager::get_active_tasks(components.subagent_manager.as_ref()).await {
-        Ok(active_tasks) => {
-            if let Some(active_task) = active_tasks.first() {
-                // If there's an active task, return the appropriate Created state
-                match active_task.agent_type {
-                    SubagentType::Explorer => return AgentState::ExplorerCreated,
-                    SubagentType::Coder => return AgentState::CoderCreated,
-                }
-            }
+    // Use the unified state manager if available
+    let current_state = components.state_manager.get_state();
+    
+    // For unified states, return them directly
+    match current_state {
+        AgentState::Idle | AgentState::DecidingNextStep | AgentState::Summarizing => {
+            return current_state;
         }
-        Err(_) => {
-            // Continue to check other states if we can't get active tasks
-        }
-    }
-
-    // Then check if a new user task has been created (only if no active subagents)
-    if components
-        .new_user_task_created
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
-        return AgentState::AgentTaskCreated;
-    }
-
-    match ISubagentManager::get_recently_completed_tasks(components.subagent_manager.as_ref(), 1)
-        .await
-    {
-        Ok(recent_tasks) => {
-            if let Some(last_task) = recent_tasks.first() {
-                if let crate::subagent_manager::TaskStatus::Completed { result } = &last_task.status
-                {
-                    let was_forced_completion =
-                        result.metadata.reached_max_turns || result.metadata.force_completed;
-
-                    match (&last_task.agent_type, was_forced_completion) {
-                        (SubagentType::Explorer, false) => AgentState::ExplorerNormalCompletion,
-                        (SubagentType::Explorer, true) => AgentState::ExplorerForcedCompletion,
-                        (SubagentType::Coder, false) => AgentState::CoderNormalCompletion,
-                        (SubagentType::Coder, true) => AgentState::CoderForcedCompletion,
+        AgentState::WaitingForSubagent { .. } => {
+            // Verify the subagent is still running
+            match ISubagentManager::get_active_tasks(components.subagent_manager.as_ref()).await {
+                Ok(active_tasks) => {
+                    if !active_tasks.is_empty() {
+                        return current_state;
+                    } else {
+                        // No active tasks, transition to DecidingNextStep
+                        components.state_manager.transition_to_deciding_next_step();
+                        return AgentState::DecidingNextStep;
                     }
-                } else {
-                    // Task exists but not completed - treat as initialization
-                    AgentState::Initialization
                 }
-            } else {
-                AgentState::Initialization
+                Err(_) => {
+                    // Error checking tasks, assume we need to decide next step
+                    components.state_manager.transition_to_deciding_next_step();
+                    return AgentState::DecidingNextStep;
+                }
             }
         }
-        Err(_) => AgentState::Initialization,
+        // Handle legacy states by converting them to unified states
+        _ => {
+            let unified_state = current_state.to_unified();
+            components.state_manager.set_state(unified_state.clone());
+            return unified_state;
+        }
     }
 }
 

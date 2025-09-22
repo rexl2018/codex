@@ -17,6 +17,8 @@ use crate::environment_context::NetworkAccess;
 use crate::llm_subagent_executor::LLMSubagentExecutor;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::mock_subagent_executor::MockSubagentExecutor;
+use crate::state::AgentStateManager;
+use crate::events::{AgentEvent, SubagentCompletionResult};
 use codex_protocol::protocol::BootstrapPath;
 use codex_protocol::protocol::ContextItem;
 use codex_protocol::protocol::Event;
@@ -211,6 +213,8 @@ pub struct InMemorySubagentManager {
     context_repo: Arc<InMemoryContextRepository>,
     event_sender: tokio::sync::mpsc::UnboundedSender<Event>,
     executor_type: ExecutorType,
+    state_manager: Option<Arc<AgentStateManager>>,
+    main_agent_event_sender: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
 }
 
 impl InMemorySubagentManager {
@@ -225,6 +229,27 @@ impl InMemorySubagentManager {
             context_repo,
             event_sender,
             executor_type,
+            state_manager: None,
+            main_agent_event_sender: None,
+        }
+    }
+
+    /// Create a new SubagentManager with state management integration
+    pub fn with_state_manager(
+        context_repo: Arc<InMemoryContextRepository>,
+        event_sender: tokio::sync::mpsc::UnboundedSender<Event>,
+        executor_type: ExecutorType,
+        state_manager: Arc<AgentStateManager>,
+        main_agent_event_sender: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+    ) -> Self {
+        Self {
+            tasks: Arc::new(RwLock::new(HashMap::new())),
+            reports: Arc::new(RwLock::new(HashMap::new())),
+            context_repo,
+            event_sender,
+            executor_type,
+            state_manager: Some(state_manager),
+            main_agent_event_sender: Some(main_agent_event_sender),
         }
     }
 
@@ -429,6 +454,11 @@ impl ISubagentManager for InMemorySubagentManager {
 
         self.send_event(event).await;
 
+        // Update global state to WaitingForSubagent if state manager is available
+        if let Some(state_manager) = &self.state_manager {
+            state_manager.transition_to_waiting_for_subagent(task_id.to_string());
+        }
+
         tracing::info!(
             "Subagent execution started: task_id={}, type={:?}, max_turns={}",
             task_id,
@@ -444,6 +474,7 @@ impl ISubagentManager for InMemorySubagentManager {
         let reports_clone = self.reports.clone();
         let context_repo = self.context_repo.clone();
         let executor_type = self.executor_type.clone();
+        let main_agent_event_sender = self.main_agent_event_sender.clone();
 
         let abort_handle = tokio::spawn(async move {
             // Execute the task based on executor type
@@ -494,15 +525,35 @@ impl ISubagentManager for InMemorySubagentManager {
             let event = Event {
                 id: task_id_clone.clone(),
                 msg: EventMsg::SubagentCompleted(SubagentCompletedEvent {
-                    task_id: task_id_clone,
+                    task_id: task_id_clone.clone(),
                     success: report.success,
                     contexts_created: report.contexts.len(),
-                    comments: report.comments,
-                    metadata: report.metadata,
+                    comments: report.comments.clone(),
+                    metadata: report.metadata.clone(),
                 }),
             };
 
             let _ = event_sender.send(event);
+
+            // Send AgentEvent to MainAgent if available
+            if let Some(main_agent_sender) = main_agent_event_sender {
+                let completion_result = SubagentCompletionResult {
+                    context_items: report.contexts.iter().map(|c| c.id.clone()).collect(),
+                    summary: report.comments.clone(),
+                    outputs: std::collections::HashMap::new(), // Could be populated from metadata
+                    success: report.success,
+                    turns_used: 0, // This would need to be tracked during execution
+                    reached_turn_limit: false, // This would need to be determined from execution
+                };
+
+                let agent_event = AgentEvent::subagent_completed(
+                    task_id_clone,
+                    task_clone.agent_type,
+                    completion_result,
+                );
+
+                let _ = main_agent_sender.send(agent_event);
+            }
         })
         .abort_handle();
 

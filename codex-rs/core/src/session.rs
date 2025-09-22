@@ -37,7 +37,7 @@ use crate::{
     },
     rollout::{RolloutRecorder, RolloutRecorderParams},
     shell,
-    state::State,
+    state::{State, AgentStateManager},
     subagent_manager::{ExecutorType, InMemorySubagentManager},
     subagent_completion_tracker::SubagentCompletionTracker,
     tool_config::UnifiedToolConfig,
@@ -47,6 +47,8 @@ use crate::{
     unified_exec::UnifiedExecSessionManager,
     user_instructions::UserInstructions,
     user_notification::UserNotification,
+    main_agent::MainAgent,
+    events::AgentEvent,
     AuthManager, ModelProviderInfo,
 };
 
@@ -74,6 +76,12 @@ pub(crate) struct MultiAgentComponents {
     pub subagent_completion_tracker: Arc<SubagentCompletionTracker>,
     /// Flag to track if a new user task has been created
     pub new_user_task_created: Arc<std::sync::atomic::AtomicBool>,
+    /// MainAgent for orchestration (optional, will be set after session creation)
+    pub main_agent: Option<Arc<tokio::sync::Mutex<MainAgent>>>,
+    /// Event sender for MainAgent communication
+    pub main_agent_event_sender: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
+    /// Unified state manager
+    pub state_manager: Arc<AgentStateManager>,
 }
 
 /// Configure the model session.
@@ -274,6 +282,12 @@ impl Session {
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
             let context_repo = Arc::new(InMemoryContextRepository::new());
 
+            // Create state manager for unified orchestration
+            let state_manager = Arc::new(AgentStateManager::new());
+
+            // Create MainAgent event channel
+            let (main_agent_event_tx, main_agent_event_rx) = tokio::sync::mpsc::unbounded_channel();
+
             // Create model client for subagent LLM executor
             let model_client = Arc::new(ModelClient::new(
                 config.clone(),
@@ -283,7 +297,7 @@ impl Session {
                 model_reasoning_summary,
                 conversation_id,
             ));
-            let subagent_manager = Arc::new(InMemorySubagentManager::new(
+            let subagent_manager = Arc::new(InMemorySubagentManager::with_state_manager(
                 context_repo.clone(),
                 event_tx,
                 ExecutorType::LLM {
@@ -291,6 +305,8 @@ impl Session {
                     mcp_tools: Some(mcp_connection_manager_arc.list_all_tools()),
                     mcp_connection_manager: Some(mcp_connection_manager_arc.clone()),
                 }, // Use LLM executor for production with MCP tools
+                state_manager.clone(),
+                main_agent_event_tx.clone(),
             ));
 
             // Create a separate event channel for the completion tracker
@@ -334,6 +350,9 @@ impl Session {
                 subtask_coordinator: None,
                 subagent_completion_tracker,
                 new_user_task_created: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                main_agent: None, // Will be set after session creation
+                main_agent_event_sender: Some(main_agent_event_tx),
+                state_manager,
             })
         } else {
             None
