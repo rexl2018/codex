@@ -19,6 +19,7 @@ pub mod sub_agent;
 mod submission_loop;
 mod turn_context;
 mod types;
+pub use types::AgentState;
 
 pub mod auth;
 pub mod bash;

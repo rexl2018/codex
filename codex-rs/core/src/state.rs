@@ -44,7 +44,7 @@ impl AgentStateManager {
     /// Create a new AgentStateManager with a specific initial state
     pub fn with_initial_state(initial_state: AgentState) -> Self {
         Self {
-            state: Arc::new(Mutex::new(initial_state.to_unified())),
+            state: Arc::new(Mutex::new(initial_state)),
         }
     }
 
@@ -53,16 +53,15 @@ impl AgentStateManager {
     /// This is the single point for all state changes and ensures observability
     /// by logging every state transition using the info! macro as required.
     pub fn set_state(&self, new_state: AgentState) {
-        let unified_new_state = new_state.to_unified();
         let mut state = self.state.lock().unwrap();
         let old_state = state.clone();
 
-        if *state != unified_new_state {
-            *state = unified_new_state.clone();
+        if *state != new_state {
+            *state = new_state.clone();
             // Centralized logging for every state transition as required by the design
             info!(
                 "Agent state transition: {:?} -> {:?}",
-                old_state, unified_new_state
+                old_state, new_state
             );
         }
     }
