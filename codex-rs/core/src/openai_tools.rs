@@ -102,52 +102,7 @@ pub(crate) enum JsonSchema {
     },
 }
 
-fn create_unified_exec_tool() -> OpenAiTool {
-    let mut properties = BTreeMap::new();
-    properties.insert(
-        "input".to_string(),
-        JsonSchema::Array {
-            items: Box::new(JsonSchema::String { description: None }),
-            description: Some(
-                "When no session_id is provided, treat the array as the command and arguments \
-                 to launch. When session_id is set, concatenate the strings (in order) and write \
-                 them to the session's stdin."
-                    .to_string(),
-            ),
-        },
-    );
-    properties.insert(
-        "session_id".to_string(),
-        JsonSchema::String {
-            description: Some(
-                "Identifier for an existing interactive session. If omitted, a new command \
-                 is spawned."
-                    .to_string(),
-            ),
-        },
-    );
-    properties.insert(
-        "timeout_ms".to_string(),
-        JsonSchema::Number {
-            description: Some(
-                "Maximum time in milliseconds to wait for output after writing the input."
-                    .to_string(),
-            ),
-        },
-    );
 
-    OpenAiTool::Function(ResponsesApiTool {
-        name: "unified_exec".to_string(),
-        description:
-            "Runs a command in a PTY. Provide a session_id to reuse an existing interactive session.".to_string(),
-        strict: false,
-        parameters: JsonSchema::Object {
-            properties,
-            required: Some(vec!["input".to_string()]),
-            additional_properties: Some(false),
-        },
-    })
-}
 
 pub(crate) fn create_shell_tool() -> OpenAiTool {
     let mut properties = BTreeMap::new();

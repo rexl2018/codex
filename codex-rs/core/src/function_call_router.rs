@@ -91,8 +91,28 @@ impl<E: UniversalFunctionExecutor> FunctionCallRouter<E> {
             return false;
         }
 
-        // MCP tools typically have a server prefix (e.g., "server_name/tool_name")
-        function_name.contains('/') || self.is_known_mcp_tool(function_name)
+        // Check for MCP tools with different delimiter patterns:
+        // 1. "server/tool" format
+        // 2. "server__tool" format (used by claude-tools)
+        // 3. Query the MCP connection manager to see if the tool exists
+        if function_name.contains('/') || function_name.contains("__") {
+            return true;
+        }
+
+        // Check if this is a known MCP tool (hardcoded list)
+        if self.is_known_mcp_tool(function_name) {
+            return true;
+        }
+
+        // Query the MCP connection manager to see if this tool exists
+        if let Some(mcp_manager) = &self.mcp_connection_manager {
+            // Use the parse_tool_name method which handles various formats
+            if mcp_manager.parse_tool_name(function_name).is_some() {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Check if this is a known MCP tool (without server prefix)
@@ -160,9 +180,23 @@ impl<E: UniversalFunctionExecutor> FunctionCallRouter<E> {
 
     /// Parse MCP tool name into server and tool components
     fn parse_mcp_tool_name(&self, tool_name: &str) -> (String, String) {
+        // First try to use the MCP connection manager's sophisticated parsing
+        if let Some(mcp_manager) = &self.mcp_connection_manager {
+            if let Some((server_name, actual_tool_name)) = mcp_manager.parse_tool_name(tool_name) {
+                return (server_name, actual_tool_name);
+            }
+        }
+
+        // Fallback to manual parsing for different delimiter patterns
         if let Some(slash_pos) = tool_name.find('/') {
+            // Handle "server/tool" format
             let server_name = tool_name[..slash_pos].to_string();
             let tool_name = tool_name[slash_pos + 1..].to_string();
+            (server_name, tool_name)
+        } else if let Some(double_underscore_pos) = tool_name.find("__") {
+            // Handle "server__tool" format (used by claude-tools)
+            let server_name = tool_name[..double_underscore_pos].to_string();
+            let tool_name = tool_name[double_underscore_pos + 2..].to_string();
             (server_name, tool_name)
         } else {
             // Default server name if not specified
@@ -452,28 +486,103 @@ mod tests {
     async fn test_function_routing() {
         let executor = Arc::new(MockExecutor);
         let config = FunctionCallRouterConfig {
-            cwd: PathBuf::from("/tmp"),
-            agent_type: AgentType::Main,
-            enable_mcp_tools: false,
-            max_execution_time_ms: Some(30000),
+            cwd: PathBuf::from("/test"),
+            agent_type: AgentType::Explorer,
+            enable_mcp_tools: true,
+            max_execution_time_ms: Some(5000),
         };
 
         let router = FunctionCallRouter::new(executor, config, None, None);
 
+        // Test shell function routing
         let result = router
             .route_function_call(
-                "read_file".to_string(),
-                r#"{"file_path": "test.txt"}"#.to_string(),
+                "shell".to_string(),
+                r#"{"command": ["ls"]}"#.to_string(),
                 "test_sub".to_string(),
-                "call_123".to_string(),
+                "test_call".to_string(),
             )
             .await;
 
-        if let ResponseInputItem::FunctionCallOutput { output, .. } = result {
-            assert_eq!(output.success, Some(true));
-            assert_eq!(output.content, "file content");
-        } else {
-            panic!("Expected FunctionCallOutput");
+        match result {
+            ResponseInputItem::FunctionCallOutput { call_id, output } => {
+                assert_eq!(call_id, "test_call");
+                assert_eq!(output.content, "shell executed");
+                assert_eq!(output.success, Some(true));
+            }
+            _ => panic!("Expected FunctionCallOutput"),
         }
+    }
+
+    #[test]
+    fn test_mcp_tool_detection() {
+        let executor = Arc::new(MockExecutor);
+        let config = FunctionCallRouterConfig {
+            cwd: PathBuf::from("/test"),
+            agent_type: AgentType::Explorer,
+            enable_mcp_tools: true,
+            max_execution_time_ms: Some(5000),
+        };
+
+        let router = FunctionCallRouter::new(executor, config, None, None);
+
+        // Test different MCP tool patterns
+        assert!(router.is_mcp_tool("server/tool")); // slash delimiter
+        assert!(router.is_mcp_tool("claude-tools__Bash")); // double underscore delimiter
+        assert!(router.is_mcp_tool("server__tool")); // double underscore delimiter
+        assert!(router.is_mcp_tool("filesystem_read")); // known MCP tool
+
+        // Test non-MCP tools
+        assert!(!router.is_mcp_tool("shell"));
+        assert!(!router.is_mcp_tool("read_file"));
+        assert!(!router.is_mcp_tool("write_file"));
+        assert!(!router.is_mcp_tool("unknown_tool"));
+    }
+
+    #[test]
+    fn test_mcp_tool_detection_disabled() {
+        let executor = Arc::new(MockExecutor);
+        let config = FunctionCallRouterConfig {
+            cwd: PathBuf::from("/test"),
+            agent_type: AgentType::Explorer,
+            enable_mcp_tools: false, // MCP tools disabled
+            max_execution_time_ms: Some(5000),
+        };
+
+        let router = FunctionCallRouter::new(executor, config, None, None);
+
+        // All MCP tool patterns should return false when disabled
+        assert!(!router.is_mcp_tool("server/tool"));
+        assert!(!router.is_mcp_tool("claude-tools__Bash"));
+        assert!(!router.is_mcp_tool("server__tool"));
+        assert!(!router.is_mcp_tool("filesystem_read"));
+    }
+
+    #[test]
+    fn test_parse_mcp_tool_name() {
+        let executor = Arc::new(MockExecutor);
+        let config = FunctionCallRouterConfig {
+            cwd: PathBuf::from("/test"),
+            agent_type: AgentType::Explorer,
+            enable_mcp_tools: true,
+            max_execution_time_ms: Some(5000),
+        };
+
+        let router = FunctionCallRouter::new(executor, config, None, None);
+
+        // Test slash delimiter
+        let (server, tool) = router.parse_mcp_tool_name("server/tool");
+        assert_eq!(server, "server");
+        assert_eq!(tool, "tool");
+
+        // Test double underscore delimiter (claude-tools pattern)
+        let (server, tool) = router.parse_mcp_tool_name("claude-tools__Bash");
+        assert_eq!(server, "claude-tools");
+        assert_eq!(tool, "Bash");
+
+        // Test no delimiter (should use default server)
+        let (server, tool) = router.parse_mcp_tool_name("standalone_tool");
+        assert_eq!(server, "default");
+        assert_eq!(tool, "standalone_tool");
     }
 }

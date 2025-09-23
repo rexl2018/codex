@@ -15,14 +15,12 @@ pub fn get_explorer_system_message_with_network_access(
     match network_access {
         Some(NetworkAccess::Enabled) => {
             format!(
-                "{}\n\n## Network Access\n\nYou have network access enabled, which means you can:\n- Use MCP tools that require network connectivity\n- Access external resources and APIs through available MCP tools\n- Perform web searches and external data retrieval if MCP tools support it\n\nLeverage these capabilities when they help accomplish your exploration tasks.",
-                base_message
+                "{base_message}\n\n## Network Access\n\nYou have network access enabled, which means you can:\n- Use MCP tools that require network connectivity\n- Access external resources and APIs through available MCP tools\n- Perform web searches and external data retrieval if MCP tools support it\n\nLeverage these capabilities when they help accomplish your exploration tasks."
             )
         }
         Some(NetworkAccess::Restricted) => {
             format!(
-                "{}\n\n## Network Access\n\nYour network access is restricted. You can:\n- Use local MCP tools that don't require network connectivity\n- Work with local files and system resources\n- Analyze existing data and configurations\n\nFocus on local exploration and analysis tasks.",
-                base_message
+                "{base_message}\n\n## Network Access\n\nYour network access is restricted. You can:\n- Use local MCP tools that don't require network connectivity\n- Work with local files and system resources\n- Analyze existing data and configurations\n\nFocus on local exploration and analysis tasks."
             )
         }
         None => base_message.to_string(),
@@ -74,29 +72,22 @@ When creating contexts, you're not just reporting what you found - you're crafti
 
 ## Task Completion
 
-You MUST complete your task by submitting a report using the XML format below. This is the ONLY way to finish your task.
+When you have completed your exploration task, simply provide a final response without any function calls. Your response should summarize your findings and any important discoveries.
 
-```xml
-<report>
-contexts:
-  - id: string
-    summary: string
-    content: string
-comments: string
-</report>
-```
+You are encouraged to use the `store_context` function during your exploration to save important information for future reference, but this is not required for task completion.
 
-**Critical Requirements:**
-- `contexts`: List of knowledge artifacts you discovered
-  - `id`: Unique identifier (use snake_case, based on the content rather than the action, like "projectname_data_access_layer" with "projectname" as the real project name)
-  - `summary`: **REQUIRED** - Brief description of what this context contains (2-4 sentences)
-  - `content`: Detailed findings, analysis, or information
-- `comments`: Brief summary of task execution status and key outcomes
+To finish your task, just respond with your final analysis or summary - no special format or function calls needed.
 
-**Context Creation Guidelines:**
-- Each context should be a discrete, valuable piece of information
-- The `summary` field is crucial - it helps future agents understand what the context contains
-- Make contexts self-contained and actionable
+**Guidelines for Final Response:**
+- Provide a clear summary of what you discovered or accomplished
+- Include any important findings that could influence future decisions
+- Mention any unexpected discoveries or issues encountered
+- Keep your response concise but informative
+
+**Optional Context Storage:**
+- Use `store_context` during exploration to save important information for future reference
+- Each context should be self-contained and actionable
+- Use descriptive IDs in snake_case format
 - Focus on information that enables decisions or further work
 
 **Important Notes:**
@@ -168,29 +159,22 @@ Report unexpected findings of high value even if outside the original scope. The
 
 ## Task Completion
 
-You MUST complete your task by submitting a report using the XML format below. This is the ONLY way to finish your task.
+When you have completed your implementation task, simply provide a final response without any function calls. Your response should summarize what you implemented, any important technical decisions made, and the current status.
 
-```xml
-<report>
-contexts:
-  - id: string
-    summary: string
-    content: string
-comments: string
-</report>
-```
+You can optionally use the `store_context` function during your implementation to save important technical insights for future reference, but this is not required for task completion.
 
-**Critical Requirements:**
-- `contexts`: List of implementation artifacts and insights you created
-  - `id`: Unique identifier (use snake_case like "authentication_implementation")
-  - `summary`: **REQUIRED** - Brief description of what this context contains (1-2 sentences)
-  - `content`: Detailed implementation details, code changes, or technical insights
-- `comments`: Brief summary of implementation status and key outcomes
+To finish your task, just respond with your final implementation summary - no special format or function calls needed.
 
-**Context Creation Guidelines:**
-- Document key implementation decisions and technical insights
-- The `summary` field is crucial - it helps future agents understand the implementation
-- Include information about code changes, architectural decisions, and verification results
+**Guidelines for Final Response:**
+- Summarize what you implemented or modified
+- Mention any important technical decisions or architectural choices
+- Report on testing results and verification status
+- Include any issues encountered or recommendations for future work
+
+**Optional Context Storage:**
+- Use `store_context` during implementation to save important technical insights
+- Document key implementation decisions and architectural choices
+- Include information about code changes and verification results
 - Focus on technical knowledge that enables future development or maintenance
 
 **Important Notes:**

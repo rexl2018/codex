@@ -27,49 +27,11 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::RolloutItem;
 use futures::prelude::*;
 
-pub(super) const COMPACT_TRIGGER_TEXT: &str = "Start Summarization";
-const SUMMARIZATION_PROMPT: &str = include_str!("../../templates/compact/prompt.md");
-
 #[derive(Template)]
 #[template(path = "compact/history_bridge.md", escape = "none")]
 struct HistoryBridgeTemplate<'a> {
     user_messages_text: &'a str,
     summary_text: &'a str,
-}
-
-pub(super) async fn spawn_compact_task(
-    sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
-    sub_id: String,
-    input: Vec<InputItem>,
-) {
-    let task = AgentTask::compact(
-        sess.clone(),
-        turn_context,
-        sub_id,
-        input,
-        SUMMARIZATION_PROMPT.to_string(),
-    );
-    sess.set_task(task);
-}
-
-pub(super) async fn run_inline_auto_compact_task(
-    sess: Arc<Session>,
-    turn_context: Arc<TurnContext>,
-) {
-    let sub_id = format!("auto-compact-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
-    let input = vec![InputItem::Text {
-        text: COMPACT_TRIGGER_TEXT.to_string(),
-    }];
-    run_compact_task_inner(
-        sess,
-        turn_context,
-        sub_id,
-        input,
-        SUMMARIZATION_PROMPT.to_string(),
-        false,
-    )
-    .await;
 }
 
 pub(crate) async fn run_compact_task(
@@ -114,14 +76,13 @@ async fn run_compact_task_inner(
 ) {
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
     let instructions_override = compact_instructions;
-    let turn_input = sess
-        .turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
+    let turn_input = sess.turn_input_with_history(vec![initial_input_for_turn.clone().into()]);
 
     let prompt = Prompt {
         input: turn_input,
         tools: Vec::new(),
         base_instructions_override: Some(instructions_override),
-        agent_state_info: None, // Compact tasks don't need state info
+        agent_state_info: None,   // Compact tasks don't need state info
         available_contexts: None, // Compact tasks don't need context info
     };
 
