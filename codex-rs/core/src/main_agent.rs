@@ -215,9 +215,13 @@ impl MainAgent {
             // Start summarization process
             self.start_summarization(results.context_items).await
         } else {
-            // Decide next steps based on the results
-            self.decide_next_step_after_completion(subagent_id, agent_type, results)
-                .await
+            // The actual decision making happens in the main task loop via run_turn
+            // when the state transitions to DecidingNextStep
+            info!(
+                "Subagent completed, state transitioned to DecidingNextStep. LLM will be called in next turn to decide next steps: id={}, type={:?}",
+                subagent_id, agent_type
+            );
+            Ok(())
         }
     }
 
@@ -353,23 +357,7 @@ impl MainAgent {
         Ok(())
     }
 
-    /// Decide next steps after subagent completion
-    async fn decide_next_step_after_completion(
-        &self,
-        subagent_id: String,
-        agent_type: SubagentType,
-        results: SubagentCompletionResult,
-    ) -> Result<(), CodexErr> {
-        info!(
-            "MainAgent deciding next step after completion: id={}, type={:?}",
-            subagent_id, agent_type
-        );
 
-        // This would involve LLM interaction to determine if more subagents
-        // are needed or if the work is complete
-
-        Ok(())
-    }
 
     /// Handle failure recovery
     async fn handle_failure_recovery(

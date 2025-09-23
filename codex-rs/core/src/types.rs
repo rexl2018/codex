@@ -214,24 +214,30 @@ pub async fn detect_agent_state(multi_agent_components: &Option<crate::session::
     // Use the unified state manager if available
     let current_state = components.state_manager.get_state();
     
-    // For unified states, return them directly
+    // For unified states, return them directly with validation
     match current_state {
         AgentState::Idle | AgentState::DecidingNextStep | AgentState::Summarizing => {
             return current_state;
         }
-        AgentState::WaitingForSubagent { .. } => {
-            // Verify the subagent is still running
+        AgentState::WaitingForSubagent { ref subagent_id } => {
+            // Verify the specific subagent is still running
             match ISubagentManager::get_active_tasks(components.subagent_manager.as_ref()).await {
                 Ok(active_tasks) => {
-                    if !active_tasks.is_empty() {
+                    // Check if the specific subagent we're waiting for is still active
+                    let subagent_still_active = active_tasks.iter().any(|task| &task.task_id == subagent_id);
+                    
+                    if subagent_still_active {
+                        tracing::debug!("Subagent {} is still active, maintaining WaitingForSubagent state", subagent_id);
                         return current_state;
                     } else {
-                        // No active tasks, transition to DecidingNextStep
+                        // The specific subagent we were waiting for is no longer active
+                        tracing::info!("Subagent {} is no longer active, transitioning to DecidingNextStep", subagent_id);
                         components.state_manager.transition_to_deciding_next_step();
                         return AgentState::DecidingNextStep;
                     }
                 }
-                Err(_) => {
+                Err(e) => {
+                    tracing::warn!("Failed to get active tasks: {}, assuming subagent completed", e);
                     // Error checking tasks, assume we need to decide next step
                     components.state_manager.transition_to_deciding_next_step();
                     return AgentState::DecidingNextStep;

@@ -326,6 +326,87 @@ pub(crate) async fn run_task(
     let mut turn_diff_tracker = TurnDiffTracker::new();
 
     loop {
+        // Check for recently completed subagents and add completion message to conversation history
+        // This must be done BEFORE constructing turn_input so the LLM can see the completion message
+        if let Some(components) = &sess.multi_agent_components {
+            let agent_state = detect_agent_state(&sess.multi_agent_components).await;
+            if let AgentState::DecidingNextStep = agent_state {
+                match components
+                    .subagent_manager
+                    .get_recently_completed_tasks(1)
+                    .await
+                {
+                    Ok(recent_tasks) => {
+                        if let Some(recent_task) = recent_tasks.first() {
+                            // Check if we've already added a completion message for this specific subagent ID
+                            let should_add_completion_message = {
+                                let history = sess.state.lock_unchecked().history.contents();
+                                let subagent_id_marker = format!("(ID: {})", recent_task.task_id);
+
+                                // Check recent messages (last 100) for performance optimization
+                                let recent_messages = if history.len() > 100 {
+                                    &history[history.len() - 100..]
+                                } else {
+                                    &history[..]
+                                };
+
+                                // Check if ANY recent assistant message contains this subagent ID
+                                !recent_messages.iter().any(|item| {
+                                    if let ResponseItem::Message { role, content, .. } = item {
+                                        if role == "assistant" {
+                                            let text = content
+                                                .iter()
+                                                .filter_map(|c| match c {
+                                                    ContentItem::OutputText { text } => {
+                                                        Some(text.as_str())
+                                                    }
+                                                    _ => None,
+                                                })
+                                                .collect::<Vec<_>>()
+                                                .join(" ");
+                                            text.contains(&subagent_id_marker)
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                })
+                            };
+
+                            if should_add_completion_message {
+                                // Add a completion message to conversation history so LLM can see the full flow
+                                let completion_message = ResponseItem::Message {
+                                    id: None,
+                                    role: "assistant".to_string(),
+                                    content: vec![ContentItem::OutputText {
+                                        text: format!(
+                                        "The {} subagent '{}' (ID: {}) has completed successfully. I can now analyze its results using the context tools and provide a summary to the user.",
+                                        match recent_task.agent_type {
+                                            codex_protocol::protocol::SubagentType::Explorer => "Explorer",
+                                            codex_protocol::protocol::SubagentType::Coder => "Coder",
+                                        },
+                                        recent_task.title,
+                                        recent_task.task_id
+                                    )
+                                    }]
+                                };
+
+                                // Record this completion message in conversation history
+                                sess.record_conversation_items(&[completion_message]).await;
+
+                                info!(
+                                    "Added subagent completion message to conversation history: {:?} - {}",
+                                    recent_task.agent_type, recent_task.title
+                                );
+                            }
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
         // may support this, the model might not.
@@ -538,9 +619,46 @@ async fn run_turn(
         return Ok(vec![]);
     }
 
+    // Check for recently completed subagents to provide context
+    // Only show completion info when we're in DecidingNextStep state after a subagent completion
+    let recent_completion_info = if let Some(components) = &sess.multi_agent_components {
+        match agent_state {
+            AgentState::DecidingNextStep => {
+                // Check if we just transitioned from WaitingForSubagent
+                match components
+                    .subagent_manager
+                    .get_recently_completed_tasks(1)
+                    .await
+                {
+                    Ok(recent_tasks) => {
+                        if let Some(recent_task) = recent_tasks.first() {
+                            Some(format!(
+                                "A {:?} subagent has completed the task: '{}' (ID: {}). If you need more information, you can use 'list_contexts' to see available analysis results, then 'multi_retrieve_contexts' to get the detailed findings. If you have sufficient information, you can decide what to do next: summarize and complete this task, or create a new subagent for additional work.\n\n⚠️ IMPORTANT: When creating new subagents, always review the available context items and include relevant context IDs in the 'context_refs' parameter to provide background knowledge to the subagent.",
+                                recent_task.agent_type, recent_task.title, recent_task.task_id
+                            ))
+                        } else {
+                            None
+                        }
+                    }
+                    Err(_) => None,
+                }
+            }
+            AgentState::WaitingForSubagent { ref subagent_id } => {
+                // When waiting for subagent, provide different context
+                Some(format!(
+                    "Currently waiting for subagent '{}' to complete. No new actions should be taken until completion.",
+                    subagent_id
+                ))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     let agent_state_info = if !agent_state.can_create_explorer() || !agent_state.can_create_coder()
     {
-        format!(
+        let base_info = format!(
             "Current Agent State: {}. Subagent Creation Constraints: Explorer Subagent: {}, Coder Subagent: {}. Note: {}. Please work with available information or consider alternative approaches instead of creating blocked subagent types.",
             agent_state.description(),
             if agent_state.can_create_explorer() {
@@ -560,12 +678,24 @@ async fn run_turn(
             } else {
                 "Coder subagent creation is blocked due to previous forced completion"
             }
-        )
+        );
+
+        if let Some(completion_info) = recent_completion_info {
+            format!("{}\n\n{}", completion_info, base_info)
+        } else {
+            base_info
+        }
     } else {
-        format!(
+        let base_info = format!(
             "Current Agent State: {}. Subagent Creation Constraints: All subagent types are currently allowed.",
             agent_state.description()
-        )
+        );
+
+        if let Some(completion_info) = recent_completion_info {
+            format!("{}\n\n{}", completion_info, base_info)
+        } else {
+            base_info
+        }
     };
 
     tracing::info!(
@@ -605,11 +735,46 @@ async fn run_turn(
 
     let prompt = Prompt {
         input,
-        tools,
+        tools: tools.clone(),
         base_instructions_override: turn_context.base_instructions.clone(),
-        agent_state_info: Some(agent_state_info),
-        available_contexts,
+        agent_state_info: Some(agent_state_info.clone()),
+        available_contexts: available_contexts.clone(),
     };
+
+    // Log the LLM request details for debugging
+    info!(
+        "🤖 LLM REQUEST: State={:?}, Agent State Info: {}, Available Contexts: {}, Tools: {}",
+        agent_state,
+        agent_state_info,
+        available_contexts.as_ref().map_or(0, |c| c.len()),
+        tools.len()
+    );
+
+    // Log input messages for debugging (truncated for readability)
+    for (i, item) in prompt.input.iter().enumerate() {
+        match item {
+            ResponseItem::Message { role, content, .. } => {
+                let content_preview = content
+                    .iter()
+                    .filter_map(|c| match c {
+                        ContentItem::OutputText { text } => Some(text.as_str()),
+                        ContentItem::InputText { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let truncated_content = if content_preview.len() > 200 {
+                    format!("{}...", &content_preview[..200])
+                } else {
+                    content_preview
+                };
+                info!("🤖 LLM INPUT[{}]: {} - {}", i, role, truncated_content);
+            }
+            _ => {
+                debug!("🤖 LLM INPUT[{}]: {:?}", i, item);
+            }
+        }
+    }
 
     let mut retries = 0;
     loop {

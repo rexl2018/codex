@@ -876,10 +876,13 @@ impl LLMSubagentExecutor {
             }
         }
 
+        // Get contexts created by this task
+        let task_contexts = self.get_task_contexts(&task.task_id).await;
+
         // Create a completion report for natural completion
         SubagentReport {
             task_id: "".to_string(), // Will be set by caller
-            contexts: Vec::new(),    // Contexts are stored via store_context function calls
+            contexts: task_contexts,
             comments: format!(
                 "Task completed naturally after {} turns. Contexts were generated through function calls during execution.",
                 turn_count
@@ -995,10 +998,13 @@ impl LLMSubagentExecutor {
             }
         }
 
+        // Get contexts created by this task
+        let task_contexts = self.get_task_contexts(&task.task_id).await;
+
         // Create a simple completion report based on the conversation
         SubagentReport {
             task_id: "".to_string(), // Will be set by caller
-            contexts: Vec::new(),    // Contexts are stored via store_context function calls
+            contexts: task_contexts,
             comments: format!(
                 "Task completed after {} turns. Contexts were generated through function calls during execution.",
                 turn_count
@@ -1117,6 +1123,35 @@ impl LLMSubagentExecutor {
         } else {
             None
         }
+    }
+
+    /// Get contexts created by a specific task
+    async fn get_task_contexts(&self, task_id: &str) -> Vec<ContextItem> {
+        use crate::context_store::ContextQuery;
+        
+        // Query contexts created by subagents and filter by task_id
+        let query = ContextQuery {
+            ids: None,
+            tags: None,
+            created_by: Some("subagent".to_string()),
+            limit: None,
+        };
+        
+        self.context_repo
+            .query_contexts(&query)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("Failed to query contexts for task {}: {}", task_id, e);
+                Vec::new()
+            })
+            .into_iter()
+            .filter(|ctx| ctx.task_id.as_ref().map_or(false, |id| id == task_id))
+            .map(|ctx| ContextItem {
+                id: ctx.id,
+                summary: ctx.summary,
+                content: ctx.content,
+            })
+            .collect()
     }
 
     // Note: The following methods have been replaced by the unified function call router:
