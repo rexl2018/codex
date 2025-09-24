@@ -93,6 +93,10 @@ pub enum CodexErr {
     #[error("exceeded retry limit, last status: {0}")]
     RetryLimit(StatusCode),
 
+    /// Bad Request error that should not be retried with the same request
+    #[error("bad request error: {message}")]
+    BadRequest { message: String },
+
     /// Agent loop died unexpectedly
     #[error("internal error; agent loop died unexpectedly")]
     InternalAgentDied,

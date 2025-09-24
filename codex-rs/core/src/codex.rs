@@ -567,15 +567,51 @@ pub(crate) async fn run_task(
             }
             Err(e) => {
                 info!("Turn error: {e:#}");
-                let event = Event {
-                    id: sub_id.clone(),
-                    msg: EventMsg::Error(ErrorEvent {
-                        message: e.to_string(),
-                    }),
-                };
-                sess.send_event(event).await;
-                // let the user continue the conversation
-                break;
+
+                // Handle BadRequest errors specially - content already processed in run_turn
+                if let CodexErr::BadRequest { message } = &e {
+                    info!(
+                        "BadRequest error detected (content already summarized in run_turn), adding error message: {}",
+                        message
+                    );
+
+                    // Add an error message to the conversation history so the LLM knows what happened
+                    let error_message = ResponseItem::Message {
+                        id: None,
+                        role: "assistant".to_string(),
+                        content: vec![ContentItem::OutputText {
+                            text: format!(
+                                "I encountered a 400 Bad Request error from the API. This usually means the request was too large. Error details: {}\n\nI've replaced large content with summaries to reduce the context size. I'll continue with a more concise approach.",
+                                message
+                            ),
+                        }],
+                    };
+
+                    sess.record_conversation_items(&[error_message]).await;
+
+                    // Send error event to UI
+                    let event = Event {
+                        id: sub_id.clone(),
+                        msg: EventMsg::Error(ErrorEvent {
+                            message: format!("Bad Request (content summarized): {}", message),
+                        }),
+                    };
+                    sess.send_event(event).await;
+
+                    // Continue the loop to let the LLM try again with summarized content
+                    continue;
+                } else {
+                    // For other errors, use the original behavior
+                    let event = Event {
+                        id: sub_id.clone(),
+                        msg: EventMsg::Error(ErrorEvent {
+                            message: e.to_string(),
+                        }),
+                    };
+                    sess.send_event(event).await;
+                    // let the user continue the conversation
+                    break;
+                }
             }
         }
     }
@@ -750,32 +786,6 @@ async fn run_turn(
         tools.len()
     );
 
-    // Log input messages for debugging (truncated for readability)
-    for (i, item) in prompt.input.iter().enumerate() {
-        match item {
-            ResponseItem::Message { role, content, .. } => {
-                let content_preview = content
-                    .iter()
-                    .filter_map(|c| match c {
-                        ContentItem::OutputText { text } => Some(text.as_str()),
-                        ContentItem::InputText { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let truncated_content = if content_preview.len() > 200 {
-                    format!("{}...", &content_preview[..200])
-                } else {
-                    content_preview
-                };
-                info!("🤖 LLM INPUT[{}]: {} - {}", i, role, truncated_content);
-            }
-            _ => {
-                debug!("🤖 LLM INPUT[{}]: {:?}", i, item);
-            }
-        }
-    }
-
     let mut retries = 0;
     loop {
         match try_run_turn(sess, turn_context, turn_diff_tracker, &sub_id, &prompt).await {
@@ -785,6 +795,7 @@ async fn run_turn(
             Err(e @ (CodexErr::UsageLimitReached(_) | CodexErr::UsageNotIncluded)) => {
                 return Err(e);
             }
+
             Err(e) => {
                 // Use the configured provider-specific stream retry budget.
                 let max_retries = turn_context.client.get_provider().stream_max_retries();
@@ -890,7 +901,10 @@ async fn try_run_turn(
         })
     };
 
-    let mut stream = turn_context.client.clone().stream(&prompt).await?;
+    let (mut stream, _updated_messages) =
+        call_llm_with_error_handling(&turn_context.client, prompt.into_owned(), "main agent")
+            .await?;
+    // Note: Main agent doesn't need to update local messages as it uses session state
 
     let mut output = Vec::new();
 
@@ -1663,9 +1677,8 @@ fn to_exec_params(params: ShellToolCallParams, turn_context: &TurnContext) -> Ex
     // Check if the command contains shell operators that need to be handled by a shell
     let command = if contains_shell_operators(&params.command) {
         // Convert the command array to a shell command string and run it with bash -c
-        // Use shlex::try_join to properly quote arguments containing special characters
-        let command_string = shlex::try_join(params.command.iter().map(|s| s.as_str()))
-            .unwrap_or_else(|_| params.command.join(" ")); // fallback to simple join if shlex fails
+        // Don't use shlex::try_join as it quotes shell operators, use simple join instead
+        let command_string = params.command.join(" ");
         vec!["bash".to_string(), "-c".to_string(), command_string]
     } else {
         params.command
@@ -1682,7 +1695,7 @@ fn to_exec_params(params: ShellToolCallParams, turn_context: &TurnContext) -> Ex
 }
 
 /// Check if a command array contains shell operators that require shell interpretation
-fn contains_shell_operators(command: &[String]) -> bool {
+pub(crate) fn contains_shell_operators(command: &[String]) -> bool {
     command.iter().any(|arg| {
         matches!(
             arg.as_str(),
@@ -2417,4 +2430,294 @@ mod tests {
         // We'll create minimal structures that satisfy the interface
         panic!("make_session_and_context is not implemented - this is a placeholder for tests")
     }
+}
+
+/// Remove the last request from conversation history to avoid retrying problematic requests
+/// that caused 400 Bad Request errors. This function removes the most recent user message
+/// and any subsequent assistant responses/tool calls that were part of the same turn.
+fn remove_last_request_from_history(mut history: Vec<ResponseItem>) -> Vec<ResponseItem> {
+    if history.is_empty() {
+        return history;
+    }
+
+    // For 400 errors, we need to be more aggressive about removing recent content
+    // that could be causing the context length issue. Look for the last few items
+    // that could contain large content (function calls, outputs, etc.)
+
+    let original_len = history.len();
+    let mut items_to_remove = 0;
+
+    // Remove recent items that could be large, working backwards
+    for (i, item) in history.iter().enumerate().rev() {
+        items_to_remove += 1;
+
+        match item {
+            // Stop when we find a user message (but include it in removal)
+            ResponseItem::Message { role, .. } if role == "user" => {
+                break;
+            }
+            // Always remove function calls and their outputs as they can be large
+            ResponseItem::FunctionCall { .. }
+            | ResponseItem::FunctionCallOutput { .. }
+            | ResponseItem::LocalShellCall { .. }
+            | ResponseItem::CustomToolCall { .. }
+            | ResponseItem::CustomToolCallOutput { .. } => {
+                // Continue removing more items
+            }
+            // Remove assistant messages that might be responses to large outputs
+            ResponseItem::Message { role, .. } if role == "assistant" => {
+                // Continue removing more items
+            }
+            _ => {
+                // For other items, continue but don't go too far back
+                if items_to_remove > 10 {
+                    break;
+                }
+            }
+        }
+
+        // Safety limit: don't remove more than half the history
+        if items_to_remove >= original_len / 2 {
+            break;
+        }
+    }
+
+    // Ensure we remove at least a few items to make a difference
+    items_to_remove = std::cmp::max(items_to_remove, 3);
+    items_to_remove = std::cmp::min(items_to_remove, original_len);
+
+    let new_len = original_len - items_to_remove;
+    history.truncate(new_len);
+
+    info!(
+        "Removed {} items from conversation history to resolve 400 Bad Request (kept {} items)",
+        items_to_remove, new_len
+    );
+
+    history
+}
+
+/// Create a summary of large content to replace it in conversation history
+/// This helps avoid 400 Bad Request errors due to context length limits
+fn create_content_summary(content: &str) -> String {
+    let char_count = content.chars().count();
+    let line_count = content.lines().count();
+
+    // Get first 5 lines or 200 characters, whichever is shorter
+    let preview = if line_count <= 5 {
+        // If 5 lines or fewer, show all lines but limit to 200 chars
+        let all_lines = content.lines().collect::<Vec<_>>().join("\n");
+        if all_lines.len() <= 200 {
+            all_lines
+        } else {
+            format!("{}...", &all_lines[..200])
+        }
+    } else {
+        // Show first 5 lines
+        let first_5_lines = content.lines().take(5).collect::<Vec<_>>().join("\n");
+        if first_5_lines.len() <= 200 {
+            first_5_lines
+        } else {
+            format!("{}...", &first_5_lines[..200])
+        }
+    };
+
+    format!(
+        "[内容摘要: 共{}字符，{}行]\n前{}行内容:\n{}\n[... 其余内容已省略 ...]",
+        char_count,
+        line_count,
+        std::cmp::min(5, line_count),
+        preview
+    )
+}
+
+/// Replace large content in ResponseItems with summaries to reduce context size
+pub(crate) fn replace_large_content_with_summaries(
+    mut history: Vec<ResponseItem>,
+) -> Vec<ResponseItem> {
+    const LARGE_CONTENT_THRESHOLD: usize = 1000; // Characters
+    let mut replacements_made = 0;
+
+    for (index, item) in history.iter_mut().enumerate() {
+        match item {
+            ResponseItem::Message { content, .. } => {
+                for content_item in content {
+                    if let ContentItem::OutputText { text } = content_item {
+                        if text.len() > LARGE_CONTENT_THRESHOLD {
+                            info!(
+                                "Replacing large OutputText content in Message[{}]: {} chars",
+                                index,
+                                text.len()
+                            );
+                            *text = create_content_summary(text);
+                            replacements_made += 1;
+                        }
+                    }
+                }
+            }
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } => {
+                if output.content.len() > LARGE_CONTENT_THRESHOLD {
+                    info!(
+                        "Replacing large FunctionCallOutput content for call_id {}: {} chars",
+                        call_id,
+                        output.content.len()
+                    );
+                    output.content = create_content_summary(&output.content);
+                    replacements_made += 1;
+                }
+            }
+            ResponseItem::CustomToolCallOutput {
+                call_id, output, ..
+            } => {
+                if output.len() > LARGE_CONTENT_THRESHOLD {
+                    info!(
+                        "Replacing large CustomToolCallOutput content for call_id {}: {} chars",
+                        call_id,
+                        output.len()
+                    );
+                    *output = create_content_summary(output);
+                    replacements_made += 1;
+                }
+            }
+            // For other types, we could add similar logic if needed
+            _ => {}
+        }
+    }
+
+    info!(
+        "Replaced large content with summaries in conversation history: {} replacements made",
+        replacements_made
+    );
+    history
+}
+
+/// Unified LLM call wrapper that handles BadRequest errors with content summarization
+/// This function provides a single point for handling 400 errors across main agent and subagents
+/// Returns (ResponseStream, Option<updated_messages>) where updated_messages is Some if content was summarized
+pub(crate) async fn call_llm_with_error_handling(
+    client: &crate::client::ModelClient,
+    mut prompt: crate::client_common::Prompt,
+    context: &str,
+) -> Result<(crate::client_common::ResponseStream, Option<Vec<ResponseItem>>), CodexErr> {
+    // Log conversation history before making LLM request for debugging
+    log_conversation_history(&prompt.input, &format!("before LLM request ({})", context));
+
+    loop {
+        match client.stream(&prompt).await {
+            Ok(stream) => return Ok((stream, None)),
+            Err(CodexErr::BadRequest { message }) => {
+                info!(
+                    "BadRequest error in {}, replacing large content with summaries: {}",
+                    context, message
+                );
+
+                // Replace large content in prompt with summaries
+                prompt.input = replace_large_content_with_summaries(prompt.input);
+
+                info!(
+                    "Replaced large content with summaries in {} due to 400 Bad Request error",
+                    context
+                );
+
+                // Log the updated conversation history after replacement
+                log_conversation_history(
+                    &prompt.input,
+                    &format!("after content replacement ({})", context),
+                );
+
+                // Try again with summarized content - if successful, return the updated messages
+                match client.stream(&prompt).await {
+                    Ok(stream) => return Ok((stream, Some(prompt.input))),
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Safe string truncation that respects character boundaries
+fn safe_truncate(s: &str, limit: usize) -> String {
+    if s.len() <= limit {
+        s.to_string()
+    } else {
+        let mut end = limit;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...", &s[..end])
+    }
+}
+
+/// Log conversation history for debugging (with content truncation)
+pub(crate) fn log_conversation_history(history: &[ResponseItem], context: &str) {
+    const LOG_CONTENT_LIMIT: usize = 100; // Characters to show in logs
+    const MAX_ITEMS_TO_SHOW: usize = 4; // Only show the last 4 items
+
+    info!("=== Conversation History ({}) ===", context);
+
+    // Calculate the starting index to show only the last MAX_ITEMS_TO_SHOW items
+    let start_index = if history.len() > MAX_ITEMS_TO_SHOW {
+        history.len() - MAX_ITEMS_TO_SHOW
+    } else {
+        0
+    };
+
+    // Show truncation indicator if we're not showing all items
+    if start_index > 0 {
+        info!("  ... ({} earlier items omitted) ...", start_index);
+    }
+
+    for (i, item) in history.iter().enumerate().skip(start_index) {
+        match item {
+            ResponseItem::Message { role, content, .. } => {
+                let text_content = content
+                    .iter()
+                    .filter_map(|c| match c {
+                        ContentItem::OutputText { text } => Some(text.as_str()),
+                        ContentItem::InputText { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                let truncated = safe_truncate(&text_content, LOG_CONTENT_LIMIT);
+
+                info!("  [{}] {}: {}", i, role, truncated);
+            }
+            ResponseItem::FunctionCall { name, call_id, .. } => {
+                info!("  [{}] FunctionCall: {} ({})", i, name, call_id);
+            }
+            ResponseItem::FunctionCallOutput {
+                call_id, output, ..
+            } => {
+                let truncated = safe_truncate(&output.content, LOG_CONTENT_LIMIT);
+                info!("  [{}] FunctionOutput ({}): {}", i, call_id, truncated);
+            }
+            ResponseItem::LocalShellCall { .. } => {
+                info!("  [{}] LocalShellCall", i);
+            }
+            ResponseItem::CustomToolCall { name, call_id, .. } => {
+                info!("  [{}] CustomToolCall: {} ({})", i, name, call_id);
+            }
+            ResponseItem::CustomToolCallOutput {
+                call_id, output, ..
+            } => {
+                let truncated = safe_truncate(output, LOG_CONTENT_LIMIT);
+                info!("  [{}] CustomToolOutput ({}): {}", i, call_id, truncated);
+            }
+            ResponseItem::Reasoning { summary, .. } => {
+                info!("  [{}] Reasoning: {:?}", i, summary);
+            }
+            ResponseItem::WebSearchCall { .. } => {
+                info!("  [{}] WebSearchCall", i);
+            }
+            ResponseItem::Other => {
+                info!("  [{}] Other", i);
+            }
+        }
+    }
+    info!("=== End History ({}) ===", context);
 }

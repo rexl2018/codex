@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
+use tracing::info;
 
 use crate::client::ModelClient;
 use crate::context_store::IContextRepository;
@@ -234,7 +235,12 @@ impl LLMSubagentExecutor {
             // Get LLM response
             tracing::info!("Requesting LLM response for turn {}/{}", turn, self.max_turns);
             match self.get_llm_response(&messages, task).await {
-                Ok(llm_response) => {
+                Ok((llm_response, updated_messages_opt)) => {
+                    // If content was summarized due to 400 error, update our local messages
+                    if let Some(updated_messages) = updated_messages_opt {
+                        messages = updated_messages;
+                        info!("Updated local messages due to content summarization in subagent");
+                    }
                     tracing::debug!(
                         "LLM Response (turn {}): {}",
                         turn,
@@ -360,11 +366,12 @@ impl LLMSubagentExecutor {
     }
 
     /// Get LLM response using the real model client
+    /// Returns (LLMResponse, Option<updated_messages>) where updated_messages is Some if content was summarized
     async fn get_llm_response(
         &self,
         messages: &[Message],
         task: &SubagentTask,
-    ) -> Result<LLMResponse, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(LLMResponse, Option<Vec<Message>>), Box<dyn std::error::Error + Send + Sync>> {
         // Convert our messages to the format expected by the model client
         use crate::client_common::Prompt;
         use codex_protocol::models::ContentItem;
@@ -426,11 +433,17 @@ impl LLMSubagentExecutor {
             }
         }
 
-        let mut response_stream = self
-            .model_client
-            .stream(&prompt)
-            .await
-            .map_err(|e| format!("Failed to get LLM response: {}", e))?;
+        let (mut response_stream, updated_messages) = crate::codex::call_llm_with_error_handling(
+            &self.model_client,
+            prompt,
+            &format!("subagent {:?}", task.agent_type)
+        )
+        .await
+        .map_err(|e| format!("Failed to get LLM response: {}", e))?;
+        
+        // If content was summarized due to 400 error, we need to return the updated messages
+        // so the caller can update their local messages state
+        let updated_messages_for_caller = updated_messages;
 
         let mut full_response = String::new();
         let mut function_calls = Vec::new();
@@ -675,10 +688,16 @@ impl LLMSubagentExecutor {
             .await;
         }
 
-        Ok(LLMResponse {
+        let updated_messages = if let Some(updated) = updated_messages_for_caller {
+            Some(updated)
+        } else {
+            None
+        };
+        
+        Ok((LLMResponse {
             text: full_response,
             function_calls,
-        })
+        }, updated_messages))
     }
 
     /// Execute function calls using the unified function call router
@@ -846,7 +865,12 @@ impl LLMSubagentExecutor {
 
         // Try to get one more LLM response to generate contexts if needed
         match self.get_llm_response(messages, task).await {
-            Ok(llm_response) => {
+            Ok((llm_response, updated_messages_opt)) => {
+                // If content was summarized due to 400 error, update our local messages
+                if let Some(updated_messages) = updated_messages_opt {
+                    *messages = updated_messages;
+                    info!("Updated local messages due to content summarization in handle_natural_completion");
+                }
                 tracing::info!("Got final LLM response for natural completion");
 
                 // Add assistant message to history
@@ -965,7 +989,12 @@ impl LLMSubagentExecutor {
 
         // Try to get one more LLM response to generate contexts
         match self.get_llm_response(messages, task).await {
-            Ok(llm_response) => {
+            Ok((llm_response, updated_messages_opt)) => {
+                // If content was summarized due to 400 error, update our local messages
+                if let Some(updated_messages) = updated_messages_opt {
+                    *messages = updated_messages;
+                    info!("Updated local messages due to content summarization in force_completion");
+                }
                 tracing::info!("Got final LLM response for context generation");
 
                 // Add assistant message to history

@@ -314,6 +314,13 @@ impl ModelClient {
                     {
                         // Surface the error body to callers. Use `unwrap_or_default` per Clippy.
                         let body = res.text().await.unwrap_or_default();
+
+                        // Handle 400 Bad Request errors specially - these should not be retried
+                        // with the same request as they indicate a client-side problem
+                        if status == StatusCode::BAD_REQUEST {
+                            return Err(CodexErr::BadRequest { message: body });
+                        }
+
                         return Err(CodexErr::UnexpectedStatus(status, body));
                     }
 

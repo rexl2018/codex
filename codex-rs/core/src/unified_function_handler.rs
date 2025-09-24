@@ -274,9 +274,9 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             }
         };
 
-        let command_str = args.command.join(" ");
-        debug!("Executing shell command: {}", command_str);
-        self.executor.execute_shell(command_str, context).await
+        // Pass the command array as JSON string to preserve shell operators
+        let command_json = serde_json::to_string(&args.command).unwrap_or_else(|_| "[]".to_string());
+        self.executor.execute_shell(command_json, context).await
     }
 
     async fn handle_read_file_call(

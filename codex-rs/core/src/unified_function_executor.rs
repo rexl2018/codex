@@ -133,16 +133,32 @@ impl CodexFunctionExecutor {
     ) -> UnifiedResult<String> {
         debug!("Executing shell command: {}", command);
 
-        // Parse command into arguments
-        let args = match shlex::split(command) {
-            Some(args) => args,
-            None => {
-                return Err(UnifiedError::shell_execution(
-                    command,
-                    "Failed to parse shell command",
-                    None,
-                    ShellErrorCode::InvalidCommand,
-                ));
+        // Try to parse as JSON array first (from unified handler), then fall back to shlex parsing
+        let args = if command.starts_with('[') && command.ends_with(']') {
+            // Parse as JSON array
+            match serde_json::from_str::<Vec<String>>(command) {
+                Ok(args) => args,
+                Err(_) => {
+                    return Err(UnifiedError::shell_execution(
+                        command,
+                        "Failed to parse shell command JSON array",
+                        None,
+                        ShellErrorCode::InvalidCommand,
+                    ));
+                }
+            }
+        } else {
+            // Parse as shell command string
+            match shlex::split(command) {
+                Some(args) => args,
+                None => {
+                    return Err(UnifiedError::shell_execution(
+                        command,
+                        "Failed to parse shell command",
+                        None,
+                        ShellErrorCode::InvalidCommand,
+                    ));
+                }
             }
         };
 
@@ -155,9 +171,21 @@ impl CodexFunctionExecutor {
             ));
         }
 
+        // Use the same shell operator detection logic as the main agent
+        let has_shell_operators = crate::codex::contains_shell_operators(&args);
+        
+        let final_command = if has_shell_operators {
+            // Convert the command array to a shell command string and run it with bash -c
+            // Don't use shlex::try_join as it quotes shell operators, use simple join instead
+            let command_string = args.join(" ");
+            vec!["bash".to_string(), "-c".to_string(), command_string]
+        } else {
+            args
+        };
+
         // Create exec params
         let exec_params = crate::exec::ExecParams {
-            command: args,
+            command: final_command,
             cwd: context.cwd.clone(),
             timeout_ms: Some(300000), // 5 minutes default
             env: std::collections::HashMap::new(),
