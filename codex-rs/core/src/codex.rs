@@ -338,7 +338,7 @@ pub(crate) async fn run_task(
                 {
                     Ok(recent_tasks) => {
                         if let Some(recent_task) = recent_tasks.first() {
-                            // Check if we've already added a completion message for this specific subagent ID
+                            // Check if weve already added a completion message for this specific subagent ID
                             let should_add_completion_message = {
                                 let history = sess.state.lock_unchecked().history.contents();
                                 let subagent_id_marker = format!("(ID: {})", recent_task.task_id);
@@ -1487,6 +1487,7 @@ async fn handle_function_call(
                 multi_agent_components.context_repo.clone(),
                 Some(Arc::new(sess.mcp_connection_manager.clone())),
                 Some(multi_agent_components.subagent_manager.clone()),
+                Some(multi_agent_components.subagent_completion_tracker.clone()),
                 turn_context.cwd.clone(),
             );
 
@@ -1504,6 +1505,132 @@ async fn handle_function_call(
                 .execute_create_subagent_task(arguments, &context)
                 .await;
             ResponseInputItem::FunctionCallOutput { call_id, output }
+        }
+        "resume_subagent" => {
+            info!("🔄 [CODEX] Handling resume_subagent call");
+            use crate::unified_function_executor::CodexFunctionExecutor;
+            use crate::unified_function_handler::AgentType;
+            use crate::unified_function_handler::FunctionPermissions;
+            use crate::unified_function_handler::UniversalFunctionCallContext;
+            use crate::unified_function_handler::UniversalFunctionExecutor;
+
+            let multi_agent_components = match &sess.multi_agent_components {
+                Some(components) => components,
+                None => {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload {
+                            content: "Multi-agent functionality is not enabled in this session".to_string(),
+                            success: Some(false),
+                        },
+                    };
+                }
+            };
+
+            let executor = CodexFunctionExecutor::new(
+                multi_agent_components.context_repo.clone(),
+                Some(Arc::new(sess.mcp_connection_manager.clone())),
+                Some(multi_agent_components.subagent_manager.clone()),
+                Some(multi_agent_components.subagent_completion_tracker.clone()),
+                turn_context.cwd.clone(),
+            );
+
+            let context = UniversalFunctionCallContext {
+                cwd: turn_context.cwd.clone(),
+                sub_id: sub_id.clone(),
+                call_id: call_id.clone(),
+                agent_type: AgentType::Main,
+                permissions: FunctionPermissions::for_agent_type(&AgentType::Main),
+            };
+
+            let output = executor.execute_resume_subagent(arguments, &context).await;
+            ResponseInputItem::FunctionCallOutput { call_id, output }
+        }
+        "list_recently_completed_subagents" => {
+            #[derive(Deserialize)]
+            struct ListArgs { #[serde(default)] limit: Option<usize> }
+            let args = match serde_json::from_str::<ListArgs>(&arguments) {
+                Ok(a) => a,
+                Err(e) => {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload { content: format!("failed to parse function arguments: {e}"), success: Some(false) },
+                    };
+                }
+            };
+            let limit = args.limit.unwrap_or(10);
+            let result = if let Some(components) = &sess.multi_agent_components {
+                match components.subagent_manager.get_recently_completed_tasks(limit).await {
+                    Ok(tasks) => {
+                        let lines: Vec<String> = tasks.iter().map(|t| {
+                            let status_str = match &t.status {
+                                crate::subagent_manager::TaskStatus::Completed { .. } => "Completed",
+                                crate::subagent_manager::TaskStatus::Failed { .. } => "Failed",
+                                crate::subagent_manager::TaskStatus::Cancelled => "Cancelled",
+                                crate::subagent_manager::TaskStatus::Created => "Created",
+                                crate::subagent_manager::TaskStatus::Running { .. } => "Running",
+                            };
+                            {
+                                let agent_type_str = match &t.agent_type {
+                                    codex_protocol::protocol::SubagentType::Explorer => "Explorer",
+                                    codex_protocol::protocol::SubagentType::Coder => "Coder",
+                                };
+                                let created_at_sec = t
+                                    .created_at
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(0);
+                                format!(
+                                    "- {} [{} | {} | created_at: {}] — {}",
+                                    t.task_id, status_str, agent_type_str, created_at_sec, t.title
+                                )
+                            }
+                        }).collect();
+                        FunctionCallOutputPayload { content: format!("Recently finished subagents:\n{}", lines.join("\n")), success: Some(true) }
+                    }
+                    Err(e) => FunctionCallOutputPayload { content: format!("Failed to list subagents: {}", e), success: Some(false) },
+                }
+            } else { FunctionCallOutputPayload { content: "Multi-agent functionality is not enabled in this session".to_string(), success: Some(false) } };
+            ResponseInputItem::FunctionCallOutput { call_id, output: result }
+        }
+        "multi_get_subagent_report" => {
+            #[derive(Deserialize)]
+            struct ReportArgs { task_ids: Vec<String> }
+            let args = match serde_json::from_str::<ReportArgs>(&arguments) {
+                Ok(a) => a,
+                Err(e) => {
+                    return ResponseInputItem::FunctionCallOutput {
+                        call_id,
+                        output: FunctionCallOutputPayload { content: format!("failed to parse function arguments: {e}"), success: Some(false) },
+                    };
+                }
+            };
+            let result = if let Some(components) = &sess.multi_agent_components {
+                let mut summaries = Vec::new();
+                for tid in args.task_ids.iter() {
+                    match components.subagent_manager.get_task_report(tid).await {
+                        Ok(Some(report)) => {
+                            let mut parts = Vec::new();
+                            parts.push(format!("Task ID: {}", report.task_id));
+                            parts.push(format!("Success: {}", report.success));
+                            parts.push(format!("Comments: {}", report.comments));
+                            parts.push(format!("Num Turns: {} / {}", report.metadata.num_turns, report.metadata.max_turns));
+                            if !report.contexts.is_empty() {
+                                let ids: Vec<&str> = report.contexts.iter().map(|c| c.id.as_str()).collect();
+                                parts.push(format!("Contexts: {}", ids.join(", ")));
+                            }
+                            if let Some(traj) = &report.trajectory {
+                                parts.push(format!("Trajectory entries: {}", traj.len()));
+                            }
+                            summaries.push(parts.join("\n"));
+                        }
+                        Ok(None) => summaries.push(format!("Task ID: {}\nNo report found", tid)),
+                        Err(e) => summaries.push(format!("Task ID: {}\nFailed to retrieve report: {}", tid, e)),
+                    }
+                }
+                FunctionCallOutputPayload { content: summaries.join("\n\n"), success: Some(true) }
+            } else { FunctionCallOutputPayload { content: "Multi-agent functionality is not enabled in this session".to_string(), success: Some(false) } };
+            ResponseInputItem::FunctionCallOutput { call_id, output: result }
         }
         "list_contexts" => handle_list_contexts(sess, call_id).await,
         "multi_retrieve_contexts" => handle_multi_retrieve_contexts(sess, arguments, call_id).await,

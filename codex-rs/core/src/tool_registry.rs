@@ -131,6 +131,9 @@ impl ToolFactory for SubagentToolFactory {
 
         match definition.name.as_str() {
             "create_subagent_task" => Ok(crate::openai_tools::create_subagent_task_tool()),
+            "resume_subagent" => Ok(crate::openai_tools::create_resume_subagent_tool()),
+            "list_recently_completed_subagents" => Ok(crate::openai_tools::create_list_recently_completed_subagents_tool()),
+            "multi_get_subagent_report" => Ok(crate::openai_tools::create_multi_get_subagent_report_tool()),
             _ => Err(format!("Unknown subagent tool: {}", definition.name)),
         }
     }
@@ -223,6 +226,9 @@ impl ToolRegistry {
         factories.insert("list_contexts".to_string(), Box::new(ContextToolFactory));
         factories.insert("multi_retrieve_contexts".to_string(), Box::new(ContextToolFactory));
         factories.insert("create_subagent_task".to_string(), Box::new(SubagentToolFactory));
+        factories.insert("resume_subagent".to_string(), Box::new(SubagentToolFactory));
+        factories.insert("list_recently_completed_subagents".to_string(), Box::new(SubagentToolFactory));
+        factories.insert("multi_get_subagent_report".to_string(), Box::new(SubagentToolFactory));
         factories.insert("web_search".to_string(), Box::new(WebSearchToolFactory));
     }
 

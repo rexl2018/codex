@@ -103,6 +103,12 @@ pub trait UniversalFunctionExecutor: Send + Sync {
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload;
 
+    async fn execute_resume_subagent(
+        &self,
+        arguments: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload;
+
     async fn execute_mcp_tool(
         &self,
         tool_name: String,
@@ -125,6 +131,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         supported_functions.insert("write_file".to_string(), true);
         supported_functions.insert("store_context".to_string(), true);
         supported_functions.insert("create_subagent_task".to_string(), true);
+        supported_functions.insert("resume_subagent".to_string(), true);
 
         Self {
             executor,
@@ -179,6 +186,10 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
                 self.handle_create_subagent_task_call(arguments, &context)
                     .await
             }
+            "resume_subagent" => {
+                self.handle_resume_subagent_call(arguments, &context)
+                    .await
+            }
             _ => {
                 // Handle MCP tools or other custom tools
                 self.executor
@@ -223,7 +234,16 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             "create_subagent_task" => {
                 if !context.permissions.can_create_subagents {
                     Some(
-                        "Error: Subagents cannot create other subagents. Only the main agent can use the create_subagent_task function. Please complete your current task and report your findings instead.".to_string()
+                        "Error: Subagents cannot create other subagents. Only the main agent can use the create_subagent_task function. Please complete your current task and report your findings instead.".to_string(),
+                    )
+                } else {
+                    None
+                }
+            }
+            "resume_subagent" => {
+                if !context.permissions.can_create_subagents {
+                    Some(
+                        "Error: Only the main agent can use the resume_subagent function.".to_string(),
                     )
                 } else {
                     None
@@ -377,6 +397,17 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             .execute_create_subagent_task(arguments, context)
             .await
     }
+
+    async fn handle_resume_subagent_call(
+        &self,
+        arguments: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        debug!("Resuming subagent with arguments: {}", arguments);
+        self.executor
+            .execute_resume_subagent(arguments, context)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -442,6 +473,17 @@ mod tests {
         ) -> FunctionCallOutputPayload {
             FunctionCallOutputPayload {
                 content: "subagent created".to_string(),
+                success: Some(true),
+            }
+        }
+
+        async fn execute_resume_subagent(
+            &self,
+            _arguments: String,
+            _context: &UniversalFunctionCallContext,
+        ) -> FunctionCallOutputPayload {
+            FunctionCallOutputPayload {
+                content: "subagent resumed".to_string(),
                 success: Some(true),
             }
         }

@@ -341,59 +341,52 @@ impl UnifiedToolConfig {
     /// Create tools specific to main agents
     fn create_main_agent_tools() -> Vec<ToolDefinition> {
         vec![
-            // Main agent should primarily be a coordinator
-            // Remove write_file and shell tools to force delegation to subagents
             ToolDefinition {
                 name: "list_contexts".to_string(),
-                description: "List available context items".to_string(),
+                description: "List available contexts created in this session".to_string(),
                 tool_type: ToolType::Context,
                 enabled: true,
-                config: ToolSpecificConfig {
-                    shell: None,
-                    filesystem: None,
-                    context: Some(ContextToolConfig {
-                        max_contexts: Some(100),
-                        max_content_size_bytes: Some(1024 * 1024), // 1MB
-                        enable_search: true,
-                    }),
-                    mcp: None,
-                    custom: None,
-                },
-                required_permissions: vec![Permission::StoreContext],
+                config: ToolSpecificConfig { shell: None, filesystem: None, context: Some(ContextToolConfig { max_contexts: None, max_content_size_bytes: None, enable_search: true }), mcp: None, custom: None },
+                required_permissions: vec![Permission::StoreContext, Permission::ReadFiles],
             },
             ToolDefinition {
                 name: "multi_retrieve_contexts".to_string(),
-                description: "Retrieve multiple context items by their IDs".to_string(),
+                description: "Retrieve multiple contexts by ID".to_string(),
                 tool_type: ToolType::Context,
                 enabled: true,
-                config: ToolSpecificConfig {
-                    shell: None,
-                    filesystem: None,
-                    context: Some(ContextToolConfig {
-                        max_contexts: Some(100),
-                        max_content_size_bytes: Some(1024 * 1024), // 1MB
-                        enable_search: true,
-                    }),
-                    mcp: None,
-                    custom: None,
-                },
-                required_permissions: vec![Permission::StoreContext],
+                config: ToolSpecificConfig { shell: None, filesystem: None, context: Some(ContextToolConfig { max_contexts: Some(50), max_content_size_bytes: None, enable_search: true }), mcp: None, custom: None },
+                required_permissions: vec![Permission::StoreContext, Permission::ReadFiles],
             },
             ToolDefinition {
                 name: "create_subagent_task".to_string(),
                 description: "Create a new subagent task".to_string(),
                 tool_type: ToolType::SubagentManagement,
                 enabled: true,
-                config: ToolSpecificConfig {
-                    shell: None,
-                    filesystem: None,
-                    context: None,
-                    mcp: None,
-                    custom: Some(serde_json::json!({
-                        "max_subagents": 5,
-                        "max_turns_per_subagent": 20
-                    })),
-                },
+                config: ToolSpecificConfig { shell: None, filesystem: None, context: None, mcp: None, custom: None },
+                required_permissions: vec![Permission::CreateSubagents],
+            },
+            ToolDefinition {
+                name: "resume_subagent".to_string(),
+                description: "Resume a previously completed/failed/cancelled subagent task using the same task_id".to_string(),
+                tool_type: ToolType::SubagentManagement,
+                enabled: true,
+                config: ToolSpecificConfig { shell: None, filesystem: None, context: None, mcp: None, custom: None },
+                required_permissions: vec![Permission::CreateSubagents],
+            },
+            ToolDefinition {
+                name: "list_recently_completed_subagents".to_string(),
+                description: "List recently completed/failed/cancelled subagent tasks".to_string(),
+                tool_type: ToolType::SubagentManagement,
+                enabled: true,
+                config: ToolSpecificConfig { shell: None, filesystem: None, context: None, mcp: None, custom: None },
+                required_permissions: vec![Permission::CreateSubagents],
+            },
+            ToolDefinition {
+                name: "multi_get_subagent_report".to_string(),
+                description: "Retrieve the reports for multiple subagent tasks".to_string(),
+                tool_type: ToolType::SubagentManagement,
+                enabled: true,
+                config: ToolSpecificConfig { shell: None, filesystem: None, context: None, mcp: None, custom: None },
                 required_permissions: vec![Permission::CreateSubagents],
             },
         ]

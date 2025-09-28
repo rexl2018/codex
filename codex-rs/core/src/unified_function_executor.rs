@@ -58,6 +58,8 @@ pub struct CodexFunctionExecutor {
     mcp_connection_manager: Option<Arc<McpConnectionManager>>,
     /// Optional subagent manager for multi-agent coordination
     subagent_manager: Option<Arc<dyn ISubagentManager>>,
+    /// Optional completion tracker for clearing completed status on resume
+    subagent_completion_tracker: Option<Arc<SubagentCompletionTracker>>,
     /// Working directory for file operations
     working_directory: PathBuf,
 }
@@ -68,12 +70,14 @@ impl CodexFunctionExecutor {
         context_repository: Arc<dyn IContextRepository>,
         mcp_connection_manager: Option<Arc<McpConnectionManager>>,
         subagent_manager: Option<Arc<dyn ISubagentManager>>,
+        subagent_completion_tracker: Option<Arc<SubagentCompletionTracker>>,
         working_directory: PathBuf,
     ) -> Self {
         Self {
             context_repository,
             mcp_connection_manager,
             subagent_manager,
+            subagent_completion_tracker,
             working_directory,
         }
     }
@@ -649,6 +653,108 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         }
     }
 
+    async fn execute_resume_subagent(
+        &self,
+        arguments: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        info!(
+            "🔄 [UNIFIED_EXECUTOR] Resuming subagent with arguments: {}",
+            arguments
+        );
+        let error_context = ErrorContext::new("CodexFunctionExecutor")
+            .with_function("execute_resume_subagent")
+            .with_info("call_id", &context.call_id);
+
+        let manager = match &self.subagent_manager {
+            Some(m) => m,
+            None => {
+                let msg = "Subagent manager not available. Multi-agent functionality may not be enabled.";
+                return FunctionCallOutputPayload {
+                    content: msg.to_string(),
+                    success: Some(false),
+                };
+            }
+        };
+
+        let args: ResumeSubagentArgs = match serde_json::from_str(&arguments) {
+            Ok(a) => a,
+            Err(e) => {
+                let error_msg = format!("Failed to parse resume_subagent arguments: {}", e);
+                return GLOBAL_ERROR_HANDLER
+                    .handle_error(
+                        UnifiedError::function_call(
+                            "resume_subagent",
+                            error_msg.clone(),
+                            FunctionCallErrorCode::ExecutionFailed,
+                        ),
+                        Some(error_context),
+                        Some(context.call_id.clone()),
+                    )
+                    .await;
+            }
+        };
+
+        // Clear completion cache if available
+        if let Some(tracker) = &self.subagent_completion_tracker {
+            tracker.remove_completed_task(&args.task_id).await;
+        }
+
+        // Perform resume on manager
+        match manager
+            .resume_task(
+                &args.task_id,
+                args.new_instruction.clone(),
+                args.additional_context_refs.clone(),
+                args.additional_bootstrap_paths.clone(),
+                args.new_max_turns,
+                args.use_previous_trajectory.unwrap_or(false),
+            )
+            .await
+        {
+            Ok(()) => {
+                // Auto-launch after resume
+                if args.auto_launch {
+                    match manager.launch_subagent(&args.task_id).await {
+                        Ok(_) => FunctionCallOutputPayload {
+                            content: format!(
+                                "✅ Subagent '{}' resumed and launched successfully.",
+                                args.task_id
+                            ),
+                            success: Some(true),
+                        },
+                        Err(e) => FunctionCallOutputPayload {
+                            content: format!(
+                                "Subagent resumed but failed to launch: {}",
+                                e
+                            ),
+                            success: Some(false),
+                        },
+                    }
+                } else {
+                    FunctionCallOutputPayload {
+                        content: format!(
+                            "✅ Subagent '{}' resumed successfully (not launched).",
+                            args.task_id
+                        ),
+                        success: Some(true),
+                    }
+                }
+            }
+            Err(e) => GLOBAL_ERROR_HANDLER
+                .handle_error(
+                    UnifiedError::function_call(
+                        "resume_subagent",
+                        format!("Failed to resume subagent: {}", e),
+                        FunctionCallErrorCode::ExecutionFailed,
+                    ),
+                    Some(error_context),
+                    Some(context.call_id.clone()),
+                )
+                .await,
+        }
+    }
+
     async fn execute_mcp_tool(
         &self,
         tool_name: String,
@@ -764,6 +870,7 @@ mod tests {
             context_repo,
             None,
             None, // No subagent manager for this test
+            None, // No completion tracker for this test
             PathBuf::from("/tmp"),
         );
 
@@ -790,6 +897,7 @@ mod tests {
             context_repo.clone(),
             None,
             None, // No subagent manager for this test
+            None, // No completion tracker for this test
             PathBuf::from("/tmp"),
         );
 
@@ -816,4 +924,22 @@ mod tests {
         let stored_context = context_repo.get_context("test_context").await;
         assert!(stored_context.is_ok());
     }
+}
+
+/// Arguments for resume_subagent function call
+#[derive(Debug, Deserialize, Clone)]
+struct ResumeSubagentArgs {
+    task_id: String,
+    #[serde(default)]
+    new_instruction: Option<String>,
+    #[serde(default)]
+    additional_context_refs: Vec<String>,
+    #[serde(default)]
+    additional_bootstrap_paths: Vec<BootstrapPath>,
+    #[serde(default)]
+    new_max_turns: Option<u32>,
+    #[serde(default)]
+    use_previous_trajectory: Option<bool>,
+    #[serde(default = "default_auto_launch")]
+    auto_launch: bool,
 }

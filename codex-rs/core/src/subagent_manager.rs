@@ -69,6 +69,17 @@ pub trait ISubagentManager: Send + Sync {
 
     /// Get the total number of tasks
     async fn get_task_count(&self) -> Result<usize, SubagentError>;
+
+    /// Resume a previously completed/failed/cancelled task using the same task_id
+    async fn resume_task(
+        &self,
+        task_id: &str,
+        new_instruction: Option<String>,
+        additional_context_refs: Vec<String>,
+        additional_bootstrap_paths: Vec<BootstrapPath>,
+        new_max_turns: Option<u32>,
+        use_previous_trajectory: bool,
+    ) -> Result<(), SubagentError>;
 }
 
 /// Subagent task specification
@@ -765,6 +776,60 @@ impl ISubagentManager for InMemorySubagentManager {
     async fn get_task_count(&self) -> Result<usize, SubagentError> {
         let tasks = self.tasks.read().await;
         Ok(tasks.len())
+    }
+
+    async fn resume_task(
+        &self,
+        task_id: &str,
+        new_instruction: Option<String>,
+        additional_context_refs: Vec<String>,
+        additional_bootstrap_paths: Vec<BootstrapPath>,
+        new_max_turns: Option<u32>,
+        use_previous_trajectory: bool,
+    ) -> Result<(), SubagentError> {
+        // Get the existing task
+        let mut tasks = self.tasks.write().await;
+        let task = tasks.get_mut(task_id).ok_or_else(|| SubagentError::TaskNotFound {
+            task_id: task_id.to_string(),
+        })?;
+
+        // Update task description if new instruction is provided
+        if let Some(instruction) = new_instruction {
+            task.description = instruction;
+        }
+
+        // Add additional context references
+        for context_ref in additional_context_refs {
+            if !task.ctx_store_contexts.contains_key(&context_ref) {
+                // Try to get the context from the repository
+                if let Ok(Some(context)) = self.context_repo.get_context(&context_ref).await {
+                    task.ctx_store_contexts.insert(context_ref, context.content);
+                }
+            }
+        }
+
+        // Add additional bootstrap paths
+        let additional_bootstrap_contexts = self.load_bootstrap_contexts(&additional_bootstrap_paths).await?;
+        task.bootstrap_contexts.extend(additional_bootstrap_contexts);
+
+        // Update max turns if provided
+        if let Some(max_turns) = new_max_turns {
+            task.max_turns = max_turns;
+        }
+
+        // Reset task status to Created so it can be launched again
+        task.status = TaskStatus::Created;
+        task.started_at = None;
+        task.completed_at = None;
+
+        // If not using previous trajectory, we could clear any existing trajectory
+        // For now, we'll keep the trajectory as it might be useful for debugging
+        if !use_previous_trajectory {
+            // Clear any existing trajectory data if needed
+            // This would depend on how trajectory is stored
+        }
+
+        Ok(())
     }
 }
 

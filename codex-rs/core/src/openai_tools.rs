@@ -603,6 +603,125 @@ pub(crate) fn create_multi_retrieve_contexts_tool() -> OpenAiTool {
     })
 }
 
+pub(crate) fn create_list_recently_completed_subagents_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "limit".to_string(),
+        JsonSchema::Number {
+            description: Some("Maximum number of tasks to list (default: 10)".to_string()),
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "list_recently_completed_subagents".to_string(),
+        description: "List recently completed/failed/cancelled subagent tasks for selection".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec![]),
+            additional_properties: Some(false),
+        },
+    })
+}
+
+pub(crate) fn create_multi_get_subagent_report_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "task_ids".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String {
+                description: Some("Subagent task ID".to_string()),
+            }),
+            description: Some("List of subagent task IDs to retrieve reports for".to_string()),
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "multi_get_subagent_report".to_string(),
+        description: "Retrieve execution reports for multiple subagent tasks".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["task_ids".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
+
+pub(crate) fn create_resume_subagent_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "task_id".to_string(),
+        JsonSchema::String {
+            description: Some("ID of the subagent task to resume".to_string()),
+        },
+    );
+    properties.insert(
+        "new_instruction".to_string(),
+        JsonSchema::String {
+            description: Some("Optional new instruction to guide the resumed subagent".to_string()),
+        },
+    );
+    properties.insert(
+        "additional_context_refs".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::String { description: None }),
+            description: Some("Additional context IDs to provide on resume".to_string()),
+        },
+    );
+    properties.insert(
+        "additional_bootstrap_paths".to_string(),
+        JsonSchema::Array {
+            items: Box::new(JsonSchema::Object {
+                properties: {
+                    let mut props = BTreeMap::new();
+                    props.insert(
+                        "path".to_string(),
+                        JsonSchema::String { description: Some("File or directory path".to_string()) },
+                    );
+                    props.insert(
+                        "reason".to_string(),
+                        JsonSchema::String { description: Some("Why this path is relevant".to_string()) },
+                    );
+                    props
+                },
+                required: Some(vec!["path".to_string(), "reason".to_string()]),
+                additional_properties: Some(false),
+            }),
+            description: Some("Extra files or directories to bootstrap the resumed subagent".to_string()),
+        },
+    );
+    properties.insert(
+        "new_max_turns".to_string(),
+        JsonSchema::Number {
+            description: Some("Optional new max turns for the resumed task".to_string()),
+        },
+    );
+    properties.insert(
+        "use_previous_trajectory".to_string(),
+        JsonSchema::Boolean {
+            description: Some("Whether to incorporate previous findings summary into the resumed prompt".to_string()),
+        },
+    );
+    properties.insert(
+        "auto_launch".to_string(),
+        JsonSchema::Boolean {
+            description: Some("When true, automatically launches the subagent after resuming. Default: true".to_string()),
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "resume_subagent".to_string(),
+        description: "Resume a previously completed/failed/cancelled subagent task using the same task_id, optionally adding new instruction and context.".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec!["task_id".to_string()]),
+            additional_properties: Some(false),
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

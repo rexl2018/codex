@@ -77,6 +77,7 @@ impl LLMSubagentExecutor {
             context_repo.clone(),
             mcp_connection_manager.clone(),
             None, // No subagent manager needed for subagent executor itself
+            None, // No completion tracker in subagent executor
             std::path::PathBuf::from("."), // Default working directory
         ));
 
