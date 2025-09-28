@@ -446,6 +446,17 @@ mod tests {
             }
         }
 
+        async fn execute_resume_subagent(
+            &self,
+            _arguments: String,
+            _context: &UniversalFunctionCallContext,
+        ) -> FunctionCallOutputPayload {
+            FunctionCallOutputPayload {
+                content: "subagent resumed".to_string(),
+                success: Some(true),
+            }
+        }
+
         async fn execute_mcp_tool(
             &self,
             _tool_name: String,

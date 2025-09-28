@@ -365,6 +365,7 @@ impl CodexFunctionExecutor {
         id: &str,
         summary: &str,
         content: &str,
+        context: &UniversalFunctionCallContext,
     ) -> UnifiedResult<String> {
         // Validate context ID
         if id.is_empty() {
@@ -391,13 +392,23 @@ impl CodexFunctionExecutor {
             ));
         }
 
+        // Determine the created_by value based on the agent type and sub_id
+        let created_by = match context.agent_type {
+            crate::unified_function_handler::AgentType::Main => "main_agent".to_string(),
+            crate::unified_function_handler::AgentType::Explorer | 
+            crate::unified_function_handler::AgentType::Coder => {
+                // For subagents, use the sub_id as the created_by value
+                context.sub_id.clone()
+            }
+        };
+
         // Create context item using the Context::new constructor
         let context_item = crate::context_store::Context::new(
             id.to_string(),
             summary.to_string(),
             content.to_string(),
-            "unified_executor".to_string(), // created_by
-            None,                           // task_id
+            created_by, // Use the determined created_by value
+            None,       // task_id
         );
 
         // Store context
@@ -506,7 +517,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             .with_info("content_length", &content.len().to_string())
             .with_info("agent_type", &format!("{:?}", context.agent_type));
 
-        match self.store_context_item(&id, &summary, &content).await {
+        match self.store_context_item(&id, &summary, &content, context).await {
             Ok(result) => FunctionCallOutputPayload {
                 content: result,
                 success: Some(true),
@@ -923,6 +934,88 @@ mod tests {
         // Verify context was stored
         let stored_context = context_repo.get_context("test_context").await;
         assert!(stored_context.is_ok());
+        
+        // Verify created_by field is set correctly for main agent
+        let context = stored_context.unwrap().unwrap();
+        assert_eq!(context.created_by, "main_agent");
+    }
+
+    #[tokio::test]
+    async fn test_context_storage_created_by_field() {
+        let context_repo = Arc::new(InMemoryContextRepository::new());
+        let executor = CodexFunctionExecutor::new(
+            context_repo.clone(),
+            None,
+            None,
+            None,
+            PathBuf::from("/tmp"),
+        );
+
+        // Test main agent
+        let main_context = UniversalFunctionCallContext {
+            cwd: PathBuf::from("/tmp"),
+            sub_id: "main_agent_123".to_string(),
+            call_id: "call_123".to_string(),
+            agent_type: AgentType::Main,
+            permissions: FunctionPermissions::for_agent_type(&AgentType::Main),
+        };
+
+        let result = executor
+            .execute_store_context(
+                "main_context".to_string(),
+                "Main agent context".to_string(),
+                "Content from main agent".to_string(),
+                &main_context,
+            )
+            .await;
+
+        assert_eq!(result.success, Some(true));
+        let stored = context_repo.get_context("main_context").await.unwrap().unwrap();
+        assert_eq!(stored.created_by, "main_agent");
+
+        // Test explorer subagent
+        let explorer_context = UniversalFunctionCallContext {
+            cwd: PathBuf::from("/tmp"),
+            sub_id: "explorer_subagent_456".to_string(),
+            call_id: "call_456".to_string(),
+            agent_type: AgentType::Explorer,
+            permissions: FunctionPermissions::for_agent_type(&AgentType::Explorer),
+        };
+
+        let result = executor
+            .execute_store_context(
+                "explorer_context".to_string(),
+                "Explorer subagent context".to_string(),
+                "Content from explorer subagent".to_string(),
+                &explorer_context,
+            )
+            .await;
+
+        assert_eq!(result.success, Some(true));
+        let stored = context_repo.get_context("explorer_context").await.unwrap().unwrap();
+        assert_eq!(stored.created_by, "explorer_subagent_456");
+
+        // Test coder subagent
+        let coder_context = UniversalFunctionCallContext {
+            cwd: PathBuf::from("/tmp"),
+            sub_id: "coder_subagent_789".to_string(),
+            call_id: "call_789".to_string(),
+            agent_type: AgentType::Coder,
+            permissions: FunctionPermissions::for_agent_type(&AgentType::Coder),
+        };
+
+        let result = executor
+            .execute_store_context(
+                "coder_context".to_string(),
+                "Coder subagent context".to_string(),
+                "Content from coder subagent".to_string(),
+                &coder_context,
+            )
+            .await;
+
+        assert_eq!(result.success, Some(true));
+        let stored = context_repo.get_context("coder_context").await.unwrap().unwrap();
+        assert_eq!(stored.created_by, "coder_subagent_789");
     }
 }
 
