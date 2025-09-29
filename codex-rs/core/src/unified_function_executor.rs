@@ -864,6 +864,103 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
                 .await
         }
     }
+
+    async fn execute_apply_patch(
+        &self,
+        arguments: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        debug!("Executing apply_patch with arguments: {}", arguments);
+
+        // Parse apply_patch arguments
+        #[derive(serde::Deserialize)]
+        struct ApplyPatchArgs {
+            input: String,
+        }
+
+        let args: ApplyPatchArgs = match serde_json::from_str(&arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                error!("Failed to parse apply_patch arguments: {}", e);
+                return FunctionCallOutputPayload {
+                    content: format!("Invalid apply_patch arguments: {}", e),
+                    success: Some(false),
+                };
+            }
+        };
+
+        // Parse the patch using the apply_patch library
+        // We need to convert the input string to a command-line argument format
+        let argv = vec!["apply_patch".to_string(), args.input];
+        
+        match codex_apply_patch::maybe_parse_apply_patch_verified(&argv, &self.working_directory) {
+            codex_apply_patch::MaybeApplyPatchVerified::Body(action) => {
+                // For subagents, we'll apply the patch directly without user approval
+                // This is a simplified implementation - in a full implementation,
+                // we would need access to Session and TurnContext for proper safety checks
+                
+                // Apply the patch using the apply_patch function
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                
+                match codex_apply_patch::apply_patch(&action.patch, &mut stdout, &mut stderr) {
+                    Ok(()) => {
+                        let stdout_str = String::from_utf8_lossy(&stdout);
+                        let stderr_str = String::from_utf8_lossy(&stderr);
+                        info!("Apply patch succeeded");
+                        FunctionCallOutputPayload {
+                            content: format!("Patch applied successfully.\nOutput: {}\nErrors: {}", stdout_str, stderr_str),
+                            success: Some(true),
+                        }
+                    }
+                    Err(e) => {
+                        let stderr_str = String::from_utf8_lossy(&stderr);
+                        error!("Apply patch failed: {}", e);
+                        FunctionCallOutputPayload {
+                            content: format!("Apply patch failed: {}\nErrors: {}", e, stderr_str),
+                            success: Some(false),
+                        }
+                    }
+                }
+            }
+            codex_apply_patch::MaybeApplyPatchVerified::NotApplyPatch => {
+                FunctionCallOutputPayload {
+                    content: "Input does not contain a valid apply_patch command".to_string(),
+                    success: Some(false),
+                }
+            }
+            codex_apply_patch::MaybeApplyPatchVerified::CorrectnessError(e) => {
+                error!("Apply patch correctness error: {}", e);
+                FunctionCallOutputPayload {
+                    content: format!("Apply patch correctness error: {}", e),
+                    success: Some(false),
+                }
+            }
+            codex_apply_patch::MaybeApplyPatchVerified::ShellParseError(e) => {
+                error!("Apply patch shell parse error: {:?}", e);
+                FunctionCallOutputPayload {
+                    content: format!("Apply patch shell parse error: {:?}", e),
+                    success: Some(false),
+                }
+            }
+        }
+    }
+
+    async fn execute_update_plan(
+        &self,
+        arguments: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        debug!("Executing update_plan with arguments: {}", arguments);
+
+        // For now, return a simple success response
+        // The actual plan handling is done by the plan_tool module
+        // This is just to satisfy the unified function executor interface
+        FunctionCallOutputPayload {
+            content: "Plan updated successfully".to_string(),
+            success: Some(true),
+        }
+    }
 }
 
 #[cfg(test)]

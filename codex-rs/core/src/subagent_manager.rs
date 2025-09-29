@@ -514,11 +514,29 @@ impl ISubagentManager for InMemorySubagentManager {
                     mcp_connection_manager,
                 } => {
                     // Use the LLM executor
+                    let mcp_tool_count = mcp_tools.as_ref().map(|t| t.len()).unwrap_or(0);
+                    let mcp_tool_names: Vec<String> = mcp_tools.as_ref()
+                        .map(|tools| tools.keys().cloned().collect())
+                        .unwrap_or_default();
+                    
+                    // Get builtin tool names for this agent type from the tool registry
+                    let unified_agent_type = match task_clone.agent_type {
+                        SubagentType::Explorer => crate::unified_function_handler::AgentType::Explorer,
+                        SubagentType::Coder => crate::unified_function_handler::AgentType::Coder,
+                    };
+                    let builtin_tool_names = crate::tool_registry::GLOBAL_TOOL_REGISTRY
+                        .get_available_tool_names(&unified_agent_type);
+                    
+                    let total_tools = builtin_tool_names.len() + mcp_tool_count;
+                    
                     tracing::info!(
-                        "Using LLMSubagentExecutor for task: {}, MCP tools available: {}",
+                        "Using LLMSubagentExecutor for task: {}, total tools: {} (builtin: [{}], MCP: [{}])",
                         task_clone.task_id,
-                        mcp_tools.as_ref().map(|t| t.len()).unwrap_or(0)
+                        total_tools,
+                        builtin_tool_names.join(", "),
+                        mcp_tool_names.join(", ")
                     );
+                    
                     let executor = LLMSubagentExecutor::new(
                         context_repo,
                         model_client,

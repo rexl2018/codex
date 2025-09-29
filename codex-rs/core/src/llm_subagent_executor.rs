@@ -4,6 +4,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tracing::info;
+use std::time::Instant;
+use codex_protocol::protocol::{
+    Event, EventMsg, ExecCommandBeginEvent, ExecCommandEndEvent, McpToolCallBeginEvent,
+    McpToolCallEndEvent, McpInvocation,
+};
+use crate::parse_command::parse_command;
 
 use crate::client::ModelClient;
 use crate::context_store::IContextRepository;
@@ -108,7 +114,7 @@ impl LLMSubagentExecutor {
     }
 
     /// Create tools for subagent based on agent type using unified tool configuration
-    fn create_subagent_tools(
+    pub fn create_subagent_tools(
         &self,
         agent_type: &SubagentType,
     ) -> Vec<crate::openai_tools::OpenAiTool> {
@@ -454,10 +460,16 @@ impl LLMSubagentExecutor {
         let mut reasoning_events = 0;
         let mut other_events = 0;
 
-        // Create agent prefix for subagent messages
+        // Create agent prefix for subagent messages with task ID prefix
+        let task_id_prefix = if task.task_id.len() >= 4 {
+            &task.task_id[..4]
+        } else {
+            &task.task_id
+        };
+        
         let agent_prefix = match task.agent_type {
-            SubagentType::Explorer => "[Explorer]: ",
-            SubagentType::Coder => "[Coder]: ",
+            SubagentType::Explorer => format!("[Expl-{}]: ", task_id_prefix),
+            SubagentType::Coder => format!("[Coder-{}]: ", task_id_prefix),
         };
 
         // Send initial prefix if this is the first message
@@ -731,14 +743,83 @@ impl LLMSubagentExecutor {
                 permissions: FunctionPermissions::for_agent_type(&agent_type),
             };
 
-            // Use the unified function call router
-            let result = self
-                .function_router
-                .route_function_call(
+            // Emit begin event for shell/MCP tools so TUI can display activity
+            let started_at = Instant::now();
+            let mut maybe_mcp_invocation: Option<McpInvocation> = None;
+            let mut is_shell_call = false;
+            // Try to parse arguments JSON once for potential use
+            let parsed_args_json: Option<serde_json::Value> = serde_json::from_str::<serde_json::Value>(&func_call.arguments).ok();
+
+            if func_call.name == "shell" {
+                // Shell tool: send ExecCommandBegin with parsed command
+                let command_str = parsed_args_json
+                    .as_ref()
+                    .and_then(|v| v.get("command").and_then(|c| c.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                let command_vec = if command_str.is_empty() {
+                    vec!["".to_string()]
+                } else {
+                    vec![command_str.clone()]
+                };
+                let parsed_cmd = parse_command(&command_vec)
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
+                let begin_ev = Event {
+                    id: task.task_id.clone(),
+                    msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
+                        call_id: func_call.call_id.clone(),
+                        command: command_vec,
+                        cwd: std::path::PathBuf::from("."),
+                        parsed_cmd,
+                    }),
+                };
+                self.send_event(begin_ev).await;
+                is_shell_call = true;
+            } else if func_call.name.contains("__") {
+                // Likely MCP tool call: server__tool format
+                let parts: Vec<&str> = func_call.name.splitn(2, "__").collect();
+                if parts.len() == 2 {
+                    let server = parts[0].to_string();
+                    let tool = parts[1].to_string();
+                    maybe_mcp_invocation = Some(McpInvocation {
+                        server: server.clone(),
+                        tool: tool.clone(),
+                        arguments: parsed_args_json.clone(),
+                    });
+                    let begin_ev = Event {
+                        id: task.task_id.clone(),
+                        msg: EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
+                            call_id: func_call.call_id.clone(),
+                            invocation: McpInvocation {
+                                server,
+                                tool,
+                                arguments: parsed_args_json.clone(),
+                            },
+                        }),
+                    };
+                    self.send_event(begin_ev).await;
+                }
+            }
+
+            // Use the unified function call handler directly with our correctly configured context
+            // This bypasses the function_router's hardcoded config and uses our task-specific agent_type
+            let executor = Arc::new(crate::unified_function_executor::CodexFunctionExecutor::new(
+                self.context_repo.clone(),
+                None, // MCP connection manager will be handled separately if needed
+                None, // No subagent manager
+                None, // No completion tracker
+                std::path::PathBuf::from("."),
+            ));
+            
+            let handler = crate::unified_function_handler::UniversalFunctionCallHandler::new(executor);
+            
+            let result = handler
+                .handle_function_call(
                     func_call.name.clone(),
                     func_call.arguments.clone(),
-                    task.task_id.clone(),
-                    func_call.call_id.clone(),
+                    context,
                 )
                 .await;
 
@@ -747,12 +828,41 @@ impl LLMSubagentExecutor {
                 codex_protocol::models::ResponseInputItem::FunctionCallOutput {
                     call_id,
                     output,
-                } => codex_protocol::models::ResponseItem::FunctionCallOutput { call_id, output },
-                codex_protocol::models::ResponseInputItem::McpToolCallOutput {
-                    call_id,
-                    result,
                 } => {
-                    // Convert MCP result to function call output
+                    // If this was a shell call, emit end event with summarized output
+                    if is_shell_call {
+                        let success = output.success.unwrap_or(false);
+                        let end_ev = Event {
+                            id: task.task_id.clone(),
+                            msg: EventMsg::ExecCommandEnd(ExecCommandEndEvent {
+                                call_id: call_id.clone(),
+                                stdout: String::new(),
+                                stderr: String::new(),
+                                aggregated_output: output.content.clone(),
+                                exit_code: if success { 0 } else { -1 },
+                                duration: started_at.elapsed(),
+                                formatted_output: output.content.clone(),
+                            }),
+                        };
+                        self.send_event(end_ev).await;
+                    }
+                    codex_protocol::models::ResponseItem::FunctionCallOutput { call_id, output }
+                }
+                codex_protocol::models::ResponseInputItem::McpToolCallOutput { call_id, result } => {
+                    // Emit MCP end event with timing and original invocation
+                    if let Some(inv) = maybe_mcp_invocation.clone() {
+                        let end_ev = Event {
+                            id: task.task_id.clone(),
+                            msg: EventMsg::McpToolCallEnd(McpToolCallEndEvent {
+                                call_id: call_id.clone(),
+                                invocation: inv,
+                                duration: started_at.elapsed(),
+                                result: result.clone(),
+                            }),
+                        };
+                        self.send_event(end_ev).await;
+                    }
+                    // Convert MCP result to function call output for downstream
                     let content = format!("MCP tool result: {:?}", result);
                     codex_protocol::models::ResponseItem::FunctionCallOutput {
                         call_id,
@@ -773,16 +883,15 @@ impl LLMSubagentExecutor {
                         },
                     }
                 }
-                codex_protocol::models::ResponseInputItem::CustomToolCallOutput {
-                    call_id,
-                    output,
-                } => codex_protocol::models::ResponseItem::FunctionCallOutput {
-                    call_id,
-                    output: codex_protocol::models::FunctionCallOutputPayload {
-                        content: output,
-                        success: Some(true),
-                    },
-                },
+                codex_protocol::models::ResponseInputItem::CustomToolCallOutput { call_id, output } => {
+                    codex_protocol::models::ResponseItem::FunctionCallOutput {
+                        call_id,
+                        output: codex_protocol::models::FunctionCallOutputPayload {
+                            content: output,
+                            success: Some(true),
+                        },
+                    }
+                }
             };
 
             // Log the function call result for debugging

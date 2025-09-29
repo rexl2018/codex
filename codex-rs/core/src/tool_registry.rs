@@ -173,6 +173,60 @@ impl ToolFactory for WebSearchToolFactory {
     }
 }
 
+/// Factory for apply patch tools
+pub struct ApplyPatchToolFactory;
+
+impl ToolFactory for ApplyPatchToolFactory {
+    fn create_openai_tool(&self, definition: &ToolDefinition) -> Result<OpenAiTool, String> {
+        if !matches!(definition.tool_type, ToolType::Custom(ref name) if name == "apply_patch") {
+            return Err("Invalid tool type for ApplyPatchToolFactory".to_string());
+        }
+
+        match definition.name.as_str() {
+            "apply_patch" => {
+                // Use the appropriate apply_patch tool based on model family
+                // For now, default to the function tool
+                Ok(crate::tool_apply_patch::create_apply_patch_json_tool())
+            },
+            _ => Err(format!("Unknown apply patch tool: {}", definition.name)),
+        }
+    }
+
+    fn tool_type(&self) -> ToolType {
+        ToolType::Custom("apply_patch".to_string())
+    }
+
+    fn validate_config(&self, _definition: &ToolDefinition) -> Result<(), String> {
+        // Apply patch tools don't require specific configuration validation for now
+        Ok(())
+    }
+}
+
+/// Factory for plan tools
+pub struct PlanToolFactory;
+
+impl ToolFactory for PlanToolFactory {
+    fn create_openai_tool(&self, definition: &ToolDefinition) -> Result<OpenAiTool, String> {
+        if !matches!(definition.tool_type, ToolType::Custom(ref name) if name == "plan") {
+            return Err("Invalid tool type for PlanToolFactory".to_string());
+        }
+
+        match definition.name.as_str() {
+            "update_plan" => Ok(crate::plan_tool::PLAN_TOOL.clone()),
+            _ => Err(format!("Unknown plan tool: {}", definition.name)),
+        }
+    }
+
+    fn tool_type(&self) -> ToolType {
+        ToolType::Custom("plan".to_string())
+    }
+
+    fn validate_config(&self, _definition: &ToolDefinition) -> Result<(), String> {
+        // Plan tools don't require specific configuration validation for now
+        Ok(())
+    }
+}
+
 /// Factory for MCP tools
 pub struct McpToolFactory;
 
@@ -230,6 +284,8 @@ impl ToolRegistry {
         factories.insert("list_recently_completed_subagents".to_string(), Box::new(SubagentToolFactory));
         factories.insert("multi_get_subagent_report".to_string(), Box::new(SubagentToolFactory));
         factories.insert("web_search".to_string(), Box::new(WebSearchToolFactory));
+        factories.insert("update_plan".to_string(), Box::new(PlanToolFactory));
+        factories.insert("apply_patch".to_string(), Box::new(ApplyPatchToolFactory));
     }
 
     /// Initialize default configurations for all agent types

@@ -335,6 +335,23 @@ impl UnifiedToolConfig {
                 },
                 required_permissions: vec![Permission::StoreContext],
             },
+            ToolDefinition {
+                name: "update_plan".to_string(),
+                description: "Update the task plan with steps and status".to_string(),
+                tool_type: ToolType::Custom("plan".to_string()),
+                enabled: true,
+                config: ToolSpecificConfig {
+                    shell: None,
+                    filesystem: None,
+                    context: None,
+                    mcp: None,
+                    custom: Some(serde_json::json!({
+                        "max_steps": 20,
+                        "allow_parallel_steps": false
+                    })),
+                },
+                required_permissions: vec![], // No special permissions needed
+            },
         ]
     }
 
@@ -446,6 +463,24 @@ impl UnifiedToolConfig {
                     context: None,
                     mcp: None,
                     custom: None,
+                },
+                required_permissions: vec![Permission::WriteFiles],
+            },
+            ToolDefinition {
+                name: "apply_patch".to_string(),
+                description: "Apply structured patches to edit files".to_string(),
+                tool_type: ToolType::Custom("apply_patch".to_string()),
+                enabled: true,
+                config: ToolSpecificConfig {
+                    shell: None,
+                    filesystem: None,
+                    context: None,
+                    mcp: None,
+                    custom: Some(serde_json::json!({
+                        "max_patch_size_bytes": 1024 * 1024, // 1MB
+                        "allow_file_creation": true,
+                        "allow_file_deletion": true
+                    })),
                 },
                 required_permissions: vec![Permission::WriteFiles],
             },

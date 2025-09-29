@@ -115,6 +115,18 @@ pub trait UniversalFunctionExecutor: Send + Sync {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload;
+
+    async fn execute_apply_patch(
+        &self,
+        arguments: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload;
+
+    async fn execute_update_plan(
+        &self,
+        arguments: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload;
 }
 
 /// Universal function call handler that can be used by both main agent and subagents
@@ -132,6 +144,8 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         supported_functions.insert("store_context".to_string(), true);
         supported_functions.insert("create_subagent_task".to_string(), true);
         supported_functions.insert("resume_subagent".to_string(), true);
+        supported_functions.insert("apply_patch".to_string(), true);
+        supported_functions.insert("update_plan".to_string(), true);
 
         Self {
             executor,
@@ -190,6 +204,8 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
                 self.handle_resume_subagent_call(arguments, &context)
                     .await
             }
+            "apply_patch" => self.handle_apply_patch_call(arguments, &context).await,
+            "update_plan" => self.handle_update_plan_call(arguments, &context).await,
             _ => {
                 // Handle MCP tools or other custom tools
                 self.executor
@@ -268,6 +284,20 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
                 } else {
                     None
                 }
+            }
+            "apply_patch" => {
+                if !context.permissions.can_write_files {
+                    Some(format!(
+                        "Error: {:?} agents cannot use apply_patch. Only Coder agents can edit files.",
+                        context.agent_type
+                    ))
+                } else {
+                    None
+                }
+            }
+            "update_plan" => {
+                // update_plan is available to all agent types
+                None
             }
             _ => None, // Allow other functions by default
         }
@@ -408,6 +438,26 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             .execute_resume_subagent(arguments, context)
             .await
     }
+
+    async fn handle_apply_patch_call(
+        &self,
+        arguments: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        self.executor
+            .execute_apply_patch(arguments, context)
+            .await
+    }
+
+    async fn handle_update_plan_call(
+        &self,
+        arguments: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        self.executor
+            .execute_update_plan(arguments, context)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -496,6 +546,28 @@ mod tests {
         ) -> FunctionCallOutputPayload {
             FunctionCallOutputPayload {
                 content: "mcp tool executed".to_string(),
+                success: Some(true),
+            }
+        }
+
+        async fn execute_apply_patch(
+            &self,
+            _arguments: String,
+            _context: &UniversalFunctionCallContext,
+        ) -> FunctionCallOutputPayload {
+            FunctionCallOutputPayload {
+                content: "patch applied".to_string(),
+                success: Some(true),
+            }
+        }
+
+        async fn execute_update_plan(
+            &self,
+            _arguments: String,
+            _context: &UniversalFunctionCallContext,
+        ) -> FunctionCallOutputPayload {
+            FunctionCallOutputPayload {
+                content: "plan updated".to_string(),
                 success: Some(true),
             }
         }
