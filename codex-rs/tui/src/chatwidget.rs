@@ -530,10 +530,11 @@ impl ChatWidget {
 
             for (i, context) in ev.contexts.iter().enumerate() {
                 message.push_str(&format!(
-                    "{}. **{}**\n   Summary: {}\n   Size: {} bytes\n   Created by: {}\n   Created at: {}\n",
+                    "{}. **{}**\n   Summary: {}\n   Namespace: {}\n   Size: {} bytes\n   Created by: {}\n   Created at: {}\n",
                     i + 1,
                     context.id,
                     context.summary,
+                    context.namespace,
                     context.size_bytes,
                     context.created_by,
                     context.created_at
@@ -572,10 +573,13 @@ impl ChatWidget {
                 if ev.contexts.len() == 1 {
                     // For single context (like /ci get), show full content
                     message.push_str(&format!(
-                        "**{}**\n\n**Summary:** {}\n**Size:** {} bytes\n\n**Full Content:**\n{}",
+                        "**{}**\n\n**Summary:** {}\n**Namespace:** {}\n**Size:** {} bytes\n**Created by:** {}\n**Created at:** {}\n\n**Full Content:**\n{}",
                         context.id,
                         context.summary,
-                        context.content.len(),
+                        context.namespace,
+                        context.size_bytes,
+                        context.created_by,
+                        context.created_at,
                         if context.content.len() > 2000 {
                             format!(
                                 "{}...\n\n[Content truncated - {} total characters]",
@@ -589,11 +593,14 @@ impl ChatWidget {
                 } else {
                     // For multiple contexts, show summary
                     message.push_str(&format!(
-                        "{}. **{}**\n   Summary: {}\n   Size: {} bytes\n",
+                        "{}. **{}**\n   Summary: {}\n   Namespace: {}\n   Size: {} bytes\n   Created by: {}\n   Created at: {}\n",
                         i + 1,
                         context.id,
                         context.summary,
-                        context.content.len()
+                        context.namespace,
+                        context.size_bytes,
+                        context.created_by,
+                        context.created_at
                     ));
                 }
 

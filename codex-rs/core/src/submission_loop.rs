@@ -475,6 +475,14 @@ pub(crate) async fn original_submission_loop(
                                     .into_iter()
                                     .map(|ctx| {
                                         let size_bytes = ctx.size_bytes();
+                                        // Compute namespace (root project directory name)
+                                        let ns_base = crate::git_info::resolve_root_git_project_for_trust(&config.cwd)
+                                            .unwrap_or_else(|| config.cwd.clone());
+                                        let namespace = ns_base
+                                            .file_name()
+                                            .map(|s| s.to_string_lossy().to_string())
+                                            .unwrap_or_else(|| ns_base.to_string_lossy().to_string());
+
                                         ContextSummary {
                                             id: ctx.id,
                                             summary: ctx.summary,
@@ -486,6 +494,7 @@ pub(crate) async fn original_submission_loop(
                                                 .as_secs()
                                                 .to_string(),
                                             size_bytes,
+                                            namespace,
                                         }
                                     })
                                     .collect();
@@ -527,14 +536,31 @@ pub(crate) async fn original_submission_loop(
                         Ok(contexts) => {
                             let total_count = contexts.len();
                             // Convert full Context objects to ContextItem for the response
-                            let context_items: Vec<ContextItem> = contexts
-                                .into_iter()
-                                .map(|ctx| ContextItem {
-                                    id: ctx.id,
-                                    summary: ctx.summary,
-                                    content: ctx.content,
-                                })
-                                .collect();
+                            // Compute namespace (root project directory name)
+                             let ns_base = crate::git_info::resolve_root_git_project_for_trust(&config.cwd)
+                                 .unwrap_or_else(|| config.cwd.clone());
+                             let namespace = ns_base
+                                 .file_name()
+                                 .map(|s| s.to_string_lossy().to_string())
+                                 .unwrap_or_else(|| ns_base.to_string_lossy().to_string());
+
+                             let context_items: Vec<ContextItem> = contexts
+                                  .into_iter()
+                                  .map(|ctx| ContextItem {
+                             id: ctx.id.clone(),
+                             summary: ctx.summary.clone(),
+                             content: ctx.content.clone(),
+                             created_by: ctx.created_by.clone(),
+                             created_at: ctx
+                                 .created_at
+                                 .duration_since(std::time::UNIX_EPOCH)
+                                 .unwrap_or_default()
+                                 .as_secs()
+                                 .to_string(),
+                             size_bytes: ctx.size_bytes(),
+                             namespace: namespace.clone(),
+                         })
+                                  .collect();
 
                             let event = Event {
                                 id: sub.id,
@@ -619,13 +645,30 @@ pub(crate) async fn original_submission_loop(
                         }
                     };
 
-                    // Convert to ContextItems for serialization
+                    // Convert to ContextItems with metadata for serialization
+                    // Compute namespace (root project directory name)
+                    let ns_base = crate::git_info::resolve_root_git_project_for_trust(&config.cwd)
+                        .unwrap_or_else(|| config.cwd.clone());
+                    let namespace = ns_base
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| ns_base.to_string_lossy().to_string());
+
                     let context_items: Vec<ContextItem> = contexts_to_save
                         .iter()
                         .map(|ctx| ContextItem {
                             id: ctx.id.clone(),
                             summary: ctx.summary.clone(),
                             content: ctx.content.clone(),
+                            created_by: ctx.created_by.clone(),
+                            created_at: ctx
+                                .created_at
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs()
+                                .to_string(),
+                            size_bytes: ctx.size_bytes(),
+                            namespace: namespace.clone(),
                         })
                         .collect();
 
@@ -717,7 +760,7 @@ pub(crate) async fn original_submission_loop(
                                     item.id.clone(),
                                     item.summary.clone(),
                                     item.content.clone(),
-                                    "file_import".to_string(),
+                                    item.created_by.clone(),
                                     None,
                                 );
 

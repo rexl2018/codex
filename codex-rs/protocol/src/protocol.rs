@@ -1405,6 +1405,14 @@ pub struct ContextItem {
     pub summary: String,
     /// Context content
     pub content: String,
+    /// Creator identifier (e.g., subagent id or source)
+    pub created_by: String,
+    /// Creation time as UNIX timestamp seconds (string)
+    pub created_at: String,
+    /// Total size in bytes of summary + content
+    pub size_bytes: usize,
+    /// Namespace (root project directory name)
+    pub namespace: String,
 }
 
 /// Context query conditions
@@ -1536,6 +1544,7 @@ pub struct ContextSummary {
     pub created_by: String,
     pub created_at: String,
     pub size_bytes: usize,
+    pub namespace: String,
 }
 
 /// Subagent force completion event

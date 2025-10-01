@@ -278,6 +278,15 @@ impl Context {
 impl From<Context> for codex_protocol::protocol::ContextSummary {
     fn from(context: Context) -> Self {
         let size_bytes = context.size_bytes();
+        // Compute namespace from project root (fall back to current dir name if needed)
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let ns_base = crate::git_info::resolve_root_git_project_for_trust(&cwd)
+            .unwrap_or_else(|| cwd.clone());
+        let namespace = ns_base
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| ns_base.to_string_lossy().to_string());
+
         Self {
             id: context.id,
             summary: context.summary,
@@ -289,6 +298,7 @@ impl From<Context> for codex_protocol::protocol::ContextSummary {
                 .as_secs()
                 .to_string(),
             size_bytes,
+            namespace,
         }
     }
 }

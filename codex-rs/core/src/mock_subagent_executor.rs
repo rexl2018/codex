@@ -157,25 +157,50 @@ impl MockSubagentExecutor {
             contexts.push(ContextItem {
                 id: context_id,
                 summary: format!("Analysis of {}", bootstrap.path.display()),
-                content: analysis,
+                content: analysis.clone(),
+                created_by: "subagent".to_string(),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+                    .to_string(),
+                size_bytes: format!("Analysis of {}", bootstrap.path.display()).len() + analysis.len(),
+                namespace: std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| ".".to_string()),
             });
         }
 
         // If no bootstrap contexts, create a general analysis context based on description
         if contexts.is_empty() {
             let uuid_str = Uuid::new_v4().to_string();
+            let content = format!(
+                "Task: {}\n\nDescription: {}\n\nAnalysis: Based on the task description, this appears to be a {} task focused on {}.",
+                task.title,
+                task.description,
+                match task.agent_type {
+                    SubagentType::Explorer => "exploration and analysis",
+                    SubagentType::Coder => "implementation and coding",
+                },
+                task.title.to_lowercase()
+            );
+            let summary = "Task-guided analysis".to_string();
             contexts.push(ContextItem {
                 id: format!("general_analysis_{}", &uuid_str[..8]),
-                summary: "Task-guided analysis".to_string(),
-                content: format!("Task: {}\n\nDescription: {}\n\nAnalysis: Based on the task description, this appears to be a {} task focused on {}.", 
-                    task.title, 
-                    task.description,
-                    match task.agent_type {
-                        SubagentType::Explorer => "exploration and analysis",
-                        SubagentType::Coder => "implementation and coding",
-                    },
-                    task.title.to_lowercase()
-                ),
+                summary: summary.clone(),
+                content: content.clone(),
+                created_by: "subagent".to_string(),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+                    .to_string(),
+                size_bytes: summary.len() + content.len(),
+                namespace: std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| ".".to_string()),
             });
         }
 
@@ -203,11 +228,24 @@ impl MockSubagentExecutor {
             task.description
         );
 
+        let summary = format!("Implementation plan for {}", task.title);
+        let content = implementation_details.clone();
         contexts.push(ContextItem {
-            id: context_id,
-            summary: format!("Implementation plan for {}", task.title),
-            content: implementation_details,
-        });
+                id: context_id,
+                summary: summary.clone(),
+                content: content.clone(),
+                created_by: "subagent".to_string(),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+                    .to_string(),
+                size_bytes: summary.len() + content.len(),
+                namespace: std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| ".".to_string()),
+            });
 
         contexts
     }

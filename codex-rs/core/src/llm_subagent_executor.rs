@@ -1286,9 +1286,21 @@ impl LLMSubagentExecutor {
             .into_iter()
             .filter(|ctx| ctx.task_id.as_ref().map_or(false, |id| id == task_id))
             .map(|ctx| ContextItem {
-                id: ctx.id,
-                summary: ctx.summary,
-                content: ctx.content,
+                id: ctx.id.clone(),
+                summary: ctx.summary.clone(),
+                content: ctx.content.clone(),
+                created_by: ctx.created_by.clone(),
+                created_at: ctx
+                    .created_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+                    .to_string(),
+                size_bytes: ctx.size_bytes(),
+                namespace: std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| ".".to_string()),
             })
             .collect()
     }
