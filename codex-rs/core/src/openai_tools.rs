@@ -489,10 +489,22 @@ pub(crate) fn create_read_file_tool() -> OpenAiTool {
             description: Some("Path to the file to read".to_string()),
         },
     );
+    properties.insert(
+        "line_offset".to_string(),
+        JsonSchema::Number {
+            description: Some("0-based line offset to start reading from (default: 0)".to_string()),
+        },
+    );
+    properties.insert(
+        "line_num".to_string(),
+        JsonSchema::Number {
+            description: Some("Number of lines to read (default: 1000)".to_string()),
+        },
+    );
 
     OpenAiTool::Function(ResponsesApiTool {
         name: "read_file".to_string(),
-        description: "Read the contents of a file".to_string(),
+        description: "Read the contents of a file with optional line range specification".to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,

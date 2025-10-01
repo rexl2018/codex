@@ -79,6 +79,8 @@ pub trait UniversalFunctionExecutor: Send + Sync {
     async fn execute_read_file(
         &self,
         file_path: String,
+        line_offset: Option<usize>,
+        line_num: Option<usize>,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload;
 
@@ -337,6 +339,10 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         #[derive(Deserialize)]
         struct ReadFileArgs {
             file_path: String,
+            #[serde(default)]
+            line_offset: Option<usize>,
+            #[serde(default)]
+            line_num: Option<usize>,
         }
 
         let args = match serde_json::from_str::<ReadFileArgs>(&arguments) {
@@ -350,9 +356,9 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             }
         };
 
-        debug!("Reading file: {}", args.file_path);
+        debug!("Reading file: {} (offset: {:?}, lines: {:?})", args.file_path, args.line_offset, args.line_num);
         self.executor
-            .execute_read_file(args.file_path, context)
+            .execute_read_file(args.file_path, args.line_offset, args.line_num, context)
             .await
     }
 
@@ -483,6 +489,8 @@ mod tests {
         async fn execute_read_file(
             &self,
             _file_path: String,
+            _line_offset: Option<usize>,
+            _line_num: Option<usize>,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
             FunctionCallOutputPayload {

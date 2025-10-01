@@ -227,7 +227,116 @@ impl CodexFunctionExecutor {
         }
     }
 
-    /// Read file content with size limits and validation
+    /// Read file content with line range support
+    async fn read_file_content_with_range(
+        &self,
+        file_path: &str,
+        line_offset: Option<usize>,
+        line_num: Option<usize>,
+    ) -> UnifiedResult<(String, usize, usize, usize)> {
+        let path = self.validate_file_path(file_path)?;
+
+        // Check if file exists
+        if !path.exists() {
+            return Err(UnifiedError::file_system(
+                FileSystemOperation::Read,
+                file_path,
+                "File not found",
+                FileSystemErrorCode::FileNotFound,
+            ));
+        }
+
+        // Check if it's a file (not a directory)
+        if !path.is_file() {
+            return Err(UnifiedError::file_system(
+                FileSystemOperation::Read,
+                file_path,
+                "Path is not a file",
+                FileSystemErrorCode::NotAFile,
+            ));
+        }
+
+        // Check file size
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                return Err(UnifiedError::file_system(
+                    FileSystemOperation::Read,
+                    file_path,
+                    format!("Failed to read file metadata: {}", e),
+                    FileSystemErrorCode::IoError,
+                ));
+            }
+        };
+
+        const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
+        if metadata.len() > MAX_FILE_SIZE {
+            return Err(UnifiedError::file_system(
+                FileSystemOperation::Read,
+                file_path,
+                format!(
+                    "File too large: {} bytes (max: {} bytes)",
+                    metadata.len(),
+                    MAX_FILE_SIZE
+                ),
+                FileSystemErrorCode::FileTooLarge,
+            ));
+        }
+
+        // Read file content
+        let full_content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) => {
+                error!("Failed to read file {}: {}", file_path, e);
+                return Err(UnifiedError::file_system(
+                    FileSystemOperation::Read,
+                    file_path,
+                    format!("Failed to read file: {}", e),
+                    FileSystemErrorCode::IoError,
+                ));
+            }
+        };
+
+        // Split content into lines
+        let lines: Vec<&str> = full_content.lines().collect();
+        let total_lines = lines.len();
+
+        // Apply defaults for line_offset and line_num
+        let offset = line_offset.unwrap_or(0);
+        let num_lines = line_num.unwrap_or(1000);
+
+        // Validate offset
+        if offset >= total_lines {
+            return Err(UnifiedError::file_system(
+                FileSystemOperation::Read,
+                file_path,
+                format!("Line offset {} exceeds file length {} lines", offset, total_lines),
+                FileSystemErrorCode::InvalidPath,
+            ));
+        }
+
+        // Calculate actual range
+        let start_line = offset + 1; // Convert to 1-based for display
+        let end_index = std::cmp::min(offset + num_lines, total_lines);
+        let end_line = end_index; // 1-based for display
+
+        // Extract the requested lines
+        let selected_lines = &lines[offset..end_index];
+        let content = selected_lines.join("\n");
+
+        debug!(
+            "Successfully read file: {} (lines {}-{} of {} total, {} bytes)",
+            file_path,
+            start_line,
+            end_line,
+            total_lines,
+            content.len()
+        );
+
+        Ok((content, total_lines, start_line, end_line))
+    }
+
+    /// Read file content with size limits and validation (legacy method)
     async fn read_file_content(&self, file_path: &str) -> UnifiedResult<String> {
         let path = self.validate_file_path(file_path)?;
 
@@ -458,16 +567,23 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
     async fn execute_read_file(
         &self,
         file_path: String,
+        line_offset: Option<usize>,
+        line_num: Option<usize>,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_read_file")
             .with_info("file_path", &file_path)
+            .with_info("line_offset", &format!("{:?}", line_offset))
+            .with_info("line_num", &format!("{:?}", line_num))
             .with_info("agent_type", &format!("{:?}", context.agent_type));
 
-        match self.read_file_content(&file_path).await {
-            Ok(content) => FunctionCallOutputPayload {
-                content: format!("File content of '{}':\n\n{}", file_path, content),
+        match self.read_file_content_with_range(&file_path, line_offset, line_num).await {
+            Ok((content, total_lines, start_line, end_line)) => FunctionCallOutputPayload {
+                content: format!(
+                    "File content of '{}' (lines {}-{} of {} total lines):\n\n{}",
+                    file_path, start_line, end_line, total_lines, content
+                ),
                 success: Some(true),
             },
             Err(error) => {

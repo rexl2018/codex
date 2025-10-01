@@ -402,6 +402,8 @@ mod tests {
         async fn execute_read_file(
             &self,
             _file_path: String,
+            _line_offset: Option<usize>,
+            _line_num: Option<usize>,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
             FunctionCallOutputPayload {
@@ -465,6 +467,28 @@ mod tests {
         ) -> FunctionCallOutputPayload {
             FunctionCallOutputPayload {
                 content: "mcp tool executed".to_string(),
+                success: Some(true),
+            }
+        }
+
+        async fn execute_apply_patch(
+            &self,
+            _arguments: String,
+            _context: &UniversalFunctionCallContext,
+        ) -> FunctionCallOutputPayload {
+            FunctionCallOutputPayload {
+                content: "patch applied".to_string(),
+                success: Some(true),
+            }
+        }
+
+        async fn execute_update_plan(
+            &self,
+            _arguments: String,
+            _context: &UniversalFunctionCallContext,
+        ) -> FunctionCallOutputPayload {
+            FunctionCallOutputPayload {
+                content: "plan updated".to_string(),
                 success: Some(true),
             }
         }
