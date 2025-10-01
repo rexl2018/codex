@@ -64,7 +64,9 @@ Each operation starts with one of three headers:
 *** Update File: <path> - patch an existing file in place (optionally with a rename).
 
 May be immediately followed by *** Move to: <new path> if you want to rename the file.
-Then one or more “hunks”, each introduced by @@ (optionally followed by a hunk header).
+Then one or more "hunks", each introduced by @@ optionally followed by a context identifier.
+The @@ line can specify a context like a function name, class name, or unique line to help locate the change.
+If @@ is empty, the tool will search globally for the pattern.
 Within a hunk each line starts with:
 
 For instructions on [context_before] and [context_after]:
@@ -114,7 +116,8 @@ It is important to remember:
 
 - You must include a header with your intended action (Add/Delete/Update)
 - You must prefix new lines with `+` even when creating a new file
-- File references can only be relative, NEVER ABSOLUTE.
+- File references can only be relative, NEVER ABSOLUTE
+- Use @@ with context identifiers (like @@ function_name) for precise location, or empty @@ for global search
 "#
         .to_string(),
         strict: false,

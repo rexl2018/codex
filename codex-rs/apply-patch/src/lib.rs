@@ -686,8 +686,13 @@ fn compute_replacements(
     for chunk in chunks {
         // If a chunk has a `change_context`, we use seek_sequence to find it, then
         // adjust our `line_index` to continue from there.
+        // However, if the context line is empty (just "@@"), we treat it as no context
+        // and skip the context search to allow global searching.
         if let Some(ctx_line) = &chunk.change_context {
-            if let Some(idx) = seek_sequence::seek_sequence(
+            if ctx_line.trim().is_empty() {
+                // Empty @@ - skip context search and continue with global search
+                // This allows for more flexible patch application
+            } else if let Some(idx) = seek_sequence::seek_sequence(
                 original_lines,
                 std::slice::from_ref(ctx_line),
                 line_index,
@@ -695,10 +700,22 @@ fn compute_replacements(
             ) {
                 line_index = idx + 1;
             } else {
+                let file_preview = if original_lines.len() <= 10 {
+                    original_lines.join("\n")
+                } else {
+                    format!(
+                        "{}...\n[{} more lines]",
+                        original_lines[..5].join("\n"),
+                        original_lines.len() - 5
+                    )
+                };
+                
                 return Err(ApplyPatchError::ComputeReplacements(format!(
-                    "Failed to find context '{}' in {}",
+                    "Failed to find context line '{}' in {}\n\nFile content:\n{}\n\nSearching from line {} onwards",
                     ctx_line,
-                    path.display()
+                    path.display(),
+                    file_preview,
+                    line_index + 1
                 )));
             }
         }
@@ -752,10 +769,30 @@ fn compute_replacements(
             replacements.push((start_idx, pattern.len(), new_slice.to_vec()));
             line_index = start_idx + pattern.len();
         } else {
+            let file_preview = if original_lines.len() <= 15 {
+                original_lines.join("\n")
+            } else {
+                let start_context = if line_index >= 5 { line_index - 5 } else { 0 };
+                let end_context = std::cmp::min(line_index + 10, original_lines.len());
+                format!(
+                    "{}...\n[Lines {}-{}]\n{}...",
+                    if start_context > 0 { 
+                        format!("[{} lines before]\n", start_context)
+                    } else { 
+                        String::new() 
+                    },
+                    start_context + 1,
+                    end_context,
+                    original_lines[start_context..end_context].join("\n")
+                )
+            };
+            
             return Err(ApplyPatchError::ComputeReplacements(format!(
-                "Failed to find expected lines in {}:\n{}",
+                "Failed to find expected lines in {}\n\nExpected to find:\n{}\n\nActual file content around line {}:\n{}",
                 path.display(),
                 chunk.old_lines.join("\n"),
+                line_index + 1,
+                file_preview
             )));
         }
     }
@@ -1602,6 +1639,36 @@ g
                 cwd: session_dir.path().to_path_buf(),
             })
         );
+    }
+
+    #[test]
+    fn test_empty_context_line_allows_global_search() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        fs::write(&path, "hello, worldhello, world!\nhello, world 2\nhello, world 2.5\n").unwrap();
+        
+        // Test with empty @@ - should work with global search
+        let patch = wrap_patch(&format!(
+            r#"*** Update File: {}
+@@ 
+ hello, world 2.5
++hello, world"#,
+            path.display()
+        ));
+        
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        apply_patch(&patch, &mut stdout, &mut stderr).unwrap();
+        
+        let contents = fs::read_to_string(&path).unwrap();
+        assert_eq!(contents, "hello, worldhello, world!\nhello, world 2\nhello, world 2.5\nhello, world\n");
+        
+        let stdout_str = String::from_utf8(stdout).unwrap();
+        let expected_out = format!(
+            "Success. Updated the following files:\nM {}\n",
+            path.display()
+        );
+        assert_eq!(stdout_str, expected_out);
     }
 
     #[test]
