@@ -752,17 +752,22 @@ impl LLMSubagentExecutor {
 
             if func_call.name == "shell" {
                 // Shell tool: send ExecCommandBegin with parsed command
-                let command_str = parsed_args_json
+                // Accept both string and array forms for the 'command' argument
+                let command_tokens: Vec<String> = match parsed_args_json
                     .as_ref()
-                    .and_then(|v| v.get("command").and_then(|c| c.as_str()))
-                    .unwrap_or("")
-                    .to_string();
-                let command_vec = if command_str.is_empty() {
-                    vec!["".to_string()]
-                } else {
-                    vec![command_str.clone()]
+                    .and_then(|v| v.get("command"))
+                {
+                    Some(serde_json::Value::String(s)) => {
+                        // Split the shell string into tokens; fallback to single token if split fails
+                        shlex::split(s).unwrap_or_else(|| vec![s.clone()])
+                    }
+                    Some(serde_json::Value::Array(arr)) => arr
+                        .iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                        .collect(),
+                    _ => Vec::new(),
                 };
-                let parsed_cmd = parse_command(&command_vec)
+                let parsed_cmd = parse_command(&command_tokens)
                     .into_iter()
                     .map(Into::into)
                     .collect();
@@ -770,7 +775,7 @@ impl LLMSubagentExecutor {
                     id: task.task_id.clone(),
                     msg: EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
                         call_id: func_call.call_id.clone(),
-                        command: command_vec,
+                        command: command_tokens,
                         cwd: std::path::PathBuf::from("."),
                         parsed_cmd,
                     }),
