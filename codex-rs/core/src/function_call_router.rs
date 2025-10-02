@@ -437,6 +437,19 @@ mod tests {
             }
         }
 
+        async fn execute_update_context(
+            &self,
+            _id: String,
+            _content: String,
+            _reason: String,
+            _context: &UniversalFunctionCallContext,
+        ) -> FunctionCallOutputPayload {
+            FunctionCallOutputPayload {
+                content: "context updated".to_string(),
+                success: Some(true),
+            }
+        }
+
         async fn execute_create_subagent_task(
             &self,
             _arguments: String,

@@ -578,6 +578,43 @@ pub(crate) fn create_store_context_tool() -> OpenAiTool {
     })
 }
 
+pub(crate) fn create_update_context_tool() -> OpenAiTool {
+    let mut properties = BTreeMap::new();
+    properties.insert(
+        "id".to_string(),
+        JsonSchema::String {
+            description: Some("Unique identifier of the context to update".to_string()),
+        },
+    );
+    properties.insert(
+        "content".to_string(),
+        JsonSchema::String {
+            description: Some("New content to replace the existing context content".to_string()),
+        },
+    );
+    properties.insert(
+        "reason".to_string(),
+        JsonSchema::String {
+            description: Some("Reason for updating the context".to_string()),
+        },
+    );
+
+    OpenAiTool::Function(ResponsesApiTool {
+        name: "update_context".to_string(),
+        description: "Update the content of an existing context item".to_string(),
+        strict: false,
+        parameters: JsonSchema::Object {
+            properties,
+            required: Some(vec![
+                "id".to_string(),
+                "content".to_string(),
+                "reason".to_string(),
+            ]),
+            additional_properties: Some(false),
+        },
+    })
+}
+
 pub(crate) fn create_list_contexts_tool() -> OpenAiTool {
     OpenAiTool::Function(ResponsesApiTool {
         name: "list_contexts".to_string(),

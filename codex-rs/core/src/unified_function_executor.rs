@@ -468,6 +468,56 @@ impl CodexFunctionExecutor {
         }
     }
 
+    /// Update context using the context repository
+    async fn update_context_item(
+        &self,
+        id: &str,
+        content: &str,
+        reason: &str,
+    ) -> UnifiedResult<String> {
+        // Validate context ID
+        if id.is_empty() {
+            return Err(UnifiedError::context(
+                ContextOperation::Update,
+                Some(id.to_string()),
+                "Context ID cannot be empty",
+                ContextErrorCode::InvalidContextId,
+            ));
+        }
+
+        // Validate content size
+        const MAX_CONTEXT_SIZE: usize = 1024 * 1024; // 1MB
+        if content.len() > MAX_CONTEXT_SIZE {
+            return Err(UnifiedError::context(
+                ContextOperation::Update,
+                Some(id.to_string()),
+                format!(
+                    "Context content too large: {} bytes (max: {} bytes)",
+                    content.len(),
+                    MAX_CONTEXT_SIZE
+                ),
+                ContextErrorCode::ContentTooLarge,
+            ));
+        }
+
+        // Update context
+        match self.context_repository.update_context(id, content.to_string(), reason.to_string()).await {
+            Ok(()) => {
+                info!("Successfully updated context: {} - {}", id, reason);
+                Ok(format!("Context updated successfully: {} - {}", id, reason))
+            }
+            Err(e) => {
+                error!("Failed to update context {}: {}", id, e);
+                Err(UnifiedError::context(
+                    ContextOperation::Update,
+                    Some(id.to_string()),
+                    format!("Failed to update context: {}", e),
+                    ContextErrorCode::ContextNotFound,
+                ))
+            }
+        }
+    }
+
     /// Store context using the context repository
     async fn store_context_item(
         &self,
@@ -634,6 +684,33 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             .with_info("agent_type", &format!("{:?}", context.agent_type));
 
         match self.store_context_item(&id, &summary, &content, context).await {
+            Ok(result) => FunctionCallOutputPayload {
+                content: result,
+                success: Some(true),
+            },
+            Err(error) => {
+                GLOBAL_ERROR_HANDLER
+                    .handle_error(error, Some(error_context), Some(context.call_id.clone()))
+                    .await
+            }
+        }
+    }
+
+    async fn execute_update_context(
+        &self,
+        id: String,
+        content: String,
+        reason: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        let error_context = ErrorContext::new("CodexFunctionExecutor")
+            .with_function("execute_update_context")
+            .with_info("context_id", &id)
+            .with_info("content_length", &content.len().to_string())
+            .with_info("reason", &reason)
+            .with_info("agent_type", &format!("{:?}", context.agent_type));
+
+        match self.update_context_item(&id, &content, &reason).await {
             Ok(result) => FunctionCallOutputPayload {
                 content: result,
                 success: Some(true),

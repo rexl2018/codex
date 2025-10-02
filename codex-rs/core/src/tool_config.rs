@@ -336,6 +336,24 @@ impl UnifiedToolConfig {
                 required_permissions: vec![Permission::StoreContext],
             },
             ToolDefinition {
+                name: "update_context".to_string(),
+                description: "Update the content of an existing context item".to_string(),
+                tool_type: ToolType::Context,
+                enabled: true,
+                config: ToolSpecificConfig {
+                    shell: None,
+                    filesystem: None,
+                    context: Some(ContextToolConfig {
+                        max_contexts: Some(100),
+                        max_content_size_bytes: Some(1024 * 1024), // 1MB
+                        enable_search: true,
+                    }),
+                    mcp: None,
+                    custom: None,
+                },
+                required_permissions: vec![Permission::StoreContext],
+            },
+            ToolDefinition {
                 name: "update_plan".to_string(),
                 description: "Update the task plan with steps and status".to_string(),
                 tool_type: ToolType::Custom("plan".to_string()),

@@ -99,6 +99,14 @@ pub trait UniversalFunctionExecutor: Send + Sync {
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload;
 
+    async fn execute_update_context(
+        &self,
+        id: String,
+        content: String,
+        reason: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload;
+
     async fn execute_create_subagent_task(
         &self,
         arguments: String,
@@ -144,6 +152,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         supported_functions.insert("read_file".to_string(), true);
         supported_functions.insert("write_file".to_string(), true);
         supported_functions.insert("store_context".to_string(), true);
+        supported_functions.insert("update_context".to_string(), true);
         supported_functions.insert("create_subagent_task".to_string(), true);
         supported_functions.insert("resume_subagent".to_string(), true);
         supported_functions.insert("apply_patch".to_string(), true);
@@ -198,6 +207,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             "read_file" => self.handle_read_file_call(arguments, &context).await,
             "write_file" => self.handle_write_file_call(arguments, &context).await,
             "store_context" => self.handle_store_context_call(arguments, &context).await,
+            "update_context" => self.handle_update_context_call(arguments, &context).await,
             "create_subagent_task" => {
                 self.handle_create_subagent_task_call(arguments, &context)
                     .await
@@ -423,6 +433,35 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             .await
     }
 
+    async fn handle_update_context_call(
+        &self,
+        arguments: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        #[derive(Deserialize)]
+        struct UpdateContextArgs {
+            id: String,
+            content: String,
+            reason: String,
+        }
+
+        let args = match serde_json::from_str::<UpdateContextArgs>(&arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                error!("Failed to parse update_context arguments: {}", e);
+                return FunctionCallOutputPayload {
+                    content: format!("Failed to parse function arguments: {}", e),
+                    success: Some(false),
+                };
+            }
+        };
+
+        debug!("Updating context: {} - {}", args.id, args.reason);
+        self.executor
+            .execute_update_context(args.id, args.content, args.reason, context)
+            .await
+    }
+
     async fn handle_create_subagent_task_call(
         &self,
         arguments: String,
@@ -520,6 +559,19 @@ mod tests {
         ) -> FunctionCallOutputPayload {
             FunctionCallOutputPayload {
                 content: "context stored".to_string(),
+                success: Some(true),
+            }
+        }
+
+        async fn execute_update_context(
+            &self,
+            _id: String,
+            _content: String,
+            _reason: String,
+            _context: &UniversalFunctionCallContext,
+        ) -> FunctionCallOutputPayload {
+            FunctionCallOutputPayload {
+                content: "context updated".to_string(),
                 success: Some(true),
             }
         }

@@ -102,6 +102,7 @@ impl ToolFactory for ContextToolFactory {
 
         match definition.name.as_str() {
             "store_context" => Ok(crate::openai_tools::create_store_context_tool()),
+            "update_context" => Ok(crate::openai_tools::create_update_context_tool()),
             "list_contexts" => Ok(crate::openai_tools::create_list_contexts_tool()),
             "multi_retrieve_contexts" => Ok(crate::openai_tools::create_multi_retrieve_contexts_tool()),
             _ => Err(format!("Unknown context tool: {}", definition.name)),
@@ -277,6 +278,7 @@ impl ToolRegistry {
         factories.insert("read_file".to_string(), Box::new(FileSystemToolFactory));
         factories.insert("write_file".to_string(), Box::new(FileSystemToolFactory));
         factories.insert("store_context".to_string(), Box::new(ContextToolFactory));
+        factories.insert("update_context".to_string(), Box::new(ContextToolFactory));
         factories.insert("list_contexts".to_string(), Box::new(ContextToolFactory));
         factories.insert("multi_retrieve_contexts".to_string(), Box::new(ContextToolFactory));
         factories.insert("create_subagent_task".to_string(), Box::new(SubagentToolFactory));
