@@ -4,7 +4,7 @@
 //! configured server (keyed by the *server name*). It offers convenience
 //! helpers to query the available tools across *all* servers and returns them
 //! in a single aggregated map using the fully-qualified tool name
-//! `"<server><MCP_TOOL_NAME_DELIMITER><tool>"` as the key.
+//! "<server><MCP_TOOL_NAME_DELIMITER><tool>" as the key.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -501,5 +501,44 @@ mod tests {
         // Test 6: Non-existent tool (should not match)
         assert_eq!(manager.parse_tool_name("NonExistent"), None);
         assert_eq!(manager.parse_tool_name("NonExistent:0"), None);
+    }
+
+    #[tokio::test]
+    async fn test_mcp_handshake_and_tool_discovery_with_codex_server() {
+        use crate::config_types::McpServerConfig;
+        use std::collections::HashMap;
+
+        // Configure a single MCP server using the workspace binary
+        let mut servers: HashMap<String, McpServerConfig> = HashMap::new();
+        servers.insert(
+            "codex".to_string(),
+            McpServerConfig {
+                command: "codex-mcp-server".to_string(),
+                args: Vec::new(),
+                env: None,
+                startup_timeout_ms: Some(10_000),
+            },
+        );
+
+        // Spawn the connection manager and perform initialization + tools/list
+        let (mgr, failures) = McpConnectionManager::new(servers)
+            .await
+            .expect("MCP manager should initialize");
+        assert!(failures.is_empty(), "No MCP server should fail to start: {failures:?}");
+
+        // Aggregate and qualify tools (should include codex and codex-reply)
+        let tools = mgr.list_all_tools();
+        assert!(!tools.is_empty(), "Expected tools from MCP server");
+
+        // Fully-qualified names are server__tool
+        assert!(tools.contains_key("codex__codex"), "Missing codex tool");
+        assert!(tools.contains_key("codex__codex-reply"), "Missing codex-reply tool");
+
+        // parse_tool_name can resolve bare tool names returned by providers
+        let parsed = mgr.parse_tool_name("codex__codex");
+        assert_eq!(parsed, Some(("codex".to_string(), "codex".to_string())));
+
+        let parsed_short = mgr.parse_tool_name("codex");
+        assert_eq!(parsed_short, Some(("codex".to_string(), "codex".to_string())));
     }
 }

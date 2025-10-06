@@ -1,5 +1,4 @@
-// Aggregates all former standalone integration tests as modules.
-
+mod apply_patch_tool;
 mod cli_stream;
 mod client;
 mod compact;
@@ -7,8 +6,9 @@ mod compact_resume_fork;
 mod exec;
 mod exec_stream_events;
 mod fork_conversation;
-mod live_cli;
+mod mcp_pipeline;
 mod model_overrides;
+mod plan_tool;
 mod prompt_caching;
 mod review;
 mod rollout_list_find;
