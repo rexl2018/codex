@@ -669,7 +669,7 @@ async fn run_turn(
                     Ok(recent_tasks) => {
                         if let Some(recent_task) = recent_tasks.first() {
                             Some(format!(
-                                "A {:?} subagent has completed the task: '{}' (ID: {}). If you need more information, you can use 'list_contexts' to see available analysis results, then 'multi_retrieve_contexts' to get the detailed findings. If you have sufficient information, you can decide what to do next: summarize and complete this task, or create a new subagent for additional work.\n\n⚠️ IMPORTANT: When creating new subagents, always review the available context items and include relevant context IDs in the 'context_refs' parameter to provide background knowledge to the subagent.",
+                                "A {:?} subagent has completed the task: '{}' (ID: {}). The subagent has created context items with the results. Use 'list_contexts' and 'multi_retrieve_contexts' to get the detailed findings. Based on the user's original request, decide whether to: 1) Present specific deliverables directly (like Mermaid diagrams, code, documents) if the user asked for concrete products, together with very short summary, or 2) Provide a comprehensive summary if the user asked for analysis or understanding. Always retrieve the context items first to see what was actually created.\nIMPORTANT: When creating new subagents, always review the available context items and include relevant context IDs in the 'context_refs' parameter to provide background knowledge to the subagent.",
                                 recent_task.agent_type, recent_task.title, recent_task.task_id
                             ))
                         } else {
