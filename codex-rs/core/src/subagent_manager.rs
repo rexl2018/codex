@@ -998,3 +998,15 @@ mod tests {
         assert_eq!(active_tasks[0].title, "Active Task");
     }
 }
+
+impl ExecutorType {
+    /// Helper for tests to construct LLM executor without MCP dependencies.
+    /// This avoids exposing private McpConnectionManager type to integration tests.
+    pub fn llm_for_testing(model_client: Arc<ModelClient>) -> Self {
+        ExecutorType::LLM {
+            model_client,
+            mcp_tools: None,
+            mcp_connection_manager: None,
+        }
+    }
+}
