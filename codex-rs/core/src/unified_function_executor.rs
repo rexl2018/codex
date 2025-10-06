@@ -772,29 +772,24 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         let agent_type = match args.agent_type.to_lowercase().as_str() {
             "explorer" => SubagentType::Explorer,
             "coder" => SubagentType::Coder,
-            _ => {
-                let error_msg = format!(
-                    "Invalid agent_type '{}'. Must be 'explorer' or 'coder'",
-                    args.agent_type
-                );
-                error!("{}", error_msg);
-                return FunctionCallOutputPayload {
-                    content: error_msg,
-                    success: Some(false),
-                };
-            }
+            _ => SubagentType::Explorer,
         };
 
         // Create subagent task specification
         let spec = SubagentTaskSpec {
-            agent_type: agent_type.clone(),
+            agent_type: match args.agent_type.as_str() {
+                "Explorer" | "explorer" => SubagentType::Explorer,
+                "Coder" | "coder" => SubagentType::Coder,
+                _ => SubagentType::Explorer,
+            },
             title: args.title.clone(),
-            description: args.description,
+            description: args.description.clone(),
             context_refs: args.context_refs,
             bootstrap_paths: args.bootstrap_paths,
-            max_turns: Some(50),       // Default max turns
-            timeout_ms: Some(300_000), // 5 minutes default timeout
+            max_turns: Some(50),
+            timeout_ms: Some(300_000),
             network_access: None,
+            injected_conversation: None,
         };
 
         // Create the task

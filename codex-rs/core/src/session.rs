@@ -297,6 +297,7 @@ impl Session {
                 model_reasoning_summary,
                 conversation_id,
             ));
+            // Revert: keep passing rollout_path to with_state_manager (method signature updated earlier)
             let subagent_manager = Arc::new(InMemorySubagentManager::with_state_manager(
                 context_repo.clone(),
                 event_tx,
@@ -304,9 +305,10 @@ impl Session {
                     model_client,
                     mcp_tools: Some(mcp_connection_manager_arc.list_all_tools()),
                     mcp_connection_manager: Some(mcp_connection_manager_arc.clone()),
-                }, // Use LLM executor for production with MCP tools
+                },
                 state_manager.clone(),
                 main_agent_event_tx.clone(),
+                rollout_path.clone(),
             ));
 
             // Create a separate event channel for the completion tracker

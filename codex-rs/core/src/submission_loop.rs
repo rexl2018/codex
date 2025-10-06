@@ -388,6 +388,7 @@ pub(crate) async fn original_submission_loop(
                         max_turns: None,
                         timeout_ms: None,
                         network_access: None, // TODO: Pass network access from turn context
+                        injected_conversation: None, // added
                     };
 
                     match components.subagent_manager.create_task(spec).await {

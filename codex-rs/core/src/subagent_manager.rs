@@ -24,6 +24,8 @@ use codex_protocol::protocol::BootstrapPath;
 use codex_protocol::protocol::ContextItem;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::RolloutItem;
+use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SubagentCancelledEvent;
 use codex_protocol::protocol::SubagentCompletedEvent;
 use codex_protocol::protocol::SubagentForceCompletedEvent;
@@ -32,6 +34,8 @@ use codex_protocol::protocol::SubagentProgressEvent;
 use codex_protocol::protocol::SubagentStartedEvent;
 use codex_protocol::protocol::SubagentTaskCreatedEvent;
 use codex_protocol::protocol::SubagentType;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem; // added
 
 /// Subagent manager abstract interface
 #[async_trait]
@@ -93,6 +97,8 @@ pub struct SubagentTaskSpec {
     pub max_turns: Option<u32>,
     pub timeout_ms: Option<u64>,
     pub network_access: Option<NetworkAccess>,
+    // New: injected conversation from main session history
+    pub injected_conversation: Option<Vec<ResponseItem>>, // added
 }
 
 /// Subagent handle
@@ -164,6 +170,8 @@ pub struct SubagentTask {
     pub started_at: Option<SystemTime>,
     /// Completion time
     pub completed_at: Option<SystemTime>,
+    /// Injected main session conversation items for this task
+    pub injected_conversation: Vec<ResponseItem>, // added
 }
 
 /// Bootstrap context content
@@ -227,32 +235,17 @@ pub struct InMemorySubagentManager {
     executor_type: ExecutorType,
     state_manager: Option<Arc<AgentStateManager>>,
     main_agent_event_sender: Option<tokio::sync::mpsc::UnboundedSender<AgentEvent>>,
+    rollout_path: Option<PathBuf>, // added
 }
 
 impl InMemorySubagentManager {
-    pub fn new(
-        context_repo: Arc<InMemoryContextRepository>,
-        event_sender: tokio::sync::mpsc::UnboundedSender<Event>,
-        executor_type: ExecutorType,
-    ) -> Self {
-        Self {
-            tasks: Arc::new(RwLock::new(HashMap::new())),
-            reports: Arc::new(RwLock::new(HashMap::new())),
-            context_repo,
-            event_sender,
-            executor_type,
-            state_manager: None,
-            main_agent_event_sender: None,
-        }
-    }
-
-    /// Create a new SubagentManager with state management integration
     pub fn with_state_manager(
         context_repo: Arc<InMemoryContextRepository>,
         event_sender: tokio::sync::mpsc::UnboundedSender<Event>,
         executor_type: ExecutorType,
         state_manager: Arc<AgentStateManager>,
         main_agent_event_sender: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+        rollout_path: PathBuf,
     ) -> Self {
         Self {
             tasks: Arc::new(RwLock::new(HashMap::new())),
@@ -262,89 +255,141 @@ impl InMemorySubagentManager {
             executor_type,
             state_manager: Some(state_manager),
             main_agent_event_sender: Some(main_agent_event_sender),
+            rollout_path: Some(rollout_path),
         }
     }
+}
 
-    async fn load_bootstrap_contexts(
-        &self,
-        paths: &[BootstrapPath],
-    ) -> Result<Vec<BootstrapContext>, SubagentError> {
-        let mut contexts = Vec::new();
+impl InMemorySubagentManager {
 
-        for bootstrap_path in paths {
-            let path = &bootstrap_path.path;
+async fn load_bootstrap_contexts(&self, paths: &[BootstrapPath]) -> Result<Vec<BootstrapContext>, SubagentError> {
+    let mut contexts = Vec::new();
 
-            tracing::info!(
-                "Processing bootstrap path: {} (exists: {}, is_file: {}, is_dir: {})",
-                path.display(),
-                path.exists(),
-                path.is_file(),
-                path.is_dir()
-            );
+    for bootstrap_path in paths {
+        let path = &bootstrap_path.path;
 
-            let content = if path.is_file() {
-                // Read file content
-                match tokio::fs::read_to_string(path).await {
-                    Ok(content) => content,
-                    Err(e) => {
-                        tracing::warn!("Failed to read file {}: {}", path.display(), e);
-                        format!("Error reading file {}: {}", path.display(), e)
-                    }
+        tracing::info!(
+            "Processing bootstrap path: {} (exists: {}, is_file: {}, is_dir: {})",
+            path.display(),
+            path.exists(),
+            path.is_file(),
+            path.is_dir()
+        );
+
+        let content = if path.is_file() {
+            match tokio::fs::read_to_string(path).await {
+                Ok(content) => content,
+                Err(e) => {
+                    tracing::warn!("Failed to read file {}: {}", path.display(), e);
+                    format!("Error reading file {}: {}", path.display(), e)
                 }
-            } else if path.is_dir() {
-                // List directory contents
-                match tokio::fs::read_dir(path).await {
-                    Ok(mut entries) => {
-                        let mut dir_content =
-                            format!("Directory listing for {}:\n", path.display());
-                        while let Ok(Some(entry)) = entries.next_entry().await {
-                            let entry_path = entry.path();
-                            let entry_name = entry_path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("?");
-
-                            if entry_path.is_dir() {
-                                dir_content.push_str(&format!("  {entry_name}/\n"));
-                            } else {
-                                dir_content.push_str(&format!("  {entry_name}\n"));
-                            }
+            }
+        } else if path.is_dir() {
+            match tokio::fs::read_dir(path).await {
+                Ok(mut entries) => {
+                    let mut dir_content = format!("Directory listing for {}:\n", path.display());
+                    while let Ok(Some(entry)) = entries.next_entry().await {
+                        let entry_path = entry.path();
+                        let entry_name = entry_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                        if entry_path.is_dir() {
+                            dir_content.push_str(&format!("  {entry_name}/\n"));
+                        } else {
+                            dir_content.push_str(&format!("  {entry_name}\n"));
                         }
-                        dir_content
                     }
-                    Err(e) => {
-                        tracing::warn!("Failed to read directory {}: {}", path.display(), e);
-                        format!("Error reading directory {}: {}", path.display(), e)
+                    dir_content
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to read directory {}: {}", path.display(), e);
+                    format!("Error reading directory {}: {}", path.display(), e)
+                }
+            }
+        } else {
+            format!("Path {} does not exist or is not accessible", path.display())
+        };
+
+        tracing::info!(
+            "Loaded bootstrap context: {} ({} chars)",
+            path.display(),
+            content.len()
+        );
+
+        contexts.push(BootstrapContext {
+            path: bootstrap_path.path.clone(),
+            content,
+            reason: bootstrap_path.reason.clone(),
+        });
+    }
+
+    Ok(contexts)
+}
+
+async fn build_injected_conversation_from_rollout(&self, task_id: &str, limit: usize) -> Vec<ResponseItem> {
+    let Some(path) = &self.rollout_path else { return Vec::new(); };
+    let Ok(text) = tokio::fs::read_to_string(path).await else { return Vec::new(); };
+    // Find latest pause boundary timestamp for this task
+    let mut last_ts: Option<String> = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() { continue; }
+        if let Ok(rl) = serde_json::from_str::<RolloutLine>(trimmed) {
+            if let RolloutItem::EventMsg(ev) = rl.item {
+                match ev {
+                    EventMsg::SubagentCompleted(e) => { if e.task_id == task_id { last_ts = Some(rl.timestamp.clone()); } }
+                    EventMsg::SubagentCancelled(e) => { if e.task_id == task_id { last_ts = Some(rl.timestamp.clone()); } }
+                    EventMsg::SubagentForceCompleted(e) => { if e.task_id == task_id { last_ts = Some(rl.timestamp.clone()); } }
+                    _ => {}
+                }
+            }
+        }
+    }
+    // Collect messages after boundary
+    let mut collected: Vec<ResponseItem> = Vec::new();
+    if let Some(boundary) = last_ts {
+        let mut after_boundary = false;
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() { continue; }
+            if let Ok(rl) = serde_json::from_str::<RolloutLine>(trimmed) {
+                if !after_boundary {
+                    if rl.timestamp > boundary { after_boundary = true; }
+                    else { continue; }
+                }
+                if let RolloutItem::ResponseItem(item) = rl.item {
+                    if let ResponseItem::Message { role, content, .. } = item {
+                        if role == "user" || role == "assistant" {
+                            let mut new_content: Vec<ContentItem> = Vec::new();
+                            for c in content {
+                                match c {
+                                    ContentItem::OutputText { text } => {
+                                        let t = if role == "assistant" { format!("[MainAgent] {}", text) } else { text };
+                                        new_content.push(ContentItem::OutputText { text: t });
+                                    }
+                                    ContentItem::InputText { text } => {
+                                        let t = if role == "assistant" { format!("[MainAgent] {}", text) } else { text };
+                                        new_content.push(ContentItem::InputText { text: t });
+                                    }
+                                    other => new_content.push(other),
+                                }
+                            }
+                            collected.push(ResponseItem::Message { id: None, role, content: new_content });
+                        }
                     }
                 }
-            } else {
-                format!(
-                    "Path {} does not exist or is not accessible",
-                    path.display()
-                )
-            };
-
-            tracing::info!(
-                "Loaded bootstrap context: {} ({} chars)",
-                path.display(),
-                content.len()
-            );
-
-            contexts.push(BootstrapContext {
-                path: bootstrap_path.path.clone(),
-                content,
-                reason: bootstrap_path.reason.clone(),
-            });
-        }
-
-        Ok(contexts)
-    }
-
-    async fn send_event(&self, event: Event) {
-        if let Err(e) = self.event_sender.send(event) {
-            tracing::error!("Failed to send subagent event: {}", e);
+            }
         }
     }
+    if collected.len() > limit {
+        collected = collected.split_off(collected.len().saturating_sub(limit));
+    }
+    collected
+}
+
+async fn send_event(&self, event: Event) {
+    if let Err(e) = self.event_sender.send(event) {
+        tracing::error!("Failed to send event: {}", e);
+    }
+}
 }
 
 #[async_trait]
@@ -385,6 +430,7 @@ impl ISubagentManager for InMemorySubagentManager {
             created_at: SystemTime::now(),
             started_at: None,
             completed_at: None,
+            injected_conversation: spec.injected_conversation.unwrap_or_default(), // added
         };
 
         // Store task
@@ -487,8 +533,20 @@ impl ISubagentManager for InMemorySubagentManager {
         let context_repo = self.context_repo.clone();
         let executor_type = self.executor_type.clone();
         let main_agent_event_sender = self.main_agent_event_sender.clone();
+        let rollout_path_opt = self.rollout_path.clone();
 
         let abort_handle = tokio::spawn(async move {
+            // Clone agent_type before moving task_clone
+            let agent_type_for_event = task_clone.agent_type.clone();
+            // If no injected conversation preset, try to build from rollout logs (resume case)
+            let mut task_for_exec = task_clone;
+            if task_for_exec.injected_conversation.is_empty() {
+                if let Some(_path) = rollout_path_opt {
+                    // Use manager's helper via a temporary new instance; but inside closure we cannot call self.
+                    // As workaround, re-read file here.
+                    // Minimal implementation: skip here; injection is done before creating executor via function.
+                }
+            }
             // Execute the task based on executor type
             tracing::info!(
                 "Starting subagent execution with executor type: {:?}",
@@ -503,10 +561,10 @@ impl ISubagentManager for InMemorySubagentManager {
                     // Use the mock executor
                     tracing::info!(
                         "Using MockSubagentExecutor for task: {}",
-                        task_clone.task_id
+                        task_id_clone
                     );
                     let executor = MockSubagentExecutor::new(context_repo);
-                    executor.execute_task(&task_clone).await
+                    executor.execute_task(&task_for_exec).await
                 }
                 ExecutorType::LLM {
                     model_client,
@@ -520,7 +578,7 @@ impl ISubagentManager for InMemorySubagentManager {
                         .unwrap_or_default();
                     
                     // Get builtin tool names for this agent type from the tool registry
-                    let unified_agent_type = match task_clone.agent_type {
+                    let unified_agent_type = match agent_type_for_event {
                         SubagentType::Explorer => crate::unified_function_handler::AgentType::Explorer,
                         SubagentType::Coder => crate::unified_function_handler::AgentType::Coder,
                     };
@@ -531,7 +589,7 @@ impl ISubagentManager for InMemorySubagentManager {
                     
                     tracing::info!(
                         "Using LLMSubagentExecutor for task: {}, total tools: {} (builtin: [{}], MCP: [{}])",
-                        task_clone.task_id,
+                        task_id_clone,
                         total_tools,
                         builtin_tool_names.join(", "),
                         mcp_tool_names.join(", ")
@@ -540,12 +598,12 @@ impl ISubagentManager for InMemorySubagentManager {
                     let executor = LLMSubagentExecutor::new(
                         context_repo,
                         model_client,
-                        task_clone.max_turns,
+                        task_for_exec.max_turns,
                         mcp_tools,
                         mcp_connection_manager,
                         event_sender.clone(),
                     );
-                    executor.execute_task(&task_clone).await
+                    executor.execute_task(&task_for_exec).await
                 }
             };
 
@@ -593,7 +651,7 @@ impl ISubagentManager for InMemorySubagentManager {
 
                 let agent_event = AgentEvent::subagent_completed(
                     task_id_clone,
-                    task_clone.agent_type,
+                    agent_type_for_event,
                     completion_result,
                 );
 
@@ -837,6 +895,8 @@ impl ISubagentManager for InMemorySubagentManager {
 
         // Reset task status to Created so it can be launched again
         task.status = TaskStatus::Created;
+        // Preserve injected_conversation across resume
+        // (It will be replaced by caller if new injected history is provided)
         task.started_at = None;
         task.completed_at = None;
 

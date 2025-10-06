@@ -13,6 +13,8 @@ use codex_protocol::protocol::{
     InputItem, Submission, Op, SubagentType, BootstrapPath, Event, EventMsg,
     SubagentTaskCreatedEvent, SubagentStartedEvent
 };
+use codex_protocol::models::{ResponseItem, ContentItem}; // added
+use crate::session::MutexExt; // added
 
 pub struct SubAgent {
     session: Arc<Session>,
@@ -128,6 +130,10 @@ impl SubAgent {
             let session = self.session.clone();
             let subagent_manager = multi_agent_components.subagent_manager.clone();
             
+            // Determine injection limit (configurable in future)
+            let max_injected: usize = 50; // TODO: make configurable
+            let injected = self.build_injected_conversation(max_injected);
+            
             // Spawn async task to create subagent
             tokio::spawn(async move {
                 let context_refs_count = context_refs.len();
@@ -139,9 +145,10 @@ impl SubAgent {
                     description,
                     context_refs,
                     bootstrap_paths: bootstrap_paths.clone(),
-                    max_turns: Some(50), // Default max turns
-                    timeout_ms: Some(300_000), // 5 minutes default timeout
+                    max_turns: Some(50),
+                    timeout_ms: Some(300_000),
                     network_access: None,
+                    injected_conversation: Some(injected), // added
                 };
                 
                 match subagent_manager.create_task(spec).await {
@@ -691,5 +698,59 @@ impl Agent for SubAgent {
         // It manages subagent tasks and coordinates between them
         // The actual turn execution would be handled by the specific subagent implementations
         Ok(())
+    }
+}
+
+impl SubAgent {
+    fn build_injected_conversation(&self, max_entries: usize) -> Vec<ResponseItem> {
+        // Get full conversation history
+        let history = self.session.state.lock_unchecked().history.contents();
+        // Take only user/assistant messages
+        let mut msgs: Vec<ResponseItem> = history
+            .iter()
+            .filter_map(|item| match item {
+                ResponseItem::Message { role, content, .. } => {
+                    if role == "user" || role == "assistant" {
+                        // Clone and optionally prefix assistant text content
+                        let mut new_content: Vec<ContentItem> = Vec::new();
+                        for c in content {
+                            match c {
+                                ContentItem::OutputText { text } => {
+                                    let t = if role == "assistant" {
+                                        format!("[MainAgent] {}", text)
+                                    } else {
+                                        text.clone()
+                                    };
+                                    new_content.push(ContentItem::OutputText { text: t });
+                                }
+                                ContentItem::InputText { text } => {
+                                    let t = if role == "assistant" {
+                                        format!("[MainAgent] {}", text)
+                                    } else {
+                                        text.clone()
+                                    };
+                                    new_content.push(ContentItem::InputText { text: t });
+                                }
+                                // Preserve other content items unmodified
+                                other => new_content.push(other.clone()),
+                            }
+                        }
+                        Some(ResponseItem::Message {
+                            id: None,
+                            role: role.clone(),
+                            content: new_content,
+                        })
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+        // Limit to last max_entries
+        if msgs.len() > max_entries {
+            msgs = msgs.split_off(msgs.len().saturating_sub(max_entries));
+        }
+        msgs
     }
 }

@@ -126,6 +126,7 @@ mod tests {
             max_turns: Some(10),
             timeout_ms: Some(60000),
             network_access: None,
+            injected_conversation: None, // added
         };
         
         let task_id = manager.create_task(spec.clone()).await.unwrap();
@@ -209,6 +210,7 @@ mod tests {
             max_turns: Some(5),
             timeout_ms: Some(30000),
             network_access: None,
+            injected_conversation: None, // added
         };
         
         let spec2 = SubagentTaskSpec {
@@ -220,6 +222,7 @@ mod tests {
             max_turns: Some(5),
             timeout_ms: Some(30000),
             network_access: None,
+            injected_conversation: None, // added
         };
         
         let task_id1 = manager.create_task(spec1).await.unwrap();

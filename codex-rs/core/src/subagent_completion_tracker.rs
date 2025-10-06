@@ -264,14 +264,15 @@ mod tests {
 
         // Create a task
         let spec = SubagentTaskSpec {
-            agent_type: SubagentType::Explorer,
-            title: "Test task".to_string(),
-            description: "Test description".to_string(),
-            context_refs: vec![],
-            bootstrap_paths: vec![],
-            max_turns: Some(5),
-            timeout_ms: Some(30000),
-            network_access: None,
+            agent_type: task.agent_type.clone(),
+            title: task.title.clone(),
+            description: task.description.clone(),
+            context_refs: Vec::new(),
+            bootstrap_paths: Vec::new(),
+            max_turns: Some(task.max_turns),
+            timeout_ms: Some(60_000),
+            network_access: task.network_access.clone(),
+            injected_conversation: None, // added
         };
 
         let task_id = subagent_manager.create_task(spec).await.unwrap();

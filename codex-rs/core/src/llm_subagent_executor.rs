@@ -331,13 +331,18 @@ impl LLMSubagentExecutor {
     /// Build initial conversation messages
     /// Note: System message is now handled via base_instructions_override in get_llm_response
     fn build_initial_messages(&self, task: &SubagentTask) -> Vec<Message> {
+        let mut msgs: Vec<Message> = Vec::new();
+        // Prepend injected conversation (from main session), if any
+        if !task.injected_conversation.is_empty() {
+            msgs.extend(task.injected_conversation.clone());
+        }
         let task_prompt = self.build_task_prompt(task);
-
-        vec![codex_protocol::models::ResponseItem::Message {
+        msgs.push(codex_protocol::models::ResponseItem::Message {
             id: None,
             role: "user".to_string(),
             content: vec![codex_protocol::models::ContentItem::OutputText { text: task_prompt }],
-        }]
+        });
+        msgs
     }
 
     /// Build task prompt similar to reference implementation
