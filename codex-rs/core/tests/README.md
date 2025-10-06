@@ -1,96 +1,160 @@
-# codex-core 测试说明
+# Codex Core Tests
 
-本文档介绍 `codex-rs/core/tests` 目录下的测试分类、用途、执行方式，以及如何新增测试用例，帮助你快速上手并扩展测试覆盖率。
+本目录包含 Codex Core 的测试套件，按照功能和测试类型进行组织。
 
-## 目录结构与聚合方式
+## 目录结构
 
-- 集成测试统一聚合为一个测试二进制，入口文件：<mcfile name="all.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/tests/all.rs"></mcfile>
-- 具体测试模块按主题组织：
-  - 单体/主题测试模块位于 `suite/` 目录，通过聚合模块文件注册：<mcfile name="mod.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/tests/suite/mod.rs"></mcfile>
-  - 集成测试模块位于 `integration/` 目录（新的约定）：`core/tests/integration/*.rs`
+```
+tests/
+├── README.md                    # 本文档
+├── all.rs                      # 聚合测试入口（用于 suite 目录）
+├── common/                     # 测试支持库
+│   ├── Cargo.toml
+│   ├── lib.rs
+│   └── responses.rs
+├── fixtures/                   # 测试数据文件
+│   ├── completed_template.json
+│   └── incomplete_sse.json
+├── integration/                # 集成测试
+│   ├── apply_patch_tool.rs     # apply_patch 工具全链路测试
+│   ├── chat_completions_payload.rs  # Chat Completions 请求负载测试
+│   ├── chat_completions_sse.rs      # Chat Completions SSE 流测试
+│   ├── mcp_pipeline.rs         # MCP 工具调用管线测试
+│   ├── plan_tool.rs           # update_plan 工具端到端测试
+│   ├── state_management_integration_test.rs  # Agent 状态管理测试
+│   └── subagent_tests.rs      # Subagent 系统集成测试
+└── suite/                     # 主题测试模块
+    ├── mod.rs                 # 模块声明
+    ├── cli_stream.rs          # CLI 流处理测试
+    ├── client.rs              # 客户端测试
+    ├── compact.rs             # 压缩功能测试
+    ├── exec.rs                # 执行功能测试
+    ├── fork_conversation.rs   # 对话分叉测试
+    ├── live_cli.rs            # 实时 CLI 测试
+    ├── model_overrides.rs     # 模型覆盖测试
+    ├── prompt_caching.rs      # 提示缓存测试
+    ├── review.rs              # 代码审查测试
+    ├── stream_*.rs            # 流处理相关测试
+    └── subagents.rs           # Subagent 功能测试
+```
 
-常见模块示例：
-- <mcfile name="mcp_pipeline.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/tests/integration/mcp_pipeline.rs"></mcfile>：MCP 工具调用管线（握手、工具发现、成功/失败/超时事件映射）
-- <mcfile name="plan_tool.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/tests/integration/plan_tool.rs"></mcfile>：`update_plan` 语义、状态机与事件（`PlanUpdate`）
-- <mcfile name="apply_patch_tool.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/tests/integration/apply_patch_tool.rs"></mcfile>：`apply_patch` 从模型工具调用到本地补丁应用（`PatchApplyBegin`/`PatchApplyEnd`）
-- 其他：`client.rs`、`prompt_caching.rs`、`exec_stream_events.rs`、`compact.rs`、`subagents.rs` 等主题模块
+## 测试分类
 
-## 测试分类与用途
+### 集成测试 (`integration/`)
+这些测试验证多个模块之间的交互和端到端功能：
 
-1. 单元测试（Unit Tests）
-   - 位置：源码文件内部的 `#[cfg(test)] mod tests`（例如 `core/src/*.rs`）
-   - 用途：验证单个模块/函数的最小行为单位（纯逻辑、数据结构、解析函数等）
+- **MCP 工具调用管线** (`mcp_pipeline.rs`) - 测试 MCP 工具的完整调用流程
+- **计划工具** (`plan_tool.rs`) - 测试 `update_plan` 工具的端到端功能
+- **补丁应用** (`apply_patch_tool.rs`) - 测试 `apply_patch` 工具的全链路验证
+- **Chat Completions** (`chat_completions_*.rs`) - 测试与 OpenAI 风格 API 的集成
+- **状态管理** (`state_management_integration_test.rs`) - 测试 Agent 状态机的统一管理
+- **Subagent 系统** (`subagent_tests.rs`) - 测试 Subagent 管理器、上下文存储和多代理协调器的集成
 
-2. 集成测试（Integration Tests）
-   - 位置：`core/tests/integration/*.rs`（新的统一位置）
-   - 用途：验证跨模块的端到端行为（包括 HTTP 流、工具调用管线、事件生命周期等）
-   - 特点：大量用到 `wiremock`、`core_test_support` 和异步事件流断言
+### 主题测试 (`suite/`)
+这些测试专注于特定功能模块的测试：
 
-3. 端到端（E2E）工具链测试（Feature/E2E）
-   - 用途：覆盖从“模型返回工具调用”到“Codex 内部执行器处理”再到“事件发出”的完整链路
-   - 典型场景：`update_plan`、`apply_patch`、MCP `tools/call` 调用（含错误与超时路径）
+- **CLI 相关** - 命令行界面和流处理
+- **客户端功能** - HTTP 客户端和模型交互
+- **执行引擎** - 代码执行和环境管理
+- **对话管理** - 对话分叉、历史管理等
+- **流处理** - 各种流式数据处理场景
 
-## 依赖与测试基建
+## 运行测试
 
-- 推荐使用的测试工具/辅助方法（来自 `core_test_support`）：
-  - `load_default_config_for_test`：生成可控的默认配置（含临时 `CODEX_HOME`）
-  - `start_mock_server`/`mount_sse_once`：启动 `wiremock` 并挂载一次性 SSE 响应
-  - `responses::{sse, ev_function_call, ev_completed}`：快速构造流式响应事件
-  - `wait_for_event`/`wait_for_event_with_timeout`：等待并断言异步事件
-- 典型执行器/会话管理：
-  - <mcfile name="conversation_manager.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/src/conversation_manager.rs"></mcfile> 提供 `ConversationManager` 创建与管理会话
-  - <mcfile name="codex.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/src/codex.rs"></mcfile> 内部负责提交用户输入与消费事件流
+### 运行所有测试
+```bash
+cargo test -p codex-core --tests
+```
 
-## 如何执行测试
+### 运行特定集成测试
+```bash
+# MCP 管线测试
+cargo test -p codex-core --tests mcp_pipeline
 
-- 构建当前 crate：
-  - `cargo build -p codex-core`
-- 运行所有集成测试：
-  - `cargo test -p codex-core --tests`
-- 运行某个模块（按名称过滤）：
-  - `cargo test -p codex-core --tests plan_tool`
-  - `cargo test -p codex-core --tests mcp_pipeline`
-- 运行某个具体用例（按函数名或子串过滤）：
-  - `cargo test -p codex-core update_plan_emits_plan_update_event_and_succeeds`
-  - `cargo test -p codex-core mcp_codex_tool_argument_parse_error_maps_to_function_output_error`
-- 显示标准输出/日志：
-  - `cargo test -p codex-core --tests -- --nocapture`
-  - 设置日志：`RUST_LOG=info cargo test -p codex-core --tests -- --nocapture`
+# 计划工具测试
+cargo test -p codex-core --tests plan_tool
 
-> 提示：测试名过滤是按子串进行的，尽量使用唯一且可读的测试函数名。
+# 补丁应用测试
+cargo test -p codex-core --tests apply_patch_tool
 
-## 如何新增测试
+# 状态管理测试
+cargo test -p codex-core --tests state_management_integration_test
 
-1. 在 `core/tests/integration/` 下新建测试文件（例如：`my_feature.rs`），并使用 Tokio 异步测试：
-   - `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`
-   - 使用 `core_test_support` 与 `wiremock` 生成稳定、可复现的输入
-2. 若为主题/单体测试，放在 `suite/` 并在聚合文件中注册模块：
-   - 编辑 <mcfile name="mod.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/tests/suite/mod.rs"></mcfile>，追加一行：`mod my_feature;`
-3. 遵循以下约定以保持测试稳定：
-   - 不依赖外部网络，全部用 `wiremock`/SSE fixture 模拟
-   - 使用 `TempDir` 管理临时文件与 `CODEX_HOME`，避免污染工作目录
-   - 为事件等待设置合理的超时（如 3~5s），避免假死或长时间阻塞
-   - 对于需要文件读写的测试（如 `apply_patch`），在临时目录中创建与校验
+# Subagent 系统测试
+cargo test -p codex-core --tests subagent_tests
+```
 
-## 编写测试的最佳实践
+### 运行主题测试套件
+```bash
+# 运行所有 suite 测试
+cargo test -p codex-core --tests all
 
-- 使用 `ConversationManager` 创建会话，随后通过 `CodexConversation::submit` 发送 `Op::UserInput`
-- 对工具调用类场景：先构造 SSE 流中的 `function_call` 项（如 `update_plan`、`apply_patch` 或 `codex__codex`），再断言 Codex 发出的事件
-- 错误路径需覆盖：参数解析失败、工具执行失败、超时与重试（如 MCP 管线）
-- 命名规范：测试函数名应体现场景与预期（如 `..._emits_begin_and_end_events`、`..._returns_error`）
+# 运行特定主题测试
+cargo test -p codex-core --tests client
+cargo test -p codex-core --tests exec
+```
 
-## 常见主题与对应示例
+### 运行特定测试用例
+```bash
+# 运行具体的测试函数
+cargo test -p codex-core update_plan_emits_plan_update_event_and_succeeds
+cargo test -p codex-core mcp_codex_tool_success_emits_begin_and_end_events
+cargo test -p codex-core test_unified_state_management
+```
 
-- MCP 工具调用管线：<mcfile name="mcp_pipeline.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/tests/integration/mcp_pipeline.rs"></mcfile>
-- 计划工具：<mcfile name="plan_tool.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/tests/integration/plan_tool.rs"></mcfile>
-- 补丁应用：<mcfile name="apply_patch_tool.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/tests/integration/apply_patch_tool.rs"></mcfile>
-- 客户端与提示缓存：<mcfile name="client.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/tests/suite/client.rs"></mcfile>、<mcfile name="prompt_caching.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/tests/suite/prompt_caching.rs"></mcfile>
-- 执行流与并发输出：<mcfile name="exec_stream_events.rs" path="/Users/bytedance/work/tools/git/codex/codex-rs/core/tests/suite/exec_stream_events.rs"></mcfile>
+## 添加新测试
 
-## 注意事项
+### 添加集成测试
+1. 在 `integration/` 目录下创建新的 `.rs` 文件
+2. 使用 `codex_core::` 前缀导入需要的模块
+3. 编写测试函数，使用 `#[tokio::test]` 或 `#[test]` 标注
+4. 测试文件会被 Cargo 自动发现和编译
 
-- 部分测试涉及 MCP Server 工具发现与调用，需保证工作区可构建 `codex-mcp-server`（`cargo build -p codex-mcp-server`）
-- 若本地环境或 CI 无法访问外网，请确保所有测试均使用 mock 响应，不要向真实服务发起请求
-- 避免使用过长的超时与随机等待，优先事件驱动与有限重试，确保测试可重复与稳定
+### 添加主题测试
+1. 在 `suite/` 目录下创建新的 `.rs` 文件
+2. 在 `suite/mod.rs` 中添加模块声明：`mod your_new_test;`
+3. 使用 `crate::` 前缀导入内部模块
+4. 编写测试函数并包装在 `#[cfg(test)] mod tests { ... }` 中
 
-如需进一步扩展某个主题的测试或添加新的工具管线验证，建议参考上述模块的写法并保持一致的模式与约定。
+## 测试最佳实践
+
+### 集成测试
+- 测试真实的用户场景和工作流
+- 验证模块间的正确交互
+- 使用真实的配置和数据结构
+- 测试错误处理和边界情况
+
+### 主题测试
+- 专注于单个模块或功能
+- 使用模拟对象隔离依赖
+- 测试内部逻辑和算法
+- 保持测试快速和独立
+
+### 通用原则
+- 使用描述性的测试名称
+- 包含必要的断言和验证
+- 清理测试资源（如临时文件）
+- 使用适当的异步测试标注
+
+## 常见测试主题
+
+- **事件驱动测试** - 验证事件的发送和接收
+- **状态管理** - 测试状态转换和约束
+- **工具调用** - 验证工具的注册、发现和执行
+- **错误处理** - 测试各种错误场景的处理
+- **并发安全** - 验证多线程环境下的正确性
+
+## 示例文件位置
+
+- 集成测试示例：`integration/mcp_pipeline.rs`
+- 主题测试示例：`suite/client.rs`
+- 测试支持代码：`common/lib.rs`
+- 测试数据：`fixtures/completed_template.json`
+
+## 重要注意事项
+
+- 集成测试文件不需要 `#[cfg(test)]` 包装
+- 主题测试需要在 `suite/mod.rs` 中声明模块
+- 使用 `codex_core::` 导入集成测试中的模块
+- 使用 `crate::` 导入主题测试中的内部模块
+- 测试应该是确定性的和可重复的

@@ -253,7 +253,7 @@ mod tests {
     async fn test_event_driven_completion() {
         let context_repo = Arc::new(InMemoryContextRepository::new());
         let (event_tx, event_rx) = mpsc::unbounded_channel();
-        let subagent_manager = Arc::new(InMemorySubagentManager::new(
+        let subagent_manager = Arc::new(InMemorySubagentManager::new_for_testing(
             context_repo,
             event_tx.clone(),
             ExecutorType::Mock,
@@ -264,15 +264,15 @@ mod tests {
 
         // Create a task
         let spec = SubagentTaskSpec {
-            agent_type: task.agent_type.clone(),
-            title: task.title.clone(),
-            description: task.description.clone(),
+            agent_type: SubagentType::Explorer,
+            title: "Test Task".to_string(),
+            description: "Test Description".to_string(),
             context_refs: Vec::new(),
             bootstrap_paths: Vec::new(),
-            max_turns: Some(task.max_turns),
+            max_turns: Some(5),
             timeout_ms: Some(60_000),
-            network_access: task.network_access.clone(),
-            injected_conversation: None, // added
+            network_access: None,
+            injected_conversation: None,
         };
 
         let task_id = subagent_manager.create_task(spec).await.unwrap();

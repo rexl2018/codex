@@ -476,7 +476,7 @@ mod tests {
     async fn test_subtask_coordinator_creation() {
         let context_repo = Arc::new(InMemoryContextRepository::new());
         let (event_sender, _) = mpsc::unbounded_channel();
-        let subagent_manager = Arc::new(InMemorySubagentManager::new(context_repo.clone(), event_sender.clone(), crate::subagent_manager::ExecutorType::Mock));
+        let subagent_manager = Arc::new(InMemorySubagentManager::new_for_testing(context_repo.clone(), event_sender.clone(), crate::subagent_manager::ExecutorType::Mock));
         
         let plan = ExecutionPlan {
             plan_id: "test-plan".to_string(),

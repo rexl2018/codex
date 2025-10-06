@@ -91,8 +91,6 @@ pub mod spawn;
 pub mod subagent_completion_tracker;
 pub mod subagent_manager;
 pub mod subagent_system_messages;
-#[cfg(test)]
-mod subagent_tests;
 pub mod terminal;
 mod tool_apply_patch;
 pub mod tool_config;
