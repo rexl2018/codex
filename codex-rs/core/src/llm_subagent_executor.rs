@@ -91,7 +91,7 @@ impl LLMSubagentExecutor {
         let config = FunctionCallRouterConfig {
             cwd: std::path::PathBuf::from("."),
             agent_type: AgentType::Explorer, // Default, will be updated per task
-            enable_mcp_tools: mcp_tools.is_some(),
+            enable_mcp_tools: mcp_connection_manager.is_some() || mcp_tools.is_some(),
             max_execution_time_ms: Some(300000), // 5 minutes
         };
 
@@ -808,23 +808,14 @@ impl LLMSubagentExecutor {
                 }
             }
 
-            // Use the unified function call handler directly with our correctly configured context
-            // This bypasses the function_router's hardcoded config and uses our task-specific agent_type
-            let executor = Arc::new(crate::unified_function_executor::CodexFunctionExecutor::new(
-                self.context_repo.clone(),
-                None, // MCP connection manager will be handled separately if needed
-                None, // No subagent manager
-                None, // No completion tracker
-                std::path::PathBuf::from("."),
-            ));
-            
-            let handler = crate::unified_function_handler::UniversalFunctionCallHandler::new(executor);
-            
-            let result = handler
-                .handle_function_call(
+            // Route the function call through the function router so MCP tools are detected and executed properly
+            let result = self
+                .function_router
+                .route_function_call(
                     func_call.name.clone(),
                     func_call.arguments.clone(),
-                    context,
+                    task.task_id.clone(),
+                    func_call.call_id.clone(),
                 )
                 .await;
 
