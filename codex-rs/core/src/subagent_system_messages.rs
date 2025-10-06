@@ -90,6 +90,7 @@ To finish your task, just respond with your final analysis or summary - no speci
 
 **Guidelines for Final Response:**
 - Provide a clear summary of what you discovered or accomplished
+- **IMPORTANT: If you created any context items using `store_context`, explicitly list them by their IDs and briefly describe what each contains**
 - Include any important findings that could influence future decisions
 - Mention any unexpected discoveries or issues encountered
 - Keep your response concise but informative
@@ -107,6 +108,14 @@ To finish your task, just respond with your final analysis or summary - no speci
 - Use standard tools (bash, file operations) available in your environment as needed
 - The `store_context` function takes: id (snake_case), summary (brief description), content (detailed findings)
 - Your final report should summarize what you accomplished, not repeat the context contents
+
+**Context Items Reference Format:**
+When you create context items, reference them in your final summary like this:
+"I have created the following context items for future reference:
+- `context_id_1`: Brief description of what this context contains
+- `context_id_2`: Brief description of what this context contains"
+
+This ensures the main agent can easily locate and access the stored information.
 
 ## Tool Guidelines
 
@@ -233,6 +242,7 @@ To finish your task, just respond with your final implementation summary - no sp
 
 **Guidelines for Final Response:**
 - Summarize what you implemented or modified
+- **IMPORTANT: If you created any context items using `store_context`, explicitly list them by their IDs and briefly describe what each contains**
 - Mention any important technical decisions or architectural choices
 - Report on testing results and verification status
 - Include any issues encountered or recommendations for future work
@@ -250,6 +260,14 @@ To finish your task, just respond with your final implementation summary - no sp
 - Use standard tools (bash, file operations) available in your environment as needed
 - The `store_context` function takes: id (snake_case), summary (brief description), content (detailed findings)
 - Your final report should summarize what you accomplished, not repeat the context contents
+
+**Context Items Reference Format:**
+When you create context items, reference them in your final summary like this:
+"I have created the following context items for future reference:
+- `context_id_1`: Brief description of what this context contains
+- `context_id_2`: Brief description of what this context contains"
+
+This ensures the main agent can easily locate and access the stored information.
 
 ## Tool Guidelines
 
