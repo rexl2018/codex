@@ -26,7 +26,7 @@ use crate::{
 use codex_protocol::{
     custom_prompts::CustomPrompt,
     models::ResponseItem,
-    protocol::{ContextItem, InitialHistory},
+    protocol::{ContextItem, InitialHistory, SubagentStartedEvent},
 };
 
 /// Refactored submission loop that uses the new agent architecture
@@ -379,16 +379,64 @@ pub(crate) async fn original_submission_loop(
                 bootstrap_paths,
             } => {
                 if let Some(ref components) = sess.multi_agent_components {
+                    // 构建注入会话历史：包含最近的用户和助手消息
+                    let max_injected: usize = 50; // TODO: 配置化
+                    let history = sess.state.lock_unchecked().history.contents();
+                    let mut injected: Vec<codex_protocol::models::ResponseItem> = history
+                        .iter()
+                        .filter_map(|item| match item {
+                            codex_protocol::models::ResponseItem::Message { role, content, .. } => {
+                                if role == "user" || role == "assistant" {
+                                    // 为助手消息增加 [MainAgent] 前缀
+                                    let mut new_content: Vec<codex_protocol::models::ContentItem> = Vec::new();
+                                    for c in content {
+                                        match c {
+                                            codex_protocol::models::ContentItem::OutputText { text } => {
+                                                let t = if role == "assistant" {
+                                                    format!("[MainAgent] {}", text)
+                                                } else {
+                                                    text.clone()
+                                                };
+                                                new_content.push(codex_protocol::models::ContentItem::OutputText { text: t });
+                                            }
+                                            codex_protocol::models::ContentItem::InputText { text } => {
+                                                let t = if role == "assistant" {
+                                                    format!("[MainAgent] {}", text)
+                                                } else {
+                                                    text.clone()
+                                                };
+                                                new_content.push(codex_protocol::models::ContentItem::InputText { text: t });
+                                            }
+                                            other => new_content.push(other.clone()),
+                                        }
+                                    }
+                                    Some(codex_protocol::models::ResponseItem::Message {
+                                        id: None,
+                                        role: role.clone(),
+                                        content: new_content,
+                                    })
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    // 保留最近 max_injected 条
+                    if injected.len() > max_injected {
+                        injected = injected.split_off(injected.len().saturating_sub(max_injected));
+                    }
+
                     let spec = SubagentTaskSpec {
-                        agent_type,
-                        title,
+                        agent_type: agent_type.clone(),
+                        title: title.clone(),
                         description,
                         context_refs,
                         bootstrap_paths,
                         max_turns: None,
                         timeout_ms: None,
-                        network_access: None, // TODO: Pass network access from turn context
-                        injected_conversation: None, // added
+                        network_access: None, // TODO: 根据上下文传入网络访问策略
+                        injected_conversation: if injected.is_empty() { None } else { Some(injected) },
                     };
 
                     match components.subagent_manager.create_task(spec).await {
@@ -404,6 +452,16 @@ pub(crate) async fn original_submission_loop(
                                     }),
                                 };
                                 sess.send_event(event).await;
+                            } else {
+                                let event = Event {
+                                    id: sub.id,
+                                    msg: EventMsg::SubagentStarted(SubagentStartedEvent {
+                                        agent_type,
+                                        task_id,
+                                        title: title.clone(),
+                                    }),
+                                };
+                                sess.send_event(event).await;
                             }
                         }
                         Err(e) => {
@@ -416,14 +474,6 @@ pub(crate) async fn original_submission_loop(
                             sess.send_event(event).await;
                         }
                     }
-                } else {
-                    let event = Event {
-                        id: sub.id,
-                        msg: EventMsg::Error(ErrorEvent {
-                            message: "Multi-agent functionality not enabled".to_string(),
-                        }),
-                    };
-                    sess.send_event(event).await;
                 }
             }
             Op::QueryContextStore { query } => {
