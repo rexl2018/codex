@@ -52,7 +52,7 @@ impl AgentTask {
             let sub_id = sub_id.clone();
             let tc = Arc::clone(&turn_context);
             tokio::spawn(async move {
-                crate::codex::compact::run_compact_task(sess, tc, sub_id, input, compact_instructions).await
+                crate::codex::compact::run_compact_task(sess, tc, input).await
             })
             .abort_handle()
         };

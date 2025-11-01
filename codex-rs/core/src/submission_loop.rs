@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_channel::Receiver;
@@ -289,7 +290,12 @@ pub(crate) async fn original_submission_loop(
                 let event = Event {
                     id: sub_id,
                     msg: EventMsg::McpListToolsResponse(
-                        McpListToolsResponseEvent { tools },
+                        McpListToolsResponseEvent { 
+                            tools,
+                            auth_statuses: HashMap::new(),
+                            resource_templates: HashMap::new(),
+                            resources: HashMap::new(),
+                        },
                     ),
                 };
                 sess.send_event(event).await;

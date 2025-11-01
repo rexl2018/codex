@@ -410,6 +410,8 @@ impl LLMSubagentExecutor {
             base_instructions_override: Some(subagent_base_instructions.to_string()),
             agent_state_info: None, // Subagents don't need state info
             available_contexts: None, // Subagents don't need context info in this implementation
+            output_schema: None,
+            parallel_tool_calls: false,
         };
 
         // Call the real LLM
@@ -610,10 +612,7 @@ impl LLMSubagentExecutor {
                                 reasoning_events
                             );
                         }
-                        ResponseEvent::WebSearchCallBegin { .. } => {
-                            other_events += 1;
-                            tracing::debug!("WebSearchCallBegin event #{}", other_events);
-                        }
+                        // WebSearchCallBegin variant no longer exists in ResponseEvent
                     }
                 }
                 Err(e) => {
@@ -783,6 +782,7 @@ impl LLMSubagentExecutor {
                         command: command_tokens,
                         cwd: std::path::PathBuf::from("."),
                         parsed_cmd,
+                        is_user_shell_command: false,
                     }),
                 };
                 self.send_event(begin_ev).await;
@@ -868,6 +868,7 @@ impl LLMSubagentExecutor {
                     codex_protocol::models::ResponseItem::FunctionCallOutput {
                         call_id,
                         output: codex_protocol::models::FunctionCallOutputPayload {
+            content_items: None,
                             content,
                             success: Some(true),
                         },
@@ -879,6 +880,7 @@ impl LLMSubagentExecutor {
                     codex_protocol::models::ResponseItem::FunctionCallOutput {
                         call_id: func_call.call_id.clone(),
                         output: codex_protocol::models::FunctionCallOutputPayload {
+            content_items: None,
                             content: content_str,
                             success: Some(true),
                         },
@@ -888,6 +890,7 @@ impl LLMSubagentExecutor {
                     codex_protocol::models::ResponseItem::FunctionCallOutput {
                         call_id,
                         output: codex_protocol::models::FunctionCallOutputPayload {
+            content_items: None,
                             content: output,
                             success: Some(true),
                         },

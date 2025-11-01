@@ -151,6 +151,7 @@ impl<E: UniversalFunctionExecutor> FunctionCallRouter<E> {
                 Ok(result) => ResponseInputItem::FunctionCallOutput {
                     call_id: context.call_id,
                     output: FunctionCallOutputPayload {
+            content_items: None,
                         content: result,
                         success: Some(true),
                     },
@@ -160,6 +161,7 @@ impl<E: UniversalFunctionExecutor> FunctionCallRouter<E> {
                     ResponseInputItem::FunctionCallOutput {
                         call_id: context.call_id,
                         output: FunctionCallOutputPayload {
+            content_items: None,
                             content: format!("MCP tool execution failed: {}", error),
                             success: Some(false),
                         },
@@ -171,6 +173,7 @@ impl<E: UniversalFunctionExecutor> FunctionCallRouter<E> {
             ResponseInputItem::FunctionCallOutput {
                 call_id: context.call_id,
                 output: FunctionCallOutputPayload {
+            content_items: None,
                     content: "MCP tools are not available in this context".to_string(),
                     success: Some(false),
                 },
@@ -218,7 +221,7 @@ impl<E: UniversalFunctionExecutor> FunctionCallRouter<E> {
 
         // Execute the MCP tool
         match mcp_manager
-            .call_tool(server_name, tool_name, Some(args_value), None)
+            .call_tool(server_name, tool_name, Some(args_value))
             .await
         {
             Ok(result) => {
@@ -395,6 +398,7 @@ mod tests {
         ) -> FunctionCallOutputPayload {
             FunctionCallOutputPayload {
                 content: "shell executed".to_string(),
+                content_items: None,
                 success: Some(true),
             }
         }
@@ -408,6 +412,7 @@ mod tests {
         ) -> FunctionCallOutputPayload {
             FunctionCallOutputPayload {
                 content: "file content".to_string(),
+                content_items: None,
                 success: Some(true),
             }
         }
@@ -420,6 +425,7 @@ mod tests {
         ) -> FunctionCallOutputPayload {
             FunctionCallOutputPayload {
                 content: "file written".to_string(),
+                content_items: None,
                 success: Some(true),
             }
         }
@@ -433,6 +439,7 @@ mod tests {
         ) -> FunctionCallOutputPayload {
             FunctionCallOutputPayload {
                 content: "context stored".to_string(),
+                content_items: None,
                 success: Some(true),
             }
         }
@@ -444,7 +451,9 @@ mod tests {
             _reason: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "context updated".to_string(),
                 success: Some(true),
             }
@@ -455,7 +464,9 @@ mod tests {
             _arguments: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "subagent created".to_string(),
                 success: Some(true),
             }
@@ -466,7 +477,9 @@ mod tests {
             _arguments: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "subagent resumed".to_string(),
                 success: Some(true),
             }
@@ -478,7 +491,9 @@ mod tests {
             _arguments: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "mcp tool executed".to_string(),
                 success: Some(true),
             }
@@ -489,7 +504,9 @@ mod tests {
             _arguments: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "patch applied".to_string(),
                 success: Some(true),
             }
@@ -500,7 +517,9 @@ mod tests {
             _arguments: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "plan updated".to_string(),
                 success: Some(true),
             }

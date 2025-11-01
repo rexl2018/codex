@@ -215,6 +215,7 @@ impl UnifiedErrorHandler {
             ErrorHandlingStrategy::LogAndIgnore => {
                 info!("Ignoring non-critical error: {}", error);
                 FunctionCallOutputPayload {
+            content_items: None,
                     content: "Operation completed with warnings".to_string(),
                     success: Some(true),
                 }
@@ -313,6 +314,7 @@ impl UnifiedErrorHandler {
         call_id: Option<String>,
         use_user_message: bool,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         let config = self.config.read().unwrap();
         
         let mut content = if use_user_message {
@@ -334,6 +336,7 @@ impl UnifiedErrorHandler {
         
         FunctionCallOutputPayload {
             content,
+            content_items: None,
             success: Some(false),
         }
     }
@@ -346,6 +349,7 @@ impl UnifiedErrorHandler {
         strategy_name: &str,
         call_id: Option<String>,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         let handlers = self.custom_handlers.read().unwrap();
         
         if let Some(handler) = handlers.get(strategy_name) {
@@ -509,6 +513,7 @@ mod tests {
         // Register custom handler
         let custom_handler: CustomErrorHandler = Box::new(|error, _context| {
             Ok(FunctionCallOutputPayload {
+            content_items: None,
                 content: format!("Custom handling: {}", error.user_message()),
                 success: Some(false),
             })

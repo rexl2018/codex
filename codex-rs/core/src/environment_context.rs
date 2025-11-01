@@ -73,11 +73,83 @@ impl EnvironmentContext {
         }
     }
 
+    pub fn matches(
+        &self,
+        cwd: &PathBuf,
+        approval_policy: &ApprovalPolicy,
+        sandbox_mode: &SandboxMode,
+        network_access: &NetworkAccess,
+        writable_roots: &[PathBuf],
+    ) -> bool {
+        self.cwd == Some(cwd.clone())
+            && self.approval_policy == Some(*approval_policy)
+            && self.sandbox_mode == Some(*sandbox_mode)
+            && self.network_access == Some(*network_access)
+            && self.writable_roots == Some(writable_roots.to_vec())
+    }
 
+    pub fn equals_except_shell(&self, other: &Self) -> bool {
+        self.cwd == other.cwd
+            && self.approval_policy == other.approval_policy
+            && self.sandbox_mode == other.sandbox_mode
+            && self.network_access == other.network_access
+            && self.writable_roots == other.writable_roots
+        // Intentionally exclude shell comparison
+    }
+
+    pub fn diff(before: &TurnContext, after: &TurnContext) -> Self {
+        let cwd = if before.cwd != after.cwd {
+            Some(after.cwd.clone())
+        } else {
+            None
+        };
+        let approval_policy = if before.approval_policy != after.approval_policy {
+            Some(after.approval_policy)
+        } else {
+            None
+        };
+        let sandbox_policy = if before.sandbox_policy != after.sandbox_policy {
+            Some(after.sandbox_policy.clone())
+        } else {
+            None
+        };
+        EnvironmentContext::new(cwd, approval_policy, sandbox_policy, None)
+    }
+
+    pub fn diff_codex(before: &crate::codex::TurnContext, after: &crate::codex::TurnContext) -> Self {
+        let cwd = if before.cwd != after.cwd {
+            Some(after.cwd.clone())
+        } else {
+            None
+        };
+        let approval_policy = if before.approval_policy != after.approval_policy {
+            Some(after.approval_policy)
+        } else {
+            None
+        };
+        let sandbox_policy = if before.sandbox_policy != after.sandbox_policy {
+            Some(after.sandbox_policy.clone())
+        } else {
+            None
+        };
+        EnvironmentContext::new(cwd, approval_policy, sandbox_policy, None)
+    }
 }
 
 impl From<&TurnContext> for EnvironmentContext {
     fn from(turn_context: &TurnContext) -> Self {
+        Self::new(
+            Some(turn_context.cwd.clone()),
+            Some(turn_context.approval_policy),
+            Some(turn_context.sandbox_policy.clone()),
+            // Shell is not configurable from turn to turn
+            None,
+        )
+    }
+}
+
+impl From<&crate::codex::TurnContext> for EnvironmentContext {
+    fn from(turn_context: &crate::codex::TurnContext) -> Self {
         Self::new(
             Some(turn_context.cwd.clone()),
             Some(turn_context.approval_policy),

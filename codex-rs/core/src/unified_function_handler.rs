@@ -182,6 +182,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             return ResponseInputItem::FunctionCallOutput {
                 call_id: context.call_id.clone(),
                 output: FunctionCallOutputPayload {
+            content_items: None,
                     content: format!("Unsupported function call: {}", name),
                     success: Some(false),
                 },
@@ -195,6 +196,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             return ResponseInputItem::FunctionCallOutput {
                 call_id: context.call_id.clone(),
                 output: FunctionCallOutputPayload {
+            content_items: None,
                     content: error_msg,
                     success: Some(false),
                 },
@@ -320,6 +322,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         #[derive(Deserialize)]
         struct ShellArgs {
             command: Vec<String>,
@@ -330,6 +333,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             Err(e) => {
                 error!("Failed to parse shell arguments: {}", e);
                 return FunctionCallOutputPayload {
+            content_items: None,
                     content: format!("Failed to parse function arguments: {}", e),
                     success: Some(false),
                 };
@@ -346,6 +350,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         #[derive(Deserialize)]
         struct ReadFileArgs {
             file_path: String,
@@ -360,6 +365,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             Err(e) => {
                 error!("Failed to parse read_file arguments: {}", e);
                 return FunctionCallOutputPayload {
+            content_items: None,
                     content: format!("Failed to parse function arguments: {}", e),
                     success: Some(false),
                 };
@@ -377,6 +383,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         #[derive(Deserialize)]
         struct WriteFileArgs {
             file_path: String,
@@ -388,6 +395,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             Err(e) => {
                 error!("Failed to parse write_file arguments: {}", e);
                 return FunctionCallOutputPayload {
+            content_items: None,
                     content: format!("Failed to parse function arguments: {}", e),
                     success: Some(false),
                 };
@@ -409,6 +417,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         #[derive(Deserialize)]
         struct StoreContextArgs {
             id: String,
@@ -421,6 +430,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             Err(e) => {
                 error!("Failed to parse store_context arguments: {}", e);
                 return FunctionCallOutputPayload {
+            content_items: None,
                     content: format!("Failed to parse function arguments: {}", e),
                     success: Some(false),
                 };
@@ -438,6 +448,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         #[derive(Deserialize)]
         struct UpdateContextArgs {
             id: String,
@@ -450,6 +461,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             Err(e) => {
                 error!("Failed to parse update_context arguments: {}", e);
                 return FunctionCallOutputPayload {
+            content_items: None,
                     content: format!("Failed to parse function arguments: {}", e),
                     success: Some(false),
                 };
@@ -467,6 +479,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         debug!("Creating subagent task with arguments: {}", arguments);
         self.executor
             .execute_create_subagent_task(arguments, context)
@@ -478,6 +491,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         debug!("Resuming subagent with arguments: {}", arguments);
         self.executor
             .execute_resume_subagent(arguments, context)
@@ -489,6 +503,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         self.executor
             .execute_apply_patch(arguments, context)
             .await
@@ -499,6 +514,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         self.executor
             .execute_update_plan(arguments, context)
             .await
@@ -519,7 +535,9 @@ mod tests {
             _command: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "shell executed".to_string(),
                 success: Some(true),
             }
@@ -532,7 +550,9 @@ mod tests {
             _line_num: Option<usize>,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "file content".to_string(),
                 success: Some(true),
             }
@@ -544,7 +564,9 @@ mod tests {
             _content: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "file written".to_string(),
                 success: Some(true),
             }
@@ -557,7 +579,9 @@ mod tests {
             _content: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "context stored".to_string(),
                 success: Some(true),
             }
@@ -570,7 +594,9 @@ mod tests {
             _reason: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "context updated".to_string(),
                 success: Some(true),
             }
@@ -581,7 +607,9 @@ mod tests {
             _arguments: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "subagent created".to_string(),
                 success: Some(true),
             }
@@ -592,7 +620,9 @@ mod tests {
             _arguments: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "subagent resumed".to_string(),
                 success: Some(true),
             }
@@ -604,7 +634,9 @@ mod tests {
             _arguments: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "mcp tool executed".to_string(),
                 success: Some(true),
             }
@@ -615,7 +647,9 @@ mod tests {
             _arguments: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "patch applied".to_string(),
                 success: Some(true),
             }
@@ -626,7 +660,9 @@ mod tests {
             _arguments: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
+            content_items: None,
             FunctionCallOutputPayload {
+            content_items: None,
                 content: "plan updated".to_string(),
                 success: Some(true),
             }

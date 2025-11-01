@@ -195,6 +195,7 @@ impl CodexFunctionExecutor {
             env: std::collections::HashMap::new(),
             with_escalated_permissions: None,
             justification: None,
+            arg0: None,
         };
 
         // Execute using existing exec infrastructure
@@ -596,6 +597,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         command: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_shell")
             .with_info("command", &command)
@@ -603,6 +605,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
 
         match self.execute_shell_command(&command, context).await {
             Ok(output) => FunctionCallOutputPayload {
+            content_items: None,
                 content: output,
                 success: Some(true),
             },
@@ -621,6 +624,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         line_num: Option<usize>,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_read_file")
             .with_info("file_path", &file_path)
@@ -630,6 +634,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
 
         match self.read_file_content_with_range(&file_path, line_offset, line_num).await {
             Ok((content, total_lines, start_line, end_line)) => FunctionCallOutputPayload {
+            content_items: None,
                 content: format!(
                     "File content of '{}' (lines {}-{} of {} total lines):\n\n{}",
                     file_path, start_line, end_line, total_lines, content
@@ -650,6 +655,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         content: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_write_file")
             .with_info("file_path", &file_path)
@@ -658,6 +664,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
 
         match self.write_file_content(&file_path, &content).await {
             Ok(result) => FunctionCallOutputPayload {
+            content_items: None,
                 content: result,
                 success: Some(true),
             },
@@ -676,6 +683,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         content: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_store_context")
             .with_info("context_id", &id)
@@ -685,6 +693,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
 
         match self.store_context_item(&id, &summary, &content, context).await {
             Ok(result) => FunctionCallOutputPayload {
+            content_items: None,
                 content: result,
                 success: Some(true),
             },
@@ -703,6 +712,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         reason: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_update_context")
             .with_info("context_id", &id)
@@ -712,6 +722,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
 
         match self.update_context_item(&id, &content, &reason).await {
             Ok(result) => FunctionCallOutputPayload {
+            content_items: None,
                 content: result,
                 success: Some(true),
             },
@@ -728,6 +739,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         info!(
             "🚀 [UNIFIED_EXECUTOR] Creating subagent task with arguments: {}",
             arguments
@@ -749,6 +761,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
                     "Subagent manager not available. Multi-agent functionality may not be enabled.";
                 warn!("{}", error_msg);
                 return FunctionCallOutputPayload {
+            content_items: None,
                     content: error_msg.to_string(),
                     success: Some(false),
                 };
@@ -762,6 +775,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
                 let error_msg = format!("Failed to parse create_subagent_task arguments: {}", e);
                 error!("{}", error_msg);
                 return FunctionCallOutputPayload {
+            content_items: None,
                     content: error_msg,
                     success: Some(false),
                 };
@@ -813,6 +827,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
 
                             // Return a special response that includes a function call to keep main agent running
                             return FunctionCallOutputPayload {
+            content_items: None,
                                 content: format!(
                                     "🚀 Subagent launched and executing task...\n📋 Task ID: {}\n⏳ The subagent will run in the background.\n\n**IMPORTANT**: You should now wait for the subagent to complete, then use `list_contexts` to check for new context items and provide a comprehensive summary of the subagent's findings.",
                                     task_id
@@ -829,6 +844,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
                 }
 
                 FunctionCallOutputPayload {
+            content_items: None,
                     content: response,
                     success: Some(true),
                 }
@@ -857,6 +873,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         info!(
             "🔄 [UNIFIED_EXECUTOR] Resuming subagent with arguments: {}",
             arguments
@@ -870,6 +887,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             None => {
                 let msg = "Subagent manager not available. Multi-agent functionality may not be enabled.";
                 return FunctionCallOutputPayload {
+            content_items: None,
                     content: msg.to_string(),
                     success: Some(false),
                 };
@@ -916,6 +934,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
                 if args.auto_launch {
                     match manager.launch_subagent(&args.task_id).await {
                         Ok(_) => FunctionCallOutputPayload {
+            content_items: None,
                             content: format!(
                                 "✅ Subagent '{}' resumed and launched successfully.",
                                 args.task_id
@@ -923,6 +942,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
                             success: Some(true),
                         },
                         Err(e) => FunctionCallOutputPayload {
+            content_items: None,
                             content: format!(
                                 "Subagent resumed but failed to launch: {}",
                                 e
@@ -932,6 +952,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
                     }
                 } else {
                     FunctionCallOutputPayload {
+            content_items: None,
                         content: format!(
                             "✅ Subagent '{}' resumed successfully (not launched).",
                             args.task_id
@@ -960,6 +981,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_mcp_tool")
             .with_info("tool_name", &tool_name)
@@ -992,7 +1014,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
 
             // Execute MCP tool
             match mcp_manager
-                .call_tool(&server_name, &actual_tool_name, Some(args_value), None)
+                .call_tool(&server_name, &actual_tool_name, Some(args_value))
                 .await
             {
                 Ok(result) => {
@@ -1024,6 +1046,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
                     }
 
                     FunctionCallOutputPayload {
+            content_items: None,
                         content: output.trim().to_string(),
                         success: Some(!result.is_error.unwrap_or(false)),
                     }
@@ -1058,6 +1081,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         debug!("Executing apply_patch with arguments: {}", arguments);
 
         // Parse apply_patch arguments
@@ -1071,6 +1095,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             Err(e) => {
                 error!("Failed to parse apply_patch arguments: {}", e);
                 return FunctionCallOutputPayload {
+            content_items: None,
                     content: format!("Invalid apply_patch arguments: {}", e),
                     success: Some(false),
                 };
@@ -1097,6 +1122,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
                         let stderr_str = String::from_utf8_lossy(&stderr);
                         info!("Apply patch succeeded");
                         FunctionCallOutputPayload {
+            content_items: None,
                             content: format!("Patch applied successfully.\nOutput: {}\nErrors: {}", stdout_str, stderr_str),
                             success: Some(true),
                         }
@@ -1105,6 +1131,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
                         let stderr_str = String::from_utf8_lossy(&stderr);
                         error!("Apply patch failed: {}", e);
                         FunctionCallOutputPayload {
+            content_items: None,
                             content: format!("Apply patch failed: {}\nErrors: {}", e, stderr_str),
                             success: Some(false),
                         }
@@ -1113,6 +1140,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             }
             codex_apply_patch::MaybeApplyPatchVerified::NotApplyPatch => {
                 FunctionCallOutputPayload {
+            content_items: None,
                     content: "Input does not contain a valid apply_patch command".to_string(),
                     success: Some(false),
                 }
@@ -1120,6 +1148,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             codex_apply_patch::MaybeApplyPatchVerified::CorrectnessError(e) => {
                 error!("Apply patch correctness error: {}", e);
                 FunctionCallOutputPayload {
+            content_items: None,
                     content: format!("Apply patch correctness error: {}", e),
                     success: Some(false),
                 }
@@ -1127,6 +1156,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
             codex_apply_patch::MaybeApplyPatchVerified::ShellParseError(e) => {
                 error!("Apply patch shell parse error: {:?}", e);
                 FunctionCallOutputPayload {
+            content_items: None,
                     content: format!("Apply patch shell parse error: {:?}", e),
                     success: Some(false),
                 }
@@ -1139,12 +1169,14 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+            content_items: None,
         debug!("Executing update_plan with arguments: {}", arguments);
 
         // For now, return a simple success response
         // The actual plan handling is done by the plan_tool module
         // This is just to satisfy the unified function executor interface
         FunctionCallOutputPayload {
+            content_items: None,
             content: "Plan updated successfully".to_string(),
             success: Some(true),
         }

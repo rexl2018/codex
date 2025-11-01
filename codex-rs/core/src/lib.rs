@@ -31,24 +31,26 @@ mod codex_conversation;
 mod compact;
 pub mod token_data;
 pub use codex_conversation::CodexConversation;
+mod codex_delegate;
+mod command_safety;
 pub mod config;
-pub mod config_edit;
-pub mod config_profile;
-pub mod config_types;
+// pub mod config_edit;  // Module not found in main branch
+// pub mod config_profile;  // Module not found in main branch
+// pub mod config_types;  // Module not found in main branch
 pub mod context_store;
+pub mod config_loader;
 mod conversation_history;
 pub mod custom_prompts;
 mod environment_context;
 pub mod error;
 
 pub mod exec;
-mod exec_command;
 pub mod exec_env;
+pub mod features;
 mod flags;
 pub mod git_info;
-pub mod internal_storage;
-mod is_safe_command;
 pub mod landlock;
+pub mod mcp;
 mod mcp_connection_manager;
 mod mcp_tool_call;
 mod message_history;
@@ -56,6 +58,8 @@ mod model_provider_info;
 pub mod multi_agent_coordinator;
 pub mod parse_command;
 pub mod performance;
+mod response_processing;
+pub mod sandboxing;
 mod truncate;
 mod unified_exec;
 mod user_instructions;
@@ -80,8 +84,6 @@ pub mod llm_subagent_executor;
 pub mod mock_subagent_executor;
 pub mod model_family;
 mod openai_model_info;
-mod openai_tools;
-pub mod plan_tool;
 pub mod project_doc;
 mod rollout;
 pub(crate) mod safety;
@@ -92,15 +94,17 @@ pub mod subagent_completion_tracker;
 pub mod subagent_manager;
 pub mod subagent_system_messages;
 pub mod terminal;
-mod tool_apply_patch;
+// mod tool_apply_patch;  // Module not found in main branch
 pub mod tool_config;
 pub mod tool_registry;
+mod tools;
 pub mod turn_diff_tracker;
 pub mod unified_error_handler;
 pub mod unified_error_types;
 pub mod unified_function_executor;
 pub mod unified_function_handler;
 pub use rollout::ARCHIVED_SESSIONS_SUBDIR;
+pub use rollout::INTERACTIVE_SESSION_SOURCES;
 pub use rollout::RolloutRecorder;
 pub use rollout::SESSIONS_SUBDIR;
 pub use rollout::SessionMeta;
@@ -108,12 +112,17 @@ pub use rollout::find_conversation_path_by_id_str;
 pub use rollout::list::ConversationItem;
 pub use rollout::list::ConversationsPage;
 pub use rollout::list::Cursor;
+pub use rollout::list::read_head_for_summary;
+mod function_tool;
+mod state;
+mod tasks;
 mod user_notification;
 pub mod util;
 
 
 
 pub use apply_patch::CODEX_APPLY_PATCH_ARG1;
+pub use command_safety::is_safe_command;
 pub use safety::get_platform_sandbox;
 // Re-export the protocol types from the standalone `codex-protocol` crate so existing
 // `codex_core::protocol::...` references continue to work across the workspace.
@@ -127,11 +136,13 @@ pub use client_common::Prompt;
 pub use client_common::REVIEW_PROMPT;
 pub use client_common::ResponseEvent;
 pub use client_common::ResponseStream;
+pub use codex::compact::content_items_to_text;
 pub use codex_protocol::models::ContentItem;
 pub use codex_protocol::models::LocalShellAction;
 pub use codex_protocol::models::LocalShellExecAction;
 pub use codex_protocol::models::LocalShellStatus;
-pub use codex_protocol::models::ReasoningItemContent;
 pub use codex_protocol::models::ResponseItem;
 pub use compact::content_items_to_text;
 pub use compact::is_session_prefix_message;
+pub use event_mapping::parse_turn_item;
+pub mod otel_init;
