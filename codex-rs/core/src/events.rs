@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 use crate::exec::ExecToolCallOutput;
-use codex_protocol::protocol::InputItem;
+use codex_app_server_protocol::InputItem;
 use codex_protocol::protocol::SubagentType;
 
 /// Agent orchestration events for the event-driven architecture

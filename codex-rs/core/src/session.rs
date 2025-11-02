@@ -4,10 +4,11 @@ use std::sync::{atomic::AtomicU64, Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_channel::Sender;
-use codex_mcp_client::McpClient;
+use codex_app_server_protocol::InputItem;
+use codex_rmcp_client::RmcpClient;
 use codex_protocol::{
     config_types::{ReasoningEffort as ReasoningEffortConfig, ReasoningSummary as ReasoningSummaryConfig},
-    mcp_protocol::ConversationId,
+    ConversationId,
     models::{ResponseInputItem, ResponseItem},
     protocol::{AskForApproval, Event, EventMsg, InitialHistory, ReviewDecision, RolloutItem, SandboxPolicy, SessionConfiguredEvent},
 };
@@ -20,24 +21,25 @@ use crate::{
     agent_task::AgentTask,
     client::ModelClient,
     config::Config,
-    config_types::ShellEnvironmentPolicy,
+    state::AgentStateManager,
+    // config_types::ShellEnvironmentPolicy,
     context_store::InMemoryContextRepository,
     conversation_history::ConversationHistory,
     environment_context::EnvironmentContext,
     error::{CodexErr, Result as CodexResult},
-    event_mapping::map_response_item_to_event_messages,
+    // event_mapping::map_response_item_to_event_messages,
     exec::ExecToolCallOutput,
-    exec_command::ExecSessionManager,
+    // exec_command::ExecSessionManager,
     mcp_connection_manager::McpConnectionManager,
     parse_command::parse_command,
     protocol::{
         BackgroundEventEvent, ErrorEvent, ExecApprovalRequestEvent, ExecCommandBeginEvent,
-        ExecCommandEndEvent, InputItem, PatchApplyBeginEvent, PatchApplyEndEvent, StreamErrorEvent,
+        ExecCommandEndEvent, PatchApplyBeginEvent, PatchApplyEndEvent, StreamErrorEvent,
         TurnAbortReason, TurnDiffEvent,
     },
     rollout::{RolloutRecorder, RolloutRecorderParams},
     shell,
-    state::{State, AgentStateManager},
+    // state::{State, AgentStateManager},
     subagent_manager::{ExecutorType, InMemorySubagentManager},
     subagent_completion_tracker::SubagentCompletionTracker,
     tool_config::UnifiedToolConfig,
@@ -51,6 +53,55 @@ use crate::{
     events::AgentEvent,
     AuthManager, ModelProviderInfo,
 };
+
+// Placeholder for ExecSessionManager
+#[derive(Debug, Default)]
+pub struct ExecSessionManager {
+    // Placeholder fields
+}
+
+impl ExecSessionManager {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+// Placeholder for McpClient
+#[derive(Debug, Default)]
+pub struct McpClient {
+    // Placeholder fields
+}
+
+// Placeholder for State
+#[derive(Default)]
+pub struct State {
+    pub pending_approvals: std::collections::HashMap<String, tokio::sync::oneshot::Sender<codex_protocol::protocol::ReviewDecision>>,
+    pub pending_input: Vec<codex_protocol::models::ResponseInputItem>,
+    pub current_task: Option<crate::agent_task::AgentTask>,
+    pub history: crate::conversation_history::ConversationHistory,
+    pub approved_commands: std::collections::HashSet<String>,
+}
+
+impl std::fmt::Debug for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("State")
+            .field("pending_approvals", &format!("{} pending", self.pending_approvals.len()))
+            .field("pending_input", &self.pending_input)
+            .field("current_task", &self.current_task.is_some())
+            .field("history", &"ConversationHistory")
+            .field("approved_commands", &self.approved_commands)
+            .finish()
+    }
+}
+
+// Placeholder function for map_response_item_to_event_messages
+fn map_response_item_to_event_messages(
+    _response_item: &codex_protocol::models::ResponseItem,
+    _show_raw_agent_reasoning: bool,
+) -> Vec<codex_protocol::protocol::EventMsg> {
+    // Placeholder implementation
+    Vec::new()
+}
 
 // A convenience extension trait for acquiring mutex locks where poisoning is
 // unrecoverable and should abort the program. This avoids scattered `.unwrap()`
@@ -184,7 +235,11 @@ impl Session {
                 let conversation_id = ConversationId::default();
                 (
                     conversation_id,
-                    RolloutRecorderParams::new(conversation_id, user_instructions.clone()),
+                    RolloutRecorderParams::new(
+                        conversation_id, 
+                        user_instructions.clone(), 
+                        codex_protocol::protocol::SessionSource::default()
+                    ),
                 )
             }
             InitialHistory::Resumed(resumed_history) => (
@@ -204,7 +259,10 @@ impl Session {
         // - load history metadata
         let rollout_fut = RolloutRecorder::new(&config, rollout_params);
 
-        let mcp_fut = McpConnectionManager::new(config.mcp_servers.clone());
+        let mcp_fut = McpConnectionManager::new(
+            config.mcp_servers.clone(),
+            config.mcp_oauth_credentials_store_mode
+        );
         let default_shell_fut = shell::default_user_shell();
         let history_meta_fut = crate::message_history::history_metadata(&config);
 
@@ -251,13 +309,26 @@ impl Session {
 
         // Now that the conversation id is final (may have been updated by resume),
         // construct the model client.
+        let otel_event_manager = codex_otel::otel_event_manager::OtelEventManager::new(
+            conversation_id,
+            &config.model,
+            &config.model_family.slug,
+            auth_manager.auth().and_then(|a| a.get_account_id()),
+            auth_manager.auth().and_then(|a| a.get_account_email()),
+            auth_manager.auth().map(|a| a.mode),
+            config.otel.log_user_prompt,
+            crate::terminal::user_agent(),
+        );
+        
         let client = ModelClient::new(
             config.clone(),
             Some(auth_manager.clone()),
+            otel_event_manager,
             provider.clone(),
             model_reasoning_effort,
             model_reasoning_summary,
             conversation_id,
+            codex_protocol::protocol::SessionSource::default(),
         );
         let turn_context = TurnContext {
             client,
@@ -266,7 +337,7 @@ impl Session {
             base_instructions,
             approval_policy,
             sandbox_policy,
-            shell_environment_policy: config.shell_environment_policy.clone(),
+            shell_environment_policy: crate::turn_context::ShellEnvironmentPolicy::default(),
             cwd,
         };
 
@@ -278,7 +349,7 @@ impl Session {
         crate::tool_registry::GLOBAL_TOOL_REGISTRY.set_mcp_tools(mcp_tools);
 
         // Initialize multi-agent components if subagent task tool is enabled
-        let multi_agent_components = if config.include_subagent_task_tool {
+        let multi_agent_components = if false { // TODO: Add include_subagent_task_tool to config
             let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
             let context_repo = Arc::new(InMemoryContextRepository::new());
 
@@ -289,13 +360,26 @@ impl Session {
             let (main_agent_event_tx, main_agent_event_rx) = tokio::sync::mpsc::unbounded_channel();
 
             // Create model client for subagent LLM executor
+            let otel_event_manager_subagent = codex_otel::otel_event_manager::OtelEventManager::new(
+                conversation_id,
+                &config.model,
+                &config.model_family.slug,
+                auth_manager.auth().and_then(|a| a.get_account_id()),
+                auth_manager.auth().and_then(|a| a.get_account_email()),
+                auth_manager.auth().map(|a| a.mode),
+                config.otel.log_user_prompt,
+                crate::terminal::user_agent(),
+            );
+            
             let model_client = Arc::new(ModelClient::new(
                 config.clone(),
                 Some(auth_manager.clone()),
+                otel_event_manager_subagent,
                 subagent_provider,
                 model_reasoning_effort,
                 model_reasoning_summary,
                 conversation_id,
+                codex_protocol::protocol::SessionSource::default(),
             ));
             // Revert: keep passing rollout_path to with_state_manager (method signature updated earlier)
             let subagent_manager = Arc::new(InMemorySubagentManager::with_state_manager(
@@ -485,6 +569,7 @@ impl Session {
             warn!("Overwriting existing pending approval for sub_id: {event_id}");
         }
 
+        let parsed_cmd = crate::parse_command::parse_command(&command);
         let event = Event {
             id: event_id,
             msg: EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
@@ -492,6 +577,8 @@ impl Session {
                 command,
                 cwd,
                 reason,
+                parsed_cmd,
+                risk: None, // TODO: Add risk assessment
             }),
         };
         self.send_event(event).await;
@@ -549,7 +636,8 @@ impl Session {
 
     pub fn add_approved_command(&self, cmd: Vec<String>) {
         let mut state = self.state.lock_unchecked();
-        state.approved_commands.insert(cmd);
+        let cmd_string = cmd.join(" ");
+        state.approved_commands.insert(cmd_string);
     }
 
     /// Get access to multi-agent components for agent coordination
@@ -672,6 +760,7 @@ impl Session {
                     .into_iter()
                     .map(Into::into)
                     .collect(),
+                is_user_shell_command: false, // TODO: Determine if this is a user shell command
             }),
         };
         let event = Event {
@@ -765,7 +854,7 @@ impl Session {
             exec_args.sandbox_type,
             exec_args.sandbox_policy,
             exec_args.sandbox_cwd,
-            exec_args.codex_linux_sandbox_exe,
+            &exec_args.codex_linux_sandbox_exe.map(|p| p.to_path_buf()),
             exec_args.stdout_stream,
         )
         .await;
@@ -823,14 +912,32 @@ impl Session {
     /// Build the full turn input by concatenating the current conversation
     /// history with additional items for this turn.
     pub fn turn_input_with_history(&self, extra: Vec<ResponseItem>) -> Vec<ResponseItem> {
-        [self.state.lock_unchecked().history.contents(), extra].concat()
+        let mut state = self.state.lock_unchecked();
+        let history = state.history.get_history();
+        [history, extra].concat()
     }
 
     /// Returns the input if there was no task running to inject into
     pub fn inject_input(&self, input: Vec<InputItem>) -> Result<(), Vec<InputItem>> {
         let mut state = self.state.lock_unchecked();
         if state.current_task.is_some() {
-            state.pending_input.push(input.into());
+            // Convert Vec<InputItem> to ResponseInputItem::Message
+            let content_items: Vec<codex_protocol::models::ContentItem> = input.into_iter().map(|item| {
+                match item {
+                    InputItem::Text { text } => codex_protocol::models::ContentItem::InputText { text },
+                    InputItem::Image { image_url } => codex_protocol::models::ContentItem::InputImage { image_url },
+                    InputItem::LocalImage { path } => codex_protocol::models::ContentItem::InputImage { 
+                        image_url: format!("file://{}", path.display()) 
+                    },
+                }
+            }).collect();
+            
+            let response_input_item = codex_protocol::models::ResponseInputItem::Message {
+                role: "user".to_string(),
+                content: content_items,
+            };
+            
+            state.pending_input.push(response_input_item);
             Ok(())
         } else {
             Err(input)
@@ -856,7 +963,7 @@ impl Session {
         timeout: Option<Duration>,
     ) -> anyhow::Result<CallToolResult> {
         self.mcp_connection_manager
-            .call_tool(server, tool, arguments, timeout)
+            .call_tool(server, tool, arguments)
             .await
     }
 
@@ -903,5 +1010,15 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.interrupt_task();
+    }
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session")
+            .field("conversation_id", &self.conversation_id)
+            .field("show_raw_agent_reasoning", &self.show_raw_agent_reasoning)
+            .field("has_multi_agent_components", &self.multi_agent_components.is_some())
+            .finish()
     }
 }

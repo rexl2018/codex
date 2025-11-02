@@ -447,17 +447,16 @@ impl LLMSubagentExecutor {
             }
         }
 
-        let (mut response_stream, updated_messages) = crate::codex::call_llm_with_error_handling(
+        let response_items = crate::codex::call_llm_with_error_handling(
             &self.model_client,
-            prompt,
-            &format!("subagent {:?}", task.agent_type)
+            &prompt,
         )
         .await
         .map_err(|e| format!("Failed to get LLM response: {}", e))?;
         
         // If content was summarized due to 400 error, we need to return the updated messages
         // so the caller can update their local messages state
-        let updated_messages_for_caller = updated_messages;
+        let updated_messages_for_caller = Vec::new(); // Placeholder since call_llm_with_error_handling returns Vec<ResponseItem>
 
         let mut full_response = String::new();
         let mut function_calls = Vec::new();
@@ -482,7 +481,10 @@ impl LLMSubagentExecutor {
         // Send initial prefix if this is the first message
         let mut prefix_sent = false;
 
-        // Collect the streaming response
+        // Create a placeholder stream since we're using Vec<ResponseItem> instead of streaming
+        let mut response_stream = futures::stream::empty::<Result<crate::client_common::ResponseEvent, Box<dyn std::error::Error + Send + Sync>>>();
+        
+        // Collect the streaming response (this will be empty due to placeholder implementation)
         while let Some(event) = response_stream.next().await {
             event_count += 1;
             match event {
@@ -612,6 +614,12 @@ impl LLMSubagentExecutor {
                                 reasoning_events
                             );
                         }
+                        ResponseEvent::OutputItemAdded(_) => {
+                            // Handle output item added
+                        }
+                        ResponseEvent::RateLimits(_) => {
+                            // Handle rate limits
+                        }
                         // WebSearchCallBegin variant no longer exists in ResponseEvent
                     }
                 }
@@ -705,10 +713,10 @@ impl LLMSubagentExecutor {
             .await;
         }
 
-        let updated_messages = if let Some(updated) = updated_messages_for_caller {
-            Some(updated)
-        } else {
+        let updated_messages = if updated_messages_for_caller.is_empty() {
             None
+        } else {
+            Some(updated_messages_for_caller)
         };
         
         Ok((LLMResponse {

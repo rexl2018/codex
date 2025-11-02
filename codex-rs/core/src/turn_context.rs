@@ -2,10 +2,16 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     client::ModelClient,
-    config_types::ShellEnvironmentPolicy,
+    // config_types::ShellEnvironmentPolicy,
     protocol::SandboxPolicy,
     tool_config::UnifiedToolConfig,
 };
+
+// Placeholder for ShellEnvironmentPolicy
+#[derive(Debug, Clone, Default)]
+pub struct ShellEnvironmentPolicy {
+    // Placeholder fields
+}
 
 /// The context needed for a single turn of the conversation.
 #[derive(Debug)]

@@ -1,7 +1,8 @@
 use crate::agent_task::AgentTask;
 use crate::turn_context::TurnContext;
 use crate::error::CodexErr;
-use codex_protocol::protocol::{InputItem, Submission};
+use codex_app_server_protocol::InputItem;
+use codex_protocol::protocol::Submission;
 
 pub trait Agent {
     /// Handles an input submission and returns a new AgentTask.

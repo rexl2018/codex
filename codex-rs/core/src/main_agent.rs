@@ -18,8 +18,19 @@ use crate::session::Session;
 use crate::state::AgentStateManager;
 use crate::turn_context::TurnContext;
 use crate::types::AgentState;
-use codex_protocol::protocol::InputItem;
+use codex_app_server_protocol::InputItem;
 use codex_protocol::protocol::Op;
+use codex_protocol::user_input::UserInput;
+
+// Helper function to convert UserInput to InputItem
+fn convert_user_input_to_input_item(user_input: UserInput) -> InputItem {
+    match user_input {
+        UserInput::Text { text } => InputItem::Text { text },
+        UserInput::Image { image_url } => InputItem::Image { image_url },
+        UserInput::LocalImage { path } => InputItem::LocalImage { path },
+        _ => InputItem::Text { text: "Unsupported input type".to_string() },
+    }
+}
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::protocol::SubagentType;
 use codex_protocol::protocol::Submission;
@@ -539,8 +550,13 @@ impl Agent for MainAgent {
     fn handle_submission(&self, submission: Submission) -> Result<AgentTask, anyhow::Error> {
         match submission.op {
             Op::UserInput { items } => {
+                // Convert UserInput to InputItem
+                let input_items: Vec<InputItem> = items.into_iter()
+                    .map(convert_user_input_to_input_item)
+                    .collect();
+                
                 // Convert to event and send to the event loop
-                let event = AgentEvent::user_input_received(items, submission.id.clone());
+                let event = AgentEvent::user_input_received(input_items, submission.id.clone());
                 if let Err(e) = self.event_sender.send(event) {
                     error!("Failed to send UserInput event: {}", e);
                     return Err(anyhow::anyhow!("Failed to send UserInput event: {}", e));
@@ -553,8 +569,13 @@ impl Agent for MainAgent {
                 ))
             }
             Op::UserTurn { items, .. } => {
+                // Convert UserInput to InputItem
+                let input_items: Vec<InputItem> = items.into_iter()
+                    .map(convert_user_input_to_input_item)
+                    .collect();
+                
                 // Convert to event and send to the event loop
-                let event = AgentEvent::user_input_received(items, submission.id.clone());
+                let event = AgentEvent::user_input_received(input_items, submission.id.clone());
                 if let Err(e) = self.event_sender.send(event) {
                     error!("Failed to send UserTurn event: {}", e);
                     return Err(anyhow::anyhow!("Failed to send UserTurn event: {}", e));

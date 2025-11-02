@@ -314,7 +314,6 @@ impl UnifiedErrorHandler {
         call_id: Option<String>,
         use_user_message: bool,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
         let config = self.config.read().unwrap();
         
         let mut content = if use_user_message {
@@ -349,7 +348,6 @@ impl UnifiedErrorHandler {
         strategy_name: &str,
         call_id: Option<String>,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
         let handlers = self.custom_handlers.read().unwrap();
         
         if let Some(handler) = handlers.get(strategy_name) {

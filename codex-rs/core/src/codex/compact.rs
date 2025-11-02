@@ -40,7 +40,7 @@ pub(crate) async fn run_inline_auto_compact_task(
 }
 
 pub(crate) async fn run_compact_task(
-    sess: Arc<Session>,
+    sess: Arc<super::Session>,
     turn_context: Arc<TurnContext>,
     input: Vec<UserInput>,
 ) -> Option<String> {

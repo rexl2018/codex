@@ -9,8 +9,9 @@ use crate::unified_error_types::{UnifiedError, ErrorContext};
 use crate::performance::{PerformanceOptimizer, OptimizedEventSender, TaskPool};
 use crate::context_store::{IContextRepository, Context};
 use crate::subagent_manager::{ISubagentManager, SubagentTaskSpec};
+use codex_app_server_protocol::InputItem;
 use codex_protocol::protocol::{
-    InputItem, Submission, Op, SubagentType, BootstrapPath, Event, EventMsg,
+    Submission, Op, SubagentType, BootstrapPath, Event, EventMsg,
     SubagentTaskCreatedEvent, SubagentStartedEvent
 };
 use codex_protocol::models::{ResponseItem, ContentItem}; // added
@@ -704,7 +705,8 @@ impl Agent for SubAgent {
 impl SubAgent {
     fn build_injected_conversation(&self, max_entries: usize) -> Vec<ResponseItem> {
         // Get full conversation history
-        let history = self.session.state.lock_unchecked().history.contents();
+        let mut state = self.session.state.lock_unchecked();
+        let history = state.history.get_history();
         // Take only user/assistant messages
         let mut msgs: Vec<ResponseItem> = history
             .iter()

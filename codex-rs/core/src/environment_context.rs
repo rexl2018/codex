@@ -5,6 +5,12 @@ use strum_macros::Display as DeriveDisplay;
 use crate::turn_context::TurnContext;
 use crate::protocol::AskForApproval;
 use crate::protocol::SandboxPolicy;
+
+// Placeholder for ApprovalPolicy
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ApprovalPolicy {
+    // Placeholder fields
+}
 use crate::shell::Shell;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::models::ContentItem;
@@ -76,7 +82,7 @@ impl EnvironmentContext {
     pub fn matches(
         &self,
         cwd: &PathBuf,
-        approval_policy: &ApprovalPolicy,
+        approval_policy: &AskForApproval,
         sandbox_mode: &SandboxMode,
         network_access: &NetworkAccess,
         writable_roots: &[PathBuf],
@@ -84,7 +90,7 @@ impl EnvironmentContext {
         self.cwd == Some(cwd.clone())
             && self.approval_policy == Some(*approval_policy)
             && self.sandbox_mode == Some(*sandbox_mode)
-            && self.network_access == Some(*network_access)
+            && self.network_access == Some(network_access.clone())
             && self.writable_roots == Some(writable_roots.to_vec())
     }
 

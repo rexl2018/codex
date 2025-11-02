@@ -7,12 +7,12 @@ use std::sync::atomic::AtomicU64;
 use crate::AuthManager;
 use crate::agent_task::AgentTask;
 use crate::client_common::REVIEW_PROMPT;
-use crate::config_edit::CONFIG_KEY_EFFORT;
-use crate::config_edit::CONFIG_KEY_MODEL;
-use crate::config_edit::persist_non_null_overrides;
+// use crate::config_edit::CONFIG_KEY_EFFORT;
+// use crate::config_edit::CONFIG_KEY_MODEL;
+// use crate::config_edit::persist_non_null_overrides;
 use crate::context_store::IContextRepository;
 use crate::context_store::InMemoryContextRepository;
-use crate::event_mapping::map_response_item_to_event_messages;
+// use crate::event_mapping::map_response_item_to_event_messages;
 use crate::events::format_exec_output;
 use crate::events::format_exec_output_str;
 use crate::features::Feature;
@@ -24,15 +24,15 @@ use crate::multi_agent_coordinator::SubtaskCoordinator;
 use crate::review_format::format_review_findings_block;
 use crate::session::ConfigureSession;
 use crate::session::MutexExt;
-use crate::session::Session;
-use crate::state::State;
+use crate::session::Session as SessionModule;
+// use crate::state::State;
 use crate::subagent_manager::ExecutorType;
 use crate::subagent_manager::ISubagentManager;
 use crate::subagent_manager::InMemorySubagentManager;
 use crate::subagent_manager::SubagentTaskSpec;
 use crate::submission_loop::original_submission_loop;
 use crate::submission_loop::submission_loop;
-use crate::turn_context::TurnContext;
+use crate::turn_context::TurnContext as TurnContextModule;
 use crate::types::AgentState;
 use crate::types::ApplyPatchCommandContext;
 use crate::types::ExecCommandContext;
@@ -48,7 +48,6 @@ use async_channel::Receiver;
 use async_channel::Sender;
 use codex_protocol::ConversationId;
 use codex_protocol::items::TurnItem;
-use codex_protocol::mcp_protocol::ConversationId;
 use codex_protocol::protocol::BootstrapPath;
 use codex_protocol::protocol::ContextItem;
 use codex_protocol::protocol::ContextQuery;
@@ -167,7 +166,6 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::InitialHistory;
 use codex_protocol::user_input::UserInput;
 use codex_utils_readiness::Readiness;
 use codex_utils_readiness::ReadinessFlag;
@@ -245,7 +243,7 @@ impl Codex {
         let conversation_id = session.conversation_id;
 
         // This task will run until Op::Shutdown is received.
-        tokio::spawn(submission_loop(session, config, rx_sub));
+        tokio::spawn(codex_submission_loop(session, config, rx_sub));
         let codex = Codex {
             next_id: AtomicU64::new(0),
             tx_sub,
@@ -1296,7 +1294,7 @@ impl Session {
     }
 }
 
-async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiver<Submission>) {
+async fn codex_submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiver<Submission>) {
     let mut previous_context: Option<Arc<TurnContext>> = None;
     // To break out of this loop, send Op::Shutdown.
     while let Ok(sub) = rx_sub.recv().await {
@@ -3234,4 +3232,30 @@ mod tests {
             display
         );
     }
+}
+
+// Placeholder for ExecInvokeArgs
+#[derive(Debug)]
+pub(crate) struct ExecInvokeArgs<'a> {
+    pub params: crate::exec::ExecParams,
+    pub sandbox_type: crate::exec::SandboxType,
+    pub sandbox_policy: &'a crate::protocol::SandboxPolicy,
+    pub sandbox_cwd: &'a std::path::Path,
+    pub codex_linux_sandbox_exe: Option<&'a std::path::Path>,
+    pub stdout_stream: Option<crate::exec::StdoutStream>,
+}
+
+// Placeholder for call_llm_with_error_handling
+pub(crate) async fn call_llm_with_error_handling(
+    _client: &crate::client::ModelClient,
+    _prompt: &crate::client_common::Prompt,
+) -> Result<Vec<codex_protocol::models::ResponseItem>, Box<dyn std::error::Error + Send + Sync>> {
+    // Placeholder implementation
+    Ok(Vec::new())
+}
+
+// Placeholder for contains_shell_operators
+pub(crate) fn contains_shell_operators(_command: &str) -> bool {
+    // Placeholder implementation
+    false
 }

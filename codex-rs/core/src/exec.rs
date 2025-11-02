@@ -77,7 +77,7 @@ pub enum SandboxType {
     WindowsRestrictedToken,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct StdoutStream {
     pub sub_id: String,
     pub call_id: String,

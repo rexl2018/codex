@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::collections::BTreeMap;
 
+use crate::client_common::tools::{ToolSpec, ResponsesApiTool};
+use crate::tools::spec::JsonSchema;
 use crate::tool_config::{UnifiedToolConfig, ToolDefinition, ToolType, Permission};
 use crate::unified_function_handler::AgentType;
-use crate::openai_tools::OpenAiTool;
 
 /// Central registry for managing tools across the application
 pub struct ToolRegistry {
@@ -17,8 +19,8 @@ pub struct ToolRegistry {
 
 /// Factory trait for creating tools
 pub trait ToolFactory: Send + Sync {
-    /// Create an OpenAI tool from the tool definition
-    fn create_openai_tool(&self, definition: &ToolDefinition) -> Result<OpenAiTool, String>;
+    /// Create a tool spec from the tool definition
+    fn create_tool_spec(&self, definition: &ToolDefinition) -> Result<ToolSpec, String>;
     
     /// Get the tool type this factory handles
     fn tool_type(&self) -> ToolType;
@@ -31,7 +33,7 @@ pub trait ToolFactory: Send + Sync {
 pub struct ShellToolFactory;
 
 impl ToolFactory for ShellToolFactory {
-    fn create_openai_tool(&self, definition: &ToolDefinition) -> Result<OpenAiTool, String> {
+    fn create_tool_spec(&self, definition: &ToolDefinition) -> Result<ToolSpec, String> {
         if definition.tool_type != ToolType::Shell {
             return Err("Invalid tool type for ShellToolFactory".to_string());
         }
@@ -40,15 +42,25 @@ impl ToolFactory for ShellToolFactory {
         let shell_config = definition.config.shell.as_ref()
             .ok_or("Shell tool requires shell configuration")?;
 
-        if shell_config.use_streamable {
-            // Create streamable shell tool
-            Ok(OpenAiTool::Function(
-                crate::exec_command::create_exec_command_tool_for_responses_api()
-            ))
-        } else {
-            // Create regular shell tool
-            Ok(crate::openai_tools::create_shell_tool())
-        }
+        // Create shell tool
+        let mut properties = BTreeMap::new();
+        properties.insert(
+            "command".to_string(),
+            JsonSchema::String {
+                description: Some("The shell command to execute".to_string()),
+            },
+        );
+
+        Ok(ToolSpec::Function(ResponsesApiTool {
+            name: "shell".to_string(),
+            description: "Runs a shell command and returns its output.".to_string(),
+            strict: false,
+            parameters: JsonSchema::Object {
+                properties,
+                required: Some(vec!["command".to_string()]),
+                additional_properties: Some(false.into()),
+            },
+        }))
     }
 
     fn tool_type(&self) -> ToolType {
@@ -67,14 +79,41 @@ impl ToolFactory for ShellToolFactory {
 pub struct FileSystemToolFactory;
 
 impl ToolFactory for FileSystemToolFactory {
-    fn create_openai_tool(&self, definition: &ToolDefinition) -> Result<OpenAiTool, String> {
+    fn create_tool_spec(&self, definition: &ToolDefinition) -> Result<ToolSpec, String> {
         if definition.tool_type != ToolType::FileSystem {
             return Err("Invalid tool type for FileSystemToolFactory".to_string());
         }
 
         match definition.name.as_str() {
-            "read_file" => Ok(crate::openai_tools::create_read_file_tool()),
-            "write_file" => Ok(crate::openai_tools::create_write_file_tool()),
+            "read_file" => {
+                let mut properties = BTreeMap::new();
+                properties.insert("file_path".to_string(), JsonSchema::String { description: Some("Path to the file to read".to_string()) });
+                Ok(ToolSpec::Function(ResponsesApiTool {
+                    name: "read_file".to_string(),
+                    description: "Read the contents of a file".to_string(),
+                    strict: false,
+                    parameters: JsonSchema::Object {
+                        properties,
+                        required: Some(vec!["file_path".to_string()]),
+                        additional_properties: Some(false.into()),
+                    },
+                }))
+            },
+            "write_file" => {
+                let mut properties = BTreeMap::new();
+                properties.insert("file_path".to_string(), JsonSchema::String { description: Some("Path to the file to write".to_string()) });
+                properties.insert("content".to_string(), JsonSchema::String { description: Some("Content to write to the file".to_string()) });
+                Ok(ToolSpec::Function(ResponsesApiTool {
+                    name: "write_file".to_string(),
+                    description: "Write content to a file".to_string(),
+                    strict: false,
+                    parameters: JsonSchema::Object {
+                        properties,
+                        required: Some(vec!["file_path".to_string(), "content".to_string()]),
+                        additional_properties: Some(false.into()),
+                    },
+                }))
+            },
             _ => Err(format!("Unknown file system tool: {}", definition.name)),
         }
     }
@@ -95,16 +134,39 @@ impl ToolFactory for FileSystemToolFactory {
 pub struct ContextToolFactory;
 
 impl ToolFactory for ContextToolFactory {
-    fn create_openai_tool(&self, definition: &ToolDefinition) -> Result<OpenAiTool, String> {
+    fn create_tool_spec(&self, definition: &ToolDefinition) -> Result<ToolSpec, String> {
         if definition.tool_type != ToolType::Context {
             return Err("Invalid tool type for ContextToolFactory".to_string());
         }
 
         match definition.name.as_str() {
-            "store_context" => Ok(crate::openai_tools::create_store_context_tool()),
-            "update_context" => Ok(crate::openai_tools::create_update_context_tool()),
-            "list_contexts" => Ok(crate::openai_tools::create_list_contexts_tool()),
-            "multi_retrieve_contexts" => Ok(crate::openai_tools::create_multi_retrieve_contexts_tool()),
+            "store_context" => {
+                let mut properties = BTreeMap::new();
+                properties.insert("id".to_string(), JsonSchema::String { description: Some("Context ID".to_string()) });
+                properties.insert("content".to_string(), JsonSchema::String { description: Some("Context content".to_string()) });
+                Ok(ToolSpec::Function(ResponsesApiTool {
+                    name: "store_context".to_string(),
+                    description: "Store context information".to_string(),
+                    strict: false,
+                    parameters: JsonSchema::Object {
+                        properties,
+                        required: Some(vec!["id".to_string(), "content".to_string()]),
+                        additional_properties: Some(false.into()),
+                    },
+                }))
+            },
+            "list_contexts" => {
+                Ok(ToolSpec::Function(ResponsesApiTool {
+                    name: "list_contexts".to_string(),
+                    description: "List available contexts".to_string(),
+                    strict: false,
+                    parameters: JsonSchema::Object {
+                        properties: BTreeMap::new(),
+                        required: None,
+                        additional_properties: Some(false.into()),
+                    },
+                }))
+            },
             _ => Err(format!("Unknown context tool: {}", definition.name)),
         }
     }
@@ -125,16 +187,26 @@ impl ToolFactory for ContextToolFactory {
 pub struct SubagentToolFactory;
 
 impl ToolFactory for SubagentToolFactory {
-    fn create_openai_tool(&self, definition: &ToolDefinition) -> Result<OpenAiTool, String> {
+    fn create_tool_spec(&self, definition: &ToolDefinition) -> Result<ToolSpec, String> {
         if definition.tool_type != ToolType::SubagentManagement {
             return Err("Invalid tool type for SubagentToolFactory".to_string());
         }
 
         match definition.name.as_str() {
-            "create_subagent_task" => Ok(crate::openai_tools::create_subagent_task_tool()),
-            "resume_subagent" => Ok(crate::openai_tools::create_resume_subagent_tool()),
-            "list_recently_completed_subagents" => Ok(crate::openai_tools::create_list_recently_completed_subagents_tool()),
-            "multi_get_subagent_report" => Ok(crate::openai_tools::create_multi_get_subagent_report_tool()),
+            "create_subagent_task" => {
+                let mut properties = BTreeMap::new();
+                properties.insert("task_description".to_string(), JsonSchema::String { description: Some("Description of the subagent task".to_string()) });
+                Ok(ToolSpec::Function(ResponsesApiTool {
+                    name: "create_subagent_task".to_string(),
+                    description: "Create a new subagent task".to_string(),
+                    strict: false,
+                    parameters: JsonSchema::Object {
+                        properties,
+                        required: Some(vec!["task_description".to_string()]),
+                        additional_properties: Some(false.into()),
+                    },
+                }))
+            },
             _ => Err(format!("Unknown subagent tool: {}", definition.name)),
         }
     }
@@ -153,13 +225,13 @@ impl ToolFactory for SubagentToolFactory {
 pub struct WebSearchToolFactory;
 
 impl ToolFactory for WebSearchToolFactory {
-    fn create_openai_tool(&self, definition: &ToolDefinition) -> Result<OpenAiTool, String> {
+    fn create_tool_spec(&self, definition: &ToolDefinition) -> Result<ToolSpec, String> {
         if definition.tool_type != ToolType::WebSearch {
             return Err("Invalid tool type for WebSearchToolFactory".to_string());
         }
 
         match definition.name.as_str() {
-            "web_search" => Ok(OpenAiTool::WebSearch {}),
+            "web_search" => Ok(ToolSpec::WebSearch {}),
             _ => Err(format!("Unknown web search tool: {}", definition.name)),
         }
     }
@@ -178,16 +250,26 @@ impl ToolFactory for WebSearchToolFactory {
 pub struct ApplyPatchToolFactory;
 
 impl ToolFactory for ApplyPatchToolFactory {
-    fn create_openai_tool(&self, definition: &ToolDefinition) -> Result<OpenAiTool, String> {
+    fn create_tool_spec(&self, definition: &ToolDefinition) -> Result<ToolSpec, String> {
         if !matches!(definition.tool_type, ToolType::Custom(ref name) if name == "apply_patch") {
             return Err("Invalid tool type for ApplyPatchToolFactory".to_string());
         }
 
         match definition.name.as_str() {
             "apply_patch" => {
-                // Use the appropriate apply_patch tool based on model family
-                // For now, default to the function tool
-                Ok(crate::tool_apply_patch::create_apply_patch_json_tool())
+                // Create a simple apply_patch tool
+                let mut properties = BTreeMap::new();
+                properties.insert("patch".to_string(), JsonSchema::String { description: Some("The patch to apply".to_string()) });
+                Ok(ToolSpec::Function(ResponsesApiTool {
+                    name: "apply_patch".to_string(),
+                    description: "Apply a patch to files".to_string(),
+                    strict: false,
+                    parameters: JsonSchema::Object {
+                        properties,
+                        required: Some(vec!["patch".to_string()]),
+                        additional_properties: Some(false.into()),
+                    },
+                }))
             },
             _ => Err(format!("Unknown apply patch tool: {}", definition.name)),
         }
@@ -207,13 +289,26 @@ impl ToolFactory for ApplyPatchToolFactory {
 pub struct PlanToolFactory;
 
 impl ToolFactory for PlanToolFactory {
-    fn create_openai_tool(&self, definition: &ToolDefinition) -> Result<OpenAiTool, String> {
+    fn create_tool_spec(&self, definition: &ToolDefinition) -> Result<ToolSpec, String> {
         if !matches!(definition.tool_type, ToolType::Custom(ref name) if name == "plan") {
             return Err("Invalid tool type for PlanToolFactory".to_string());
         }
 
         match definition.name.as_str() {
-            "update_plan" => Ok(crate::plan_tool::PLAN_TOOL.clone()),
+            "update_plan" => {
+                let mut properties = BTreeMap::new();
+                properties.insert("plan".to_string(), JsonSchema::String { description: Some("The plan to update".to_string()) });
+                Ok(ToolSpec::Function(ResponsesApiTool {
+                    name: "update_plan".to_string(),
+                    description: "Update the current plan".to_string(),
+                    strict: false,
+                    parameters: JsonSchema::Object {
+                        properties,
+                        required: Some(vec!["plan".to_string()]),
+                        additional_properties: Some(false.into()),
+                    },
+                }))
+            },
             _ => Err(format!("Unknown plan tool: {}", definition.name)),
         }
     }
@@ -232,7 +327,7 @@ impl ToolFactory for PlanToolFactory {
 pub struct McpToolFactory;
 
 impl ToolFactory for McpToolFactory {
-    fn create_openai_tool(&self, definition: &ToolDefinition) -> Result<OpenAiTool, String> {
+    fn create_tool_spec(&self, definition: &ToolDefinition) -> Result<ToolSpec, String> {
         if definition.tool_type != ToolType::Mcp {
             return Err("Invalid tool type for McpToolFactory".to_string());
         }
@@ -316,7 +411,7 @@ impl ToolRegistry {
     }
 
     /// Get tools for a specific agent type, including MCP tools if available
-    pub fn get_tools_for_agent(&self, agent_type: &AgentType) -> Result<Vec<OpenAiTool>, String> {
+    pub fn get_tools_for_agent(&self, agent_type: &AgentType) -> Result<Vec<ToolSpec>, String> {
         let configs = self.configs.read().unwrap();
         let config = configs.get(agent_type)
             .ok_or_else(|| format!("No configuration found for agent type: {:?}", agent_type))?;
@@ -333,7 +428,7 @@ impl ToolRegistry {
                     .map_err(|e| format!("Tool '{}' validation failed: {}", definition.name, e))?;
 
                 // Create the tool
-                let tool = factory.create_openai_tool(&definition)
+                let tool = factory.create_tool_spec(&definition)
                     .map_err(|e| format!("Failed to create tool '{}': {}", definition.name, e))?;
 
                 tools.push(tool);
@@ -342,23 +437,8 @@ impl ToolRegistry {
             }
         }
 
-        // Add MCP tools if agent has MCP access permission and MCP tools are available
-        let agent_permissions = config.get_agent_permissions(agent_type);
-        if agent_permissions.contains(&crate::tool_config::Permission::McpAccess) {
-            if let Some(mcp_tools_map) = self.get_mcp_tools() {
-                // Convert MCP tools to OpenAI tools
-                for (name, mcp_tool) in mcp_tools_map {
-                    match crate::openai_tools::mcp_tool_to_openai_tool(name, mcp_tool) {
-                        Ok(openai_tool) => {
-                            tools.push(crate::openai_tools::OpenAiTool::Function(openai_tool));
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to convert MCP tool to OpenAI tool: {}", e);
-                        }
-                    }
-                }
-            }
-        }
+        // TODO: Add MCP tools support
+        // MCP tools conversion will be implemented later
 
         Ok(tools)
     }
@@ -447,7 +527,7 @@ lazy_static::lazy_static! {
 }
 
 /// Convenience function to get tools for an agent type using the global registry
-pub fn get_tools_for_agent(agent_type: &AgentType) -> Result<Vec<OpenAiTool>, String> {
+pub fn get_tools_for_agent(agent_type: &AgentType) -> Result<Vec<ToolSpec>, String> {
     GLOBAL_TOOL_REGISTRY.get_tools_for_agent(agent_type)
 }
 

@@ -451,7 +451,6 @@ mod tests {
             _reason: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
-            content_items: None,
             FunctionCallOutputPayload {
             content_items: None,
                 content: "context updated".to_string(),
@@ -461,69 +460,56 @@ mod tests {
 
         async fn execute_create_subagent_task(
             &self,
-            _arguments: String,
+            _args: serde_json::Value,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
-            content_items: None,
             FunctionCallOutputPayload {
-            content_items: None,
+                content_items: None,
                 content: "subagent created".to_string(),
                 success: Some(true),
             }
         }
 
-        async fn execute_resume_subagent(
+        async fn execute_get_subagent_status(
             &self,
-            _arguments: String,
+            _task_id: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
-            content_items: None,
             FunctionCallOutputPayload {
-            content_items: None,
+                content_items: None,
+                content: "subagent status".to_string(),
+                success: Some(true),
+            }
+        }
+
+        async fn execute_wait_for_subagent(
+            &self,
+            _task_id: String,
+            _timeout_seconds: Option<u64>,
+            _context: &UniversalFunctionCallContext,
+        ) -> FunctionCallOutputPayload {
+            FunctionCallOutputPayload {
+                content_items: None,
                 content: "subagent resumed".to_string(),
                 success: Some(true),
             }
         }
 
-        async fn execute_mcp_tool(
+        async fn execute_mcp_call(
             &self,
-            _tool_name: String,
-            _arguments: String,
+            _server_name: String,
+            _method: String,
+            _params: serde_json::Value,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
-            content_items: None,
             FunctionCallOutputPayload {
-            content_items: None,
-                content: "mcp tool executed".to_string(),
+                content_items: None,
+                content: "mcp call executed".to_string(),
                 success: Some(true),
             }
         }
 
-        async fn execute_apply_patch(
-            &self,
-            _arguments: String,
-            _context: &UniversalFunctionCallContext,
-        ) -> FunctionCallOutputPayload {
-            content_items: None,
-            FunctionCallOutputPayload {
-            content_items: None,
-                content: "patch applied".to_string(),
-                success: Some(true),
-            }
-        }
 
-        async fn execute_update_plan(
-            &self,
-            _arguments: String,
-            _context: &UniversalFunctionCallContext,
-        ) -> FunctionCallOutputPayload {
-            content_items: None,
-            FunctionCallOutputPayload {
-            content_items: None,
-                content: "plan updated".to_string(),
-                success: Some(true),
-            }
-        }
     }
 
     #[tokio::test]

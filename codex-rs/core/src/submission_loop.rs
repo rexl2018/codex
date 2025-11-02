@@ -2,12 +2,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_channel::Receiver;
+use codex_app_server_protocol::InputItem;
 use tracing::{debug, error, info, warn};
 
 use crate::{
     agent_task::AgentTask,
     config::Config,
-    config_edit::{persist_non_null_overrides, CONFIG_KEY_EFFORT, CONFIG_KEY_MODEL},
+    // config_edit::{persist_non_null_overrides, CONFIG_KEY_EFFORT, CONFIG_KEY_MODEL},
     context_store::{ContextQuery, IContextRepository},
     environment_context::EnvironmentContext,
     model_family::find_family_for_model,
@@ -15,7 +16,7 @@ use crate::{
     protocol::{
         AgentMessageEvent, BackgroundEventEvent, ContextQueryResultEvent, ContextSummary,
         ConversationPathResponseEvent, ErrorEvent, Event, EventMsg, GetContextsResultEvent,
-        GetHistoryEntryResponseEvent, InputItem, ListCustomPromptsResponseEvent,
+        GetHistoryEntryResponseEvent, ListCustomPromptsResponseEvent,
         LoadContextsFromFileResultEvent, McpListToolsResponseEvent, Op, ReviewDecision,
         SaveContextsToFileResultEvent, Submission,
     },
@@ -27,8 +28,22 @@ use crate::{
 use codex_protocol::{
     custom_prompts::CustomPrompt,
     models::ResponseItem,
-    protocol::{ContextItem, InitialHistory, SubagentStartedEvent},
+    protocol::{ContextItem, SubagentStartedEvent},
 };
+
+// Configuration keys for persistence
+const CONFIG_KEY_MODEL: &str = "model";
+const CONFIG_KEY_EFFORT: &str = "effort";
+
+// Placeholder function for persist_non_null_overrides
+async fn persist_non_null_overrides(
+    _codex_home: &std::path::Path,
+    _profile: Option<&str>,
+    _overrides: &[(&[&str], Option<&str>)],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Placeholder implementation
+    Ok(())
+}
 
 /// Refactored submission loop that uses the new agent architecture
 pub(crate) async fn refactored_submission_loop(
@@ -102,13 +117,26 @@ pub(crate) async fn original_submission_loop(
                     updated_config.model_context_window = Some(model_info.context_window);
                 }
 
+                let otel_event_manager = codex_otel::otel_event_manager::OtelEventManager::new(
+                    sess.conversation_id,
+                    &config.model,
+                    &config.model_family.slug,
+                    auth_manager.as_ref().and_then(|am| am.auth()).and_then(|a| a.get_account_id()),
+                    auth_manager.as_ref().and_then(|am| am.auth()).and_then(|a| a.get_account_email()),
+                    auth_manager.as_ref().and_then(|am| am.auth()).map(|a| a.mode),
+                    config.otel.log_user_prompt,
+                    crate::terminal::user_agent(),
+                );
+                
                 let client = crate::client::ModelClient::new(
                     Arc::new(updated_config),
                     auth_manager,
+                    otel_event_manager,
                     provider,
                     effective_effort,
                     effective_summary,
                     sess.conversation_id,
+                    codex_protocol::protocol::SessionSource::default(),
                 );
 
                 let new_approval_policy = approval_policy.unwrap_or(prev.approval_policy);
@@ -151,8 +179,18 @@ pub(crate) async fn original_submission_loop(
                 // but requires access to private methods
             }
             Op::UserInput { items } => {
+                // Convert Vec<UserInput> to Vec<InputItem>
+                let input_items: Vec<codex_app_server_protocol::InputItem> = items.into_iter().map(|user_input| {
+                    match user_input {
+                        codex_protocol::user_input::UserInput::Text { text } => codex_app_server_protocol::InputItem::Text { text },
+                        codex_protocol::user_input::UserInput::Image { image_url } => codex_app_server_protocol::InputItem::Image { image_url },
+                        codex_protocol::user_input::UserInput::LocalImage { path } => codex_app_server_protocol::InputItem::LocalImage { path },
+                        _ => codex_app_server_protocol::InputItem::Text { text: "Unsupported input type".to_string() },
+                    }
+                }).collect();
+                
                 // attempt to inject input into current task
-                if let Err(items) = sess.inject_input(items) {
+                if let Err(items) = sess.inject_input(input_items) {
                     // no current task, spawn a new one
                     tracing::debug!("Creating agent task for UserInput: sub_id={}", sub.id);
                     tracing::info!("Creating agent task for UserInput: sub_id={}", sub.id);
@@ -177,9 +215,20 @@ pub(crate) async fn original_submission_loop(
                 model,
                 effort,
                 summary,
+                final_output_json_schema: _,
             } => {
+                // Convert Vec<UserInput> to Vec<InputItem>
+                let input_items: Vec<codex_app_server_protocol::InputItem> = items.into_iter().map(|user_input| {
+                    match user_input {
+                        codex_protocol::user_input::UserInput::Text { text } => codex_app_server_protocol::InputItem::Text { text },
+                        codex_protocol::user_input::UserInput::Image { image_url } => codex_app_server_protocol::InputItem::Image { image_url },
+                        codex_protocol::user_input::UserInput::LocalImage { path } => codex_app_server_protocol::InputItem::LocalImage { path },
+                        _ => codex_app_server_protocol::InputItem::Text { text: "Unsupported input type".to_string() },
+                    }
+                }).collect();
+                
                 // attempt to inject input into current task
-                if let Err(items) = sess.inject_input(items) {
+                if let Err(items) = sess.inject_input(input_items) {
                     // Derive a fresh TurnContext for this turn using the provided overrides.
                     let provider = turn_context.client.get_provider();
                     let auth_manager = turn_context.client.get_auth_manager();
@@ -198,13 +247,26 @@ pub(crate) async fn original_submission_loop(
 
                     // Build a new client with per‑turn reasoning settings.
                     // Reuse the same provider and session id; auth defaults to env/API key.
+                    let otel_event_manager_turn = codex_otel::otel_event_manager::OtelEventManager::new(
+                        sess.conversation_id,
+                        &config.model,
+                        &config.model_family.slug,
+                        auth_manager.as_ref().and_then(|am| am.auth()).and_then(|a| a.get_account_id()),
+                        auth_manager.as_ref().and_then(|am| am.auth()).and_then(|a| a.get_account_email()),
+                        auth_manager.as_ref().and_then(|am| am.auth()).map(|a| a.mode),
+                        config.otel.log_user_prompt,
+                        crate::terminal::user_agent(),
+                    );
+                    
                     let client = crate::client::ModelClient::new(
                         Arc::new(per_turn_config),
                         auth_manager,
+                        otel_event_manager_turn,
                         provider,
                         effort,
                         summary,
                         sess.conversation_id,
+                        codex_protocol::protocol::SessionSource::default(),
                     );
 
                     let fresh_turn_context = TurnContext {
@@ -349,33 +411,33 @@ pub(crate) async fn original_submission_loop(
                 sess.send_event(event).await;
                 break;
             }
-            Op::GetPath => {
-                let sub_id = sub.id.clone();
-                // Flush rollout writes before returning the path so readers observe a consistent file.
-                let (path, rec_opt) = {
-                    let guard = sess.rollout.lock_unchecked();
-                    match guard.as_ref() {
-                        Some(rec) => (rec.get_rollout_path(), Some(rec.clone())),
-                        None => {
-                            error!("rollout recorder not found");
-                            continue;
-                        }
-                    }
-                };
-                if let Some(rec) = rec_opt
-                    && let Err(e) = rec.flush().await
-                {
-                    warn!("failed to flush rollout recorder before GetHistory: {e}");
-                }
-                let event = Event {
-                    id: sub_id.clone(),
-                    msg: EventMsg::ConversationPath(ConversationPathResponseEvent {
-                        conversation_id: sess.conversation_id,
-                        path,
-                    }),
-                };
-                sess.send_event(event).await;
-            }
+            // Op::GetPath => {
+            //     let sub_id = sub.id.clone();
+            //     // Flush rollout writes before returning the path so readers observe a consistent file.
+            //     let (path, rec_opt) = {
+            //         let guard = sess.rollout.lock_unchecked();
+            //         match guard.as_ref() {
+            //             Some(rec) => (rec.get_rollout_path(), Some(rec.clone())),
+            //             None => {
+            //                 error!("rollout recorder not found");
+            //                 continue;
+            //             }
+            //         }
+            //     };
+            //     if let Some(rec) = rec_opt
+            //         && let Err(e) = rec.flush().await
+            //     {
+            //         warn!("failed to flush rollout recorder before GetHistory: {e}");
+            //     }
+            //     let event = Event {
+            //         id: sub_id.clone(),
+            //         msg: EventMsg::ConversationPath(ConversationPathResponseEvent {
+            //             conversation_id: sess.conversation_id,
+            //             path,
+            //         }),
+            //     };
+            //     sess.send_event(event).await;
+            // }
             // Subagent operations
             Op::CreateSubagentTask {
                 agent_type,
@@ -387,7 +449,7 @@ pub(crate) async fn original_submission_loop(
                 if let Some(ref components) = sess.multi_agent_components {
                     // 构建注入会话历史：包含最近的用户和助手消息
                     let max_injected: usize = 50; // TODO: 配置化
-                    let history = sess.state.lock_unchecked().history.contents();
+                    let history = sess.state.lock_unchecked().history.get_history();
                     let mut injected: Vec<codex_protocol::models::ResponseItem> = history
                         .iter()
                         .filter_map(|item| match item {

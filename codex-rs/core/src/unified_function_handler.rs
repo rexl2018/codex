@@ -99,42 +99,41 @@ pub trait UniversalFunctionExecutor: Send + Sync {
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload;
 
-    async fn execute_update_context(
+    async fn execute_retrieve_context(
         &self,
         id: String,
-        content: String,
-        reason: String,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload;
+
+    async fn execute_list_context(
+        &self,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload;
 
     async fn execute_create_subagent_task(
         &self,
-        arguments: String,
+        args: serde_json::Value,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload;
 
-    async fn execute_resume_subagent(
+    async fn execute_get_subagent_status(
         &self,
-        arguments: String,
+        task_id: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload;
 
-    async fn execute_mcp_tool(
+    async fn execute_wait_for_subagent(
         &self,
-        tool_name: String,
-        arguments: String,
+        task_id: String,
+        timeout_seconds: Option<u64>,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload;
 
-    async fn execute_apply_patch(
+    async fn execute_mcp_call(
         &self,
-        arguments: String,
-        context: &UniversalFunctionCallContext,
-    ) -> FunctionCallOutputPayload;
-
-    async fn execute_update_plan(
-        &self,
-        arguments: String,
+        server_name: String,
+        method: String,
+        params: serde_json::Value,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload;
 }
@@ -222,9 +221,12 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             "update_plan" => self.handle_update_plan_call(arguments, &context).await,
             _ => {
                 // Handle MCP tools or other custom tools
-                self.executor
-                    .execute_mcp_tool(name.clone(), arguments, &context)
-                    .await
+                // For now, return not implemented for MCP tools
+                FunctionCallOutputPayload {
+                    content_items: None,
+                    content: format!("MCP tool '{}' not yet implemented in unified handler", name),
+                    success: Some(false),
+                }
             }
         };
 
@@ -322,7 +324,6 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
         #[derive(Deserialize)]
         struct ShellArgs {
             command: Vec<String>,
@@ -350,7 +351,6 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
         #[derive(Deserialize)]
         struct ReadFileArgs {
             file_path: String,
@@ -383,7 +383,6 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
         #[derive(Deserialize)]
         struct WriteFileArgs {
             file_path: String,
@@ -417,7 +416,6 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
         #[derive(Deserialize)]
         struct StoreContextArgs {
             id: String,
@@ -430,7 +428,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             Err(e) => {
                 error!("Failed to parse store_context arguments: {}", e);
                 return FunctionCallOutputPayload {
-            content_items: None,
+                    content_items: None,
                     content: format!("Failed to parse function arguments: {}", e),
                     success: Some(false),
                 };
@@ -448,7 +446,6 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
         #[derive(Deserialize)]
         struct UpdateContextArgs {
             id: String,
@@ -461,7 +458,7 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
             Err(e) => {
                 error!("Failed to parse update_context arguments: {}", e);
                 return FunctionCallOutputPayload {
-            content_items: None,
+                    content_items: None,
                     content: format!("Failed to parse function arguments: {}", e),
                     success: Some(false),
                 };
@@ -469,9 +466,12 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         };
 
         debug!("Updating context: {} - {}", args.id, args.reason);
-        self.executor
-            .execute_update_context(args.id, args.content, args.reason, context)
-            .await
+        // For now, return not implemented
+        FunctionCallOutputPayload {
+            content_items: None,
+            content: "update_context function not yet implemented in unified handler".to_string(),
+            success: Some(false),
+        }
     }
 
     async fn handle_create_subagent_task_call(
@@ -479,10 +479,21 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
         debug!("Creating subagent task with arguments: {}", arguments);
+        let args_value = match serde_json::from_str::<serde_json::Value>(&arguments) {
+            Ok(value) => value,
+            Err(e) => {
+                error!("Failed to parse create_subagent_task arguments: {}", e);
+                return FunctionCallOutputPayload {
+                    content_items: None,
+                    content: format!("Failed to parse function arguments: {}", e),
+                    success: Some(false),
+                };
+            }
+        };
+
         self.executor
-            .execute_create_subagent_task(arguments, context)
+            .execute_create_subagent_task(args_value, context)
             .await
     }
 
@@ -491,10 +502,27 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
-        debug!("Resuming subagent with arguments: {}", arguments);
+        #[derive(Deserialize)]
+        struct ResumeSubagentArgs {
+            task_id: String,
+            timeout_seconds: Option<u64>,
+        }
+
+        let args = match serde_json::from_str::<ResumeSubagentArgs>(&arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                error!("Failed to parse resume_subagent arguments: {}", e);
+                return FunctionCallOutputPayload {
+                    content_items: None,
+                    content: format!("Failed to parse function arguments: {}", e),
+                    success: Some(false),
+                };
+            }
+        };
+
+        debug!("Resuming subagent task: {}", args.task_id);
         self.executor
-            .execute_resume_subagent(arguments, context)
+            .execute_wait_for_subagent(args.task_id, args.timeout_seconds, context)
             .await
     }
 
@@ -503,10 +531,13 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+        debug!("Applying patch with arguments: {}", arguments);
+        // For now, delegate to executor or return not implemented
+        FunctionCallOutputPayload {
             content_items: None,
-        self.executor
-            .execute_apply_patch(arguments, context)
-            .await
+            content: "apply_patch function not yet implemented in unified handler".to_string(),
+            success: Some(false),
+        }
     }
 
     async fn handle_update_plan_call(
@@ -514,10 +545,13 @@ impl<E: UniversalFunctionExecutor> UniversalFunctionCallHandler<E> {
         arguments: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
+        debug!("Updating plan with arguments: {}", arguments);
+        // For now, delegate to executor or return not implemented
+        FunctionCallOutputPayload {
             content_items: None,
-        self.executor
-            .execute_update_plan(arguments, context)
-            .await
+            content: "update_plan function not yet implemented in unified handler".to_string(),
+            success: Some(false),
+        }
     }
 }
 
@@ -535,7 +569,6 @@ mod tests {
             _command: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
-            content_items: None,
             FunctionCallOutputPayload {
             content_items: None,
                 content: "shell executed".to_string(),
@@ -550,9 +583,8 @@ mod tests {
             _line_num: Option<usize>,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
-            content_items: None,
             FunctionCallOutputPayload {
-            content_items: None,
+                content_items: None,
                 content: "file content".to_string(),
                 success: Some(true),
             }
@@ -564,9 +596,8 @@ mod tests {
             _content: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
-            content_items: None,
             FunctionCallOutputPayload {
-            content_items: None,
+                content_items: None,
                 content: "file written".to_string(),
                 success: Some(true),
             }
@@ -579,94 +610,88 @@ mod tests {
             _content: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
-            content_items: None,
             FunctionCallOutputPayload {
-            content_items: None,
+                content_items: None,
                 content: "context stored".to_string(),
                 success: Some(true),
             }
         }
 
-        async fn execute_update_context(
+        async fn execute_retrieve_context(
             &self,
             _id: String,
-            _content: String,
-            _reason: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
-            content_items: None,
             FunctionCallOutputPayload {
-            content_items: None,
-                content: "context updated".to_string(),
+                content_items: None,
+                content: "context retrieved".to_string(),
+                success: Some(true),
+            }
+        }
+
+        async fn execute_list_context(
+            &self,
+            _context: &UniversalFunctionCallContext,
+        ) -> FunctionCallOutputPayload {
+            FunctionCallOutputPayload {
+                content_items: None,
+                content: "context list".to_string(),
                 success: Some(true),
             }
         }
 
         async fn execute_create_subagent_task(
             &self,
-            _arguments: String,
+            _args: serde_json::Value,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
-            content_items: None,
             FunctionCallOutputPayload {
-            content_items: None,
-                content: "subagent created".to_string(),
+                content_items: None,
+                content: "task created".to_string(),
                 success: Some(true),
             }
         }
 
-        async fn execute_resume_subagent(
+        async fn execute_get_subagent_status(
             &self,
-            _arguments: String,
+            _task_id: String,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
-            content_items: None,
             FunctionCallOutputPayload {
-            content_items: None,
-                content: "subagent resumed".to_string(),
+                content_items: None,
+                content: "task status".to_string(),
                 success: Some(true),
             }
         }
 
-        async fn execute_mcp_tool(
+        async fn execute_wait_for_subagent(
             &self,
-            _tool_name: String,
-            _arguments: String,
+            _task_id: String,
+            _timeout_seconds: Option<u64>,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
-            content_items: None,
             FunctionCallOutputPayload {
-            content_items: None,
-                content: "mcp tool executed".to_string(),
+                content_items: None,
+                content: "subagent completed".to_string(),
                 success: Some(true),
             }
         }
 
-        async fn execute_apply_patch(
+        async fn execute_mcp_call(
             &self,
-            _arguments: String,
+            _server_name: String,
+            _method: String,
+            _params: serde_json::Value,
             _context: &UniversalFunctionCallContext,
         ) -> FunctionCallOutputPayload {
-            content_items: None,
             FunctionCallOutputPayload {
-            content_items: None,
-                content: "patch applied".to_string(),
+                content_items: None,
+                content: "mcp call executed".to_string(),
                 success: Some(true),
             }
         }
 
-        async fn execute_update_plan(
-            &self,
-            _arguments: String,
-            _context: &UniversalFunctionCallContext,
-        ) -> FunctionCallOutputPayload {
-            content_items: None,
-            FunctionCallOutputPayload {
-            content_items: None,
-                content: "plan updated".to_string(),
-                success: Some(true),
-            }
-        }
+
     }
 
     #[tokio::test]

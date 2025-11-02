@@ -176,7 +176,8 @@ impl CodexFunctionExecutor {
         }
 
         // Use the same shell operator detection logic as the main agent
-        let has_shell_operators = crate::codex::contains_shell_operators(&args);
+        let command_string = args.join(" ");
+        let has_shell_operators = crate::codex::contains_shell_operators(&command_string);
         
         let final_command = if has_shell_operators {
             // Convert the command array to a shell command string and run it with bash -c
@@ -588,6 +589,198 @@ impl CodexFunctionExecutor {
             }
         }
     }
+
+    async fn retrieve_context_data(&self, id: &str) -> UnifiedResult<String> {
+        // Validate context ID
+        if id.is_empty() {
+            return Err(UnifiedError::context(
+                ContextOperation::Retrieve,
+                Some(id.to_string()),
+                "Context ID cannot be empty",
+                ContextErrorCode::InvalidContextId,
+            ));
+        }
+
+        // Retrieve context
+        match self.context_repository.get_context(id).await {
+            Ok(Some(context_item)) => {
+                info!("Successfully retrieved context: {}", id);
+                Ok(serde_json::to_string_pretty(&context_item).unwrap_or_else(|_| {
+                    format!("Context: {} - {}\nContent: {}", 
+                        context_item.id, 
+                        context_item.summary, 
+                        context_item.content)
+                }))
+            }
+            Ok(None) => {
+                Err(UnifiedError::context(
+                    ContextOperation::Retrieve,
+                    Some(id.to_string()),
+                    "Context not found",
+                    ContextErrorCode::ContextNotFound,
+                ))
+            }
+            Err(e) => {
+                error!("Failed to retrieve context {}: {}", id, e);
+                Err(UnifiedError::context(
+                    ContextOperation::Retrieve,
+                    Some(id.to_string()),
+                    format!("Failed to retrieve context: {}", e),
+                    ContextErrorCode::ContextNotFound,
+                ))
+            }
+        }
+    }
+
+    async fn list_context_data(&self) -> UnifiedResult<String> {
+        // List all contexts using query_contexts with empty query
+        let query = crate::context_store::ContextQuery {
+            ids: None,
+            tags: None,
+            created_by: None,
+            limit: None,
+        };
+        match self.context_repository.query_contexts(&query).await {
+            Ok(contexts) => {
+                info!("Successfully listed {} contexts", contexts.len());
+                if contexts.is_empty() {
+                    Ok("No contexts found".to_string())
+                } else {
+                    let context_list: Vec<String> = contexts
+                        .iter()
+                        .map(|ctx| format!("- {}: {}", ctx.id, ctx.summary))
+                        .collect();
+                    Ok(format!("Available contexts ({}):\n{}", 
+                        contexts.len(), 
+                        context_list.join("\n")))
+                }
+            }
+            Err(e) => {
+                error!("Failed to list contexts: {}", e);
+                Err(UnifiedError::context(
+                    ContextOperation::List,
+                    None,
+                    format!("Failed to list contexts: {}", e),
+                    ContextErrorCode::ContextNotFound,
+                ))
+            }
+        }
+    }
+
+    async fn create_subagent_task(&self, task_spec: SubagentTaskSpec) -> UnifiedResult<String> {
+        if let Some(subagent_manager) = &self.subagent_manager {
+            match subagent_manager.create_task(task_spec).await {
+                Ok(task_id) => {
+                    info!("Successfully created subagent task: {}", task_id);
+                    Ok(task_id)
+                }
+                Err(e) => {
+                    error!("Failed to create subagent task: {}", e);
+                    Err(UnifiedError::function_call(
+                        "create_subagent_task",
+                        format!("Failed to create subagent task: {}", e),
+                        FunctionCallErrorCode::ExecutionFailed,
+                    ))
+                }
+            }
+        } else {
+            Err(UnifiedError::function_call(
+                "create_subagent_task",
+                "Subagent manager not available",
+                FunctionCallErrorCode::ExecutionFailed,
+            ))
+        }
+    }
+
+    async fn get_subagent_status(&self, task_id: &str) -> UnifiedResult<serde_json::Value> {
+        if let Some(subagent_manager) = &self.subagent_manager {
+            match subagent_manager.get_task_status(task_id).await {
+                Ok(status) => {
+                    info!("Successfully retrieved subagent status: {}", task_id);
+                    Ok(serde_json::to_value(&status).unwrap_or_else(|_| {
+                        serde_json::json!({"status": format!("{:?}", status)})
+                    }))
+                }
+                Err(e) => {
+                    error!("Failed to get subagent status: {}", e);
+                    Err(UnifiedError::function_call(
+                        "get_subagent_status",
+                        format!("Failed to get subagent status: {}", e),
+                        FunctionCallErrorCode::ExecutionFailed,
+                    ))
+                }
+            }
+        } else {
+            Err(UnifiedError::function_call(
+                "get_subagent_status",
+                "Subagent manager not available",
+                FunctionCallErrorCode::ExecutionFailed,
+            ))
+        }
+    }
+
+    async fn execute_mcp_call_internal(
+        &self,
+        server_name: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> UnifiedResult<String> {
+        if let Some(mcp_manager) = &self.mcp_connection_manager {
+            match mcp_manager.call_tool(server_name, method, Some(params)).await {
+                Ok(result) => {
+                    info!("Successfully executed MCP call: {}::{}", server_name, method);
+                    Ok(serde_json::to_string_pretty(&result).unwrap_or_else(|_| {
+                        format!("MCP call result: {:?}", result)
+                    }))
+                }
+                Err(e) => {
+                    error!("Failed to execute MCP call: {}", e);
+                    Err(UnifiedError::mcp(
+                        server_name,
+                        method,
+                        format!("MCP call failed: {}", e),
+                        crate::unified_error_types::McpErrorCode::RequestFailed,
+                    ))
+                }
+            }
+        } else {
+            Err(UnifiedError::mcp(
+                server_name,
+                method,
+                "MCP connection manager not available",
+                crate::unified_error_types::McpErrorCode::ServerNotFound,
+            ))
+        }
+    }
+
+    async fn wait_for_subagent_completion(
+        &self,
+        task_id: &str,
+        timeout: Duration,
+    ) -> UnifiedResult<SubagentCompletionStatus> {
+        if let Some(tracker) = &self.subagent_completion_tracker {
+            match tracker.wait_for_completion(task_id, timeout).await {
+                Ok(status) => {
+                    info!("Subagent task {} completed with status: {:?}", task_id, status);
+                    Ok(status)
+                }
+                Err(e) => {
+                    error!("Failed to wait for subagent completion: {}", e);
+                    Err(UnifiedError::function_call(
+                        "wait_for_subagent_completion",
+                        format!("Failed to wait for subagent completion: {}", e),
+                        FunctionCallErrorCode::ExecutionFailed,
+                    ))
+                }
+            }
+        } else {
+            Err(UnifiedError::function_call(
+                "wait_for_subagent_completion",
+                "Subagent completion tracker not available",
+                FunctionCallErrorCode::ExecutionFailed,
+            ))
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -597,7 +790,6 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         command: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_shell")
             .with_info("command", &command)
@@ -624,7 +816,6 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         line_num: Option<usize>,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_read_file")
             .with_info("file_path", &file_path)
@@ -655,7 +846,6 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         content: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_write_file")
             .with_info("file_path", &file_path)
@@ -664,7 +854,7 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
 
         match self.write_file_content(&file_path, &content).await {
             Ok(result) => FunctionCallOutputPayload {
-            content_items: None,
+                content_items: None,
                 content: result,
                 success: Some(true),
             },
@@ -683,17 +873,16 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         content: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_store_context")
-            .with_info("context_id", &id)
+            .with_info("id", &id)
             .with_info("summary", &summary)
             .with_info("content_length", &content.len().to_string())
             .with_info("agent_type", &format!("{:?}", context.agent_type));
 
         match self.store_context_item(&id, &summary, &content, context).await {
             Ok(result) => FunctionCallOutputPayload {
-            content_items: None,
+                content_items: None,
                 content: result,
                 success: Some(true),
             },
@@ -705,24 +894,41 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
         }
     }
 
-    async fn execute_update_context(
+    async fn execute_retrieve_context(
         &self,
         id: String,
-        content: String,
-        reason: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
         let error_context = ErrorContext::new("CodexFunctionExecutor")
-            .with_function("execute_update_context")
-            .with_info("context_id", &id)
-            .with_info("content_length", &content.len().to_string())
-            .with_info("reason", &reason)
+            .with_function("execute_retrieve_context")
+            .with_info("id", &id)
             .with_info("agent_type", &format!("{:?}", context.agent_type));
 
-        match self.update_context_item(&id, &content, &reason).await {
+        match self.retrieve_context_data(&id).await {
             Ok(result) => FunctionCallOutputPayload {
-            content_items: None,
+                content_items: None,
+                content: result,
+                success: Some(true),
+            },
+            Err(error) => {
+                GLOBAL_ERROR_HANDLER
+                    .handle_error(error, Some(error_context), Some(context.call_id.clone()))
+                    .await
+            }
+        }
+    }
+
+    async fn execute_list_context(
+        &self,
+        context: &UniversalFunctionCallContext,
+    ) -> FunctionCallOutputPayload {
+        let error_context = ErrorContext::new("CodexFunctionExecutor")
+            .with_function("execute_list_context")
+            .with_info("agent_type", &format!("{:?}", context.agent_type));
+
+        match self.list_context_data().await {
+            Ok(result) => FunctionCallOutputPayload {
+                content_items: None,
                 content: result,
                 success: Some(true),
             },
@@ -736,451 +942,184 @@ impl UniversalFunctionExecutor for CodexFunctionExecutor {
 
     async fn execute_create_subagent_task(
         &self,
-        arguments: String,
+        args: serde_json::Value,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
-        info!(
-            "🚀 [UNIFIED_EXECUTOR] Creating subagent task with arguments: {}",
-            arguments
-        );
-        info!(
-            "🔧 [UNIFIED_EXECUTOR] Context: sub_id={}, call_id={}, agent_type={:?}",
-            context.sub_id, context.call_id, context.agent_type
-        );
-
         let error_context = ErrorContext::new("CodexFunctionExecutor")
             .with_function("execute_create_subagent_task")
-            .with_info("call_id", &context.call_id);
-
-        // Check if subagent manager is available
-        let subagent_manager = match &self.subagent_manager {
-            Some(manager) => manager,
-            None => {
-                let error_msg =
-                    "Subagent manager not available. Multi-agent functionality may not be enabled.";
-                warn!("{}", error_msg);
-                return FunctionCallOutputPayload {
-            content_items: None,
-                    content: error_msg.to_string(),
-                    success: Some(false),
-                };
-            }
-        };
+            .with_info("args", &args.to_string())
+            .with_info("agent_type", &format!("{:?}", context.agent_type));
 
         // Parse arguments
-        let args: CreateSubagentTaskArgs = match serde_json::from_str(&arguments) {
+        let parsed_args: CreateSubagentTaskArgs = match serde_json::from_value(args) {
             Ok(args) => args,
             Err(e) => {
-                let error_msg = format!("Failed to parse create_subagent_task arguments: {}", e);
-                error!("{}", error_msg);
-                return FunctionCallOutputPayload {
-            content_items: None,
-                    content: error_msg,
-                    success: Some(false),
-                };
+                let error = UnifiedError::function_call(
+                    "execute_create_subagent_task",
+                    format!("Failed to parse create_subagent_task arguments: {}", e),
+                    FunctionCallErrorCode::InvalidArguments,
+                );
+                return GLOBAL_ERROR_HANDLER
+                    .handle_error(error, None, Some(context.call_id.clone()))
+                    .await;
             }
         };
 
         // Parse agent type
-        let agent_type = match args.agent_type.to_lowercase().as_str() {
-            "explorer" => SubagentType::Explorer,
-            "coder" => SubagentType::Coder,
-            _ => SubagentType::Explorer,
+        let agent_type = match parsed_args.agent_type.as_str() {
+            "Coder" => SubagentType::Coder,
+            "Explorer" => SubagentType::Explorer,
+            _ => {
+                let error = UnifiedError::function_call(
+                    "execute_create_subagent_task",
+                    format!("Invalid agent type: {}", parsed_args.agent_type),
+                    FunctionCallErrorCode::InvalidArguments,
+                );
+                return GLOBAL_ERROR_HANDLER
+                    .handle_error(error, None, Some(context.call_id.clone()))
+                    .await;
+            }
         };
 
-        // Create subagent task specification
-        let spec = SubagentTaskSpec {
-            agent_type: match args.agent_type.as_str() {
-                "Explorer" | "explorer" => SubagentType::Explorer,
-                "Coder" | "coder" => SubagentType::Coder,
-                _ => SubagentType::Explorer,
-            },
-            title: args.title.clone(),
-            description: args.description.clone(),
-            context_refs: args.context_refs,
-            bootstrap_paths: args.bootstrap_paths,
+        let task_spec = SubagentTaskSpec {
+            agent_type,
+            title: parsed_args.title,
+            description: parsed_args.description,
+            context_refs: parsed_args.context_refs,
+            bootstrap_paths: parsed_args.bootstrap_paths,
             max_turns: Some(50),
             timeout_ms: Some(300_000),
             network_access: None,
             injected_conversation: None,
         };
 
-        // Create the task
-        match subagent_manager.create_task(spec).await {
+        match self.create_subagent_task(task_spec).await {
             Ok(task_id) => {
-                info!(
-                    "Successfully created subagent task '{}' with ID: {}",
-                    args.title, task_id
-                );
-
-                let mut response = format!(
-                    "Successfully created {:?} subagent task '{}' with ID: {}",
-                    agent_type, args.title, task_id
-                );
-
-                // Auto-launch if requested
-                if args.auto_launch {
-                    match subagent_manager.launch_subagent(&task_id).await {
-                        Ok(_handle) => {
-                            info!("Auto-launched subagent: task_id={}", task_id);
-
-                            // Return a special response that includes a function call to keep main agent running
-                            return FunctionCallOutputPayload {
-            content_items: None,
-                                content: format!(
-                                    "🚀 Subagent launched and executing task...\n📋 Task ID: {}\n⏳ The subagent will run in the background.\n\n**IMPORTANT**: You should now wait for the subagent to complete, then use `list_contexts` to check for new context items and provide a comprehensive summary of the subagent's findings.",
-                                    task_id
-                                ),
-                                success: Some(true),
-                            };
-                        }
-                        Err(e) => {
-                            let error_msg = format!("Failed to auto-launch subagent: {}", e);
-                            warn!("{}", error_msg);
-                            response.push_str(&format!("\nWarning: {}", error_msg));
-                        }
-                    }
-                }
-
+                let result = format!("Created subagent task with ID: {}", task_id);
                 FunctionCallOutputPayload {
-            content_items: None,
-                    content: response,
+                    content_items: None,
+                    content: result,
                     success: Some(true),
                 }
             }
-            Err(e) => {
-                let error_msg = format!("Failed to create subagent task: {}", e);
-                error!("{}", error_msg);
-
+            Err(error) => {
                 GLOBAL_ERROR_HANDLER
-                    .handle_error(
-                        UnifiedError::function_call(
-                            "create_subagent_task",
-                            error_msg.clone(),
-                            FunctionCallErrorCode::ExecutionFailed,
-                        ),
-                        Some(error_context),
-                        Some(context.call_id.clone()),
-                    )
+                    .handle_error(error, Some(error_context), Some(context.call_id.clone()))
                     .await
             }
         }
     }
 
-    async fn execute_resume_subagent(
+    async fn execute_get_subagent_status(
         &self,
-        arguments: String,
+        task_id: String,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
-        info!(
-            "🔄 [UNIFIED_EXECUTOR] Resuming subagent with arguments: {}",
-            arguments
-        );
         let error_context = ErrorContext::new("CodexFunctionExecutor")
-            .with_function("execute_resume_subagent")
-            .with_info("call_id", &context.call_id);
-
-        let manager = match &self.subagent_manager {
-            Some(m) => m,
-            None => {
-                let msg = "Subagent manager not available. Multi-agent functionality may not be enabled.";
-                return FunctionCallOutputPayload {
-            content_items: None,
-                    content: msg.to_string(),
-                    success: Some(false),
-                };
-            }
-        };
-
-        let args: ResumeSubagentArgs = match serde_json::from_str(&arguments) {
-            Ok(a) => a,
-            Err(e) => {
-                let error_msg = format!("Failed to parse resume_subagent arguments: {}", e);
-                return GLOBAL_ERROR_HANDLER
-                    .handle_error(
-                        UnifiedError::function_call(
-                            "resume_subagent",
-                            error_msg.clone(),
-                            FunctionCallErrorCode::ExecutionFailed,
-                        ),
-                        Some(error_context),
-                        Some(context.call_id.clone()),
-                    )
-                    .await;
-            }
-        };
-
-        // Clear completion cache if available
-        if let Some(tracker) = &self.subagent_completion_tracker {
-            tracker.remove_completed_task(&args.task_id).await;
-        }
-
-        // Perform resume on manager
-        match manager
-            .resume_task(
-                &args.task_id,
-                args.new_instruction.clone(),
-                args.additional_context_refs.clone(),
-                args.additional_bootstrap_paths.clone(),
-                args.new_max_turns,
-                args.use_previous_trajectory.unwrap_or(false),
-            )
-            .await
-        {
-            Ok(()) => {
-                // Auto-launch after resume
-                if args.auto_launch {
-                    match manager.launch_subagent(&args.task_id).await {
-                        Ok(_) => FunctionCallOutputPayload {
-            content_items: None,
-                            content: format!(
-                                "✅ Subagent '{}' resumed and launched successfully.",
-                                args.task_id
-                            ),
-                            success: Some(true),
-                        },
-                        Err(e) => FunctionCallOutputPayload {
-            content_items: None,
-                            content: format!(
-                                "Subagent resumed but failed to launch: {}",
-                                e
-                            ),
-                            success: Some(false),
-                        },
-                    }
-                } else {
-                    FunctionCallOutputPayload {
-            content_items: None,
-                        content: format!(
-                            "✅ Subagent '{}' resumed successfully (not launched).",
-                            args.task_id
-                        ),
-                        success: Some(true),
-                    }
-                }
-            }
-            Err(e) => GLOBAL_ERROR_HANDLER
-                .handle_error(
-                    UnifiedError::function_call(
-                        "resume_subagent",
-                        format!("Failed to resume subagent: {}", e),
-                        FunctionCallErrorCode::ExecutionFailed,
-                    ),
-                    Some(error_context),
-                    Some(context.call_id.clone()),
-                )
-                .await,
-        }
-    }
-
-    async fn execute_mcp_tool(
-        &self,
-        tool_name: String,
-        arguments: String,
-        context: &UniversalFunctionCallContext,
-    ) -> FunctionCallOutputPayload {
-            content_items: None,
-        let error_context = ErrorContext::new("CodexFunctionExecutor")
-            .with_function("execute_mcp_tool")
-            .with_info("tool_name", &tool_name)
+            .with_function("execute_get_subagent_status")
+            .with_info("task_id", &task_id)
             .with_info("agent_type", &format!("{:?}", context.agent_type));
 
-        if let Some(mcp_manager) = &self.mcp_connection_manager {
-            // Parse server name and tool name using MCP delimiter "__"
-            let (server_name, actual_tool_name) = if tool_name.contains("__") {
-                let parts: Vec<&str> = tool_name.splitn(2, "__").collect();
-                (parts[0].to_string(), parts[1].to_string())
-            } else {
-                ("default".to_string(), tool_name.clone())
-            };
-
-            // Parse arguments
-            let args_value: serde_json::Value = match serde_json::from_str(&arguments) {
-                Ok(value) => value,
-                Err(e) => {
-                    let error = UnifiedError::mcp(
-                        &server_name,
-                        &actual_tool_name,
-                        format!("Failed to parse arguments: {}", e),
-                        crate::unified_error_types::McpErrorCode::RequestFailed,
-                    );
-                    return GLOBAL_ERROR_HANDLER
-                        .handle_error(error, Some(error_context), Some(context.call_id.clone()))
-                        .await;
-                }
-            };
-
-            // Execute MCP tool
-            match mcp_manager
-                .call_tool(&server_name, &actual_tool_name, Some(args_value))
-                .await
-            {
-                Ok(result) => {
-                    // Format result for display
-                    let mut output = String::new();
-                    for content_block in &result.content {
-                        match content_block {
-                            mcp_types::ContentBlock::TextContent(text_content) => {
-                                output.push_str(&text_content.text);
-                                output.push('\n');
-                            }
-                            mcp_types::ContentBlock::ImageContent(_) => {
-                                output.push_str("[Image content]\n");
-                            }
-                            mcp_types::ContentBlock::AudioContent(_) => {
-                                output.push_str("[Audio content]\n");
-                            }
-                            mcp_types::ContentBlock::ResourceLink(_) => {
-                                output.push_str("[Resource link]\n");
-                            }
-                            mcp_types::ContentBlock::EmbeddedResource(_) => {
-                                output.push_str("[Embedded resource]\n");
-                            }
-                        }
-                    }
-
-                    if output.is_empty() {
-                        output = "MCP tool executed successfully (no output)".to_string();
-                    }
-
-                    FunctionCallOutputPayload {
-            content_items: None,
-                        content: output.trim().to_string(),
-                        success: Some(!result.is_error.unwrap_or(false)),
-                    }
-                }
-                Err(e) => {
-                    let error = UnifiedError::mcp(
-                        &server_name,
-                        &actual_tool_name,
-                        format!("MCP tool execution failed: {}", e),
-                        crate::unified_error_types::McpErrorCode::RequestFailed,
-                    );
-                    GLOBAL_ERROR_HANDLER
-                        .handle_error(error, Some(error_context), Some(context.call_id.clone()))
-                        .await
+        match self.get_subagent_status(&task_id).await {
+            Ok(status) => {
+                let result = serde_json::to_string_pretty(&status).unwrap_or_else(|_| {
+                    format!("Status: {:?}", status)
+                });
+                FunctionCallOutputPayload {
+                    content_items: None,
+                    content: result,
+                    success: Some(true),
                 }
             }
-        } else {
-            let error = UnifiedError::mcp(
-                "unknown",
-                &tool_name,
-                "MCP connection manager not available",
-                crate::unified_error_types::McpErrorCode::ServerNotFound,
-            );
-            GLOBAL_ERROR_HANDLER
-                .handle_error(error, Some(error_context), Some(context.call_id.clone()))
-                .await
+            Err(error) => {
+                GLOBAL_ERROR_HANDLER
+                    .handle_error(error, Some(error_context), Some(context.call_id.clone()))
+                    .await
+            }
         }
     }
 
-    async fn execute_apply_patch(
+    async fn execute_wait_for_subagent(
         &self,
-        arguments: String,
+        task_id: String,
+        timeout_seconds: Option<u64>,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
-        debug!("Executing apply_patch with arguments: {}", arguments);
+        let error_context = ErrorContext::new("CodexFunctionExecutor")
+            .with_function("execute_wait_for_subagent")
+            .with_info("task_id", &task_id)
+            .with_info("timeout_seconds", &format!("{:?}", timeout_seconds))
+            .with_info("agent_type", &format!("{:?}", context.agent_type));
 
-        // Parse apply_patch arguments
-        #[derive(serde::Deserialize)]
-        struct ApplyPatchArgs {
-            input: String,
-        }
+        let timeout = timeout_seconds.map(Duration::from_secs).unwrap_or(Duration::from_secs(300)); // Default 5 minutes
 
-        let args: ApplyPatchArgs = match serde_json::from_str(&arguments) {
-            Ok(args) => args,
-            Err(e) => {
-                error!("Failed to parse apply_patch arguments: {}", e);
-                return FunctionCallOutputPayload {
-            content_items: None,
-                    content: format!("Invalid apply_patch arguments: {}", e),
-                    success: Some(false),
+        match self.wait_for_subagent_completion(&task_id, timeout).await {
+            Ok(status) => {
+                let result = match &status {
+                    SubagentCompletionStatus::Completed { success, contexts_created, comments } => {
+                        format!("Subagent task {} completed: success={}, contexts_created={}, comments={}", 
+                            task_id, success, contexts_created, comments)
+                    }
+                    SubagentCompletionStatus::ForceCompleted { num_turns, max_turns, contexts_created, comments } => {
+                        format!("Subagent task {} force completed: {}/{} turns, contexts_created={}, comments={}", 
+                            task_id, num_turns, max_turns, contexts_created, comments)
+                    }
+                    SubagentCompletionStatus::Failed { error } => {
+                        format!("Subagent task {} failed: {}", task_id, error)
+                    }
+                    SubagentCompletionStatus::Cancelled { reason, cancelled_at_turn } => {
+                        format!("Subagent task {} cancelled at turn {}: {}", task_id, cancelled_at_turn, reason)
+                    }
                 };
-            }
-        };
-
-        // Parse the patch using the apply_patch library
-        // We need to convert the input string to a command-line argument format
-        let argv = vec!["apply_patch".to_string(), args.input];
-        
-        match codex_apply_patch::maybe_parse_apply_patch_verified(&argv, &self.working_directory) {
-            codex_apply_patch::MaybeApplyPatchVerified::Body(action) => {
-                // For subagents, we'll apply the patch directly without user approval
-                // This is a simplified implementation - in a full implementation,
-                // we would need access to Session and TurnContext for proper safety checks
-                
-                // Apply the patch using the apply_patch function
-                let mut stdout = Vec::new();
-                let mut stderr = Vec::new();
-                
-                match codex_apply_patch::apply_patch(&action.patch, &mut stdout, &mut stderr) {
-                    Ok(()) => {
-                        let stdout_str = String::from_utf8_lossy(&stdout);
-                        let stderr_str = String::from_utf8_lossy(&stderr);
-                        info!("Apply patch succeeded");
-                        FunctionCallOutputPayload {
-            content_items: None,
-                            content: format!("Patch applied successfully.\nOutput: {}\nErrors: {}", stdout_str, stderr_str),
-                            success: Some(true),
-                        }
-                    }
-                    Err(e) => {
-                        let stderr_str = String::from_utf8_lossy(&stderr);
-                        error!("Apply patch failed: {}", e);
-                        FunctionCallOutputPayload {
-            content_items: None,
-                            content: format!("Apply patch failed: {}\nErrors: {}", e, stderr_str),
-                            success: Some(false),
-                        }
-                    }
-                }
-            }
-            codex_apply_patch::MaybeApplyPatchVerified::NotApplyPatch => {
                 FunctionCallOutputPayload {
-            content_items: None,
-                    content: "Input does not contain a valid apply_patch command".to_string(),
-                    success: Some(false),
+                    content_items: None,
+                    content: result,
+                    success: Some(matches!(status, SubagentCompletionStatus::Completed { success: true, .. } | SubagentCompletionStatus::ForceCompleted { .. })),
                 }
             }
-            codex_apply_patch::MaybeApplyPatchVerified::CorrectnessError(e) => {
-                error!("Apply patch correctness error: {}", e);
-                FunctionCallOutputPayload {
-            content_items: None,
-                    content: format!("Apply patch correctness error: {}", e),
-                    success: Some(false),
-                }
-            }
-            codex_apply_patch::MaybeApplyPatchVerified::ShellParseError(e) => {
-                error!("Apply patch shell parse error: {:?}", e);
-                FunctionCallOutputPayload {
-            content_items: None,
-                    content: format!("Apply patch shell parse error: {:?}", e),
-                    success: Some(false),
-                }
+            Err(error) => {
+                GLOBAL_ERROR_HANDLER
+                    .handle_error(error, Some(error_context), Some(context.call_id.clone()))
+                    .await
             }
         }
     }
 
-    async fn execute_update_plan(
+    async fn execute_mcp_call(
         &self,
-        arguments: String,
+        server_name: String,
+        method: String,
+        params: serde_json::Value,
         context: &UniversalFunctionCallContext,
     ) -> FunctionCallOutputPayload {
-            content_items: None,
-        debug!("Executing update_plan with arguments: {}", arguments);
+        let error_context = ErrorContext::new("CodexFunctionExecutor")
+            .with_function("execute_mcp_call")
+            .with_info("server_name", &server_name)
+            .with_info("method", &method)
+            .with_info("params", &params.to_string())
+            .with_info("agent_type", &format!("{:?}", context.agent_type));
 
-        // For now, return a simple success response
-        // The actual plan handling is done by the plan_tool module
-        // This is just to satisfy the unified function executor interface
-        FunctionCallOutputPayload {
-            content_items: None,
-            content: "Plan updated successfully".to_string(),
-            success: Some(true),
+        match self.execute_mcp_call_internal(&server_name, &method, params).await {
+            Ok(result) => FunctionCallOutputPayload {
+                content_items: None,
+                content: result,
+                success: Some(true),
+            },
+            Err(error) => {
+                GLOBAL_ERROR_HANDLER
+                    .handle_error(error, Some(error_context), Some(context.call_id.clone()))
+                    .await
+            }
         }
     }
+
+
+
+
+
+
+
+
 }
 
 #[cfg(test)]
