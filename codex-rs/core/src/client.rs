@@ -344,6 +344,10 @@ impl ModelClient {
             // Send session_id for compatibility.
             .header("conversation_id", self.conversation_id.to_string())
             .header("session_id", self.conversation_id.to_string())
+            .header(
+                "extra",
+                format!(r#"{{"session_id":"{}"}}"#, self.conversation_id),
+            )
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .json(payload_json);
 
