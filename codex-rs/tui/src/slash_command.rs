@@ -29,6 +29,7 @@ pub enum SlashCommand {
     Feedback,
     Rollout,
     TestApproval,
+    Hist,
 }
 
 impl SlashCommand {
@@ -51,6 +52,7 @@ impl SlashCommand {
             SlashCommand::Logout => "log out of Codex",
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
+            SlashCommand::Hist => "manage conversation history (view, delete, etc.)",
         }
     }
 
@@ -80,6 +82,7 @@ impl SlashCommand {
             | SlashCommand::Exit => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
+            SlashCommand::Hist => true,
         }
     }
 

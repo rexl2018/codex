@@ -7,6 +7,7 @@ use crate::truncate::truncate_function_output_items_with_policy;
 use crate::truncate::truncate_text;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::HistoryAction;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use std::ops::Deref;
@@ -226,6 +227,128 @@ impl ContextManager {
             | ResponseItem::GhostSnapshot { .. }
             | ResponseItem::Other => item.clone(),
         }
+    }
+
+    pub(crate) fn handle_history_action(&mut self, action: HistoryAction) -> String {
+        match action {
+            HistoryAction::ViewAll => self.view_history(0, self.items.len()),
+            HistoryAction::ViewLast { count } => {
+                let start = self.items.len().saturating_sub(count);
+                self.view_history(start, self.items.len())
+            }
+            HistoryAction::ViewAround { index } => {
+                // index is 1-based from user
+                let center = index.saturating_sub(1);
+                let start = center.saturating_sub(2);
+                let end = (center + 3).min(self.items.len());
+                self.view_history(start, end)
+            }
+            HistoryAction::Delete { index } => {
+                if index > 0 && index <= self.items.len() {
+                    self.items.remove(index - 1);
+                    format!("Deleted item #{}", index)
+                } else {
+                    format!("Invalid index: {}", index)
+                }
+            }
+            HistoryAction::DeleteRange { start, end } => {
+                if start > 0 && end >= start && end <= self.items.len() {
+                    // drain is exclusive of end, but user range is inclusive
+                    // start-1 to end
+                    self.items.drain((start - 1)..end);
+                    format!("Deleted items #{} to #{}", start, end)
+                } else {
+                    format!("Invalid range: {}-{}", start, end)
+                }
+            }
+            HistoryAction::DeleteLast { count } => {
+                let len = self.items.len();
+                if count > 0 && count <= len {
+                    let start = len - count;
+                    self.items.drain(start..);
+                    format!("Deleted last {} items", count)
+                } else {
+                    format!("Invalid count: {}", count)
+                }
+            }
+            HistoryAction::DeleteBefore { index } => {
+                if index > 0 && index <= self.items.len() {
+                    // Delete 1..=index (inclusive)
+                    // 0..index
+                    self.items.drain(0..index);
+                    format!("Deleted items before and including #{}", index)
+                } else {
+                    format!("Invalid index: {}", index)
+                }
+            }
+        }
+    }
+
+    fn view_history(&self, start: usize, end: usize) -> String {
+        if self.items.is_empty() {
+            return "History is empty.".to_string();
+        }
+
+        let mut output = String::new();
+        for (i, item) in self.items.iter().enumerate().skip(start).take(end - start) {
+            let index = i + 1;
+            let content = format_item_summary(item);
+            output.push_str(&format!("{}. {}\n", index, content));
+        }
+        output
+    }
+}
+
+fn format_item_summary(item: &ResponseItem) -> String {
+    match item {
+        ResponseItem::Message { role, content, .. } => {
+            let text = content
+                .iter()
+                .map(|c| match c {
+                    codex_protocol::models::ContentItem::InputText { text } => text.clone(),
+                    codex_protocol::models::ContentItem::OutputText { text } => text.clone(),
+                    codex_protocol::models::ContentItem::InputImage { image_url } => {
+                        format!("[Image: {}]", image_url)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let short_text = if text.chars().count() > 100 {
+                format!("{}...", text.chars().take(100).collect::<String>())
+            } else {
+                text
+            };
+            format!("[{}] {}", role, short_text)
+        }
+        ResponseItem::FunctionCall { call_id, name, .. } => {
+            format!("[FunctionCall] {} (id: {})", name, call_id)
+        }
+        ResponseItem::FunctionCallOutput { call_id, .. } => {
+            format!("[FunctionOutput] (id: {})", call_id)
+        }
+        ResponseItem::Reasoning { .. } => "[Reasoning]".to_string(),
+        ResponseItem::LocalShellCall { action, .. } => {
+             match action {
+                codex_protocol::models::LocalShellAction::Exec(exec) => format!("[Shell] {:?}", exec.command),
+            }
+        }
+        ResponseItem::WebSearchCall { action, .. } => {
+            match action {
+                codex_protocol::models::WebSearchAction::Search { query } => {
+                    format!("[WebSearch] {}", query.as_deref().unwrap_or("?"))
+                }
+                _ => "[WebSearch]".to_string(),
+            }
+        }
+        ResponseItem::CustomToolCall { name, .. } => {
+            format!("[Tool] {}", name)
+        }
+        ResponseItem::CustomToolCallOutput { call_id, .. } => {
+            format!("[ToolOutput] (id: {})", call_id)
+        }
+        ResponseItem::CompactionSummary { .. } => "[CompactionSummary]".to_string(),
+        ResponseItem::GhostSnapshot { .. } => "[GhostSnapshot]".to_string(),
+        ResponseItem::Other => "[Other]".to_string(),
     }
 }
 

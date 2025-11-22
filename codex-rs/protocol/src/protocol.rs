@@ -208,6 +208,29 @@ pub enum Op {
         /// The raw command string after '!'
         command: String,
     },
+
+    /// Manage conversation history (view, delete, etc.)
+    ManageHistory {
+        action: HistoryAction,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HistoryAction {
+    ViewAll,
+    ViewLast { count: usize },
+    ViewAround { index: usize },
+    Delete { index: usize },
+    DeleteRange { start: usize, end: usize },
+    DeleteLast { count: usize },
+    DeleteBefore { index: usize },
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub struct HistoryViewEvent {
+    pub content: String,
 }
 
 /// Determines the conditions under which the user is consulted to approve
@@ -560,6 +583,9 @@ pub enum EventMsg {
 
     /// Notification that the agent is shutting down.
     ShutdownComplete,
+
+    /// Response to a history management action (e.g. view history)
+    HistoryView(HistoryViewEvent),
 
     /// Entered review mode.
     EnteredReviewMode(ReviewRequest),

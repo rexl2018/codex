@@ -28,6 +28,8 @@ use codex_core::protocol::ExecCommandBeginEvent;
 use codex_core::protocol::ExecCommandEndEvent;
 use codex_core::protocol::ExecCommandSource;
 use codex_core::protocol::ExitedReviewModeEvent;
+use codex_core::protocol::HistoryAction;
+use codex_core::protocol::HistoryViewEvent;
 use codex_core::protocol::ListCustomPromptsResponseEvent;
 use codex_core::protocol::McpListToolsResponseEvent;
 use codex_core::protocol::McpStartupCompleteEvent;
@@ -806,6 +808,10 @@ impl ChatWidget {
         )));
     }
 
+    fn on_history_view(&mut self, ev: HistoryViewEvent) {
+        self.add_info_message(ev.content, None);
+    }
+
     fn on_get_history_entry_response(
         &mut self,
         event: codex_core::protocol::GetHistoryEntryResponseEvent,
@@ -1354,6 +1360,11 @@ impl ChatWidget {
                 match self.bottom_pane.handle_key_event(key_event) {
                     InputResult::Submitted(text) => {
                         // If a task is running, queue the user input to be sent after the turn completes.
+                        if text.trim().starts_with("/hist") {
+                            let args = text.trim().strip_prefix("/hist").unwrap_or("").trim();
+                            self.handle_hist_command(args);
+                            return;
+                        }
                         let user_message = UserMessage {
                             text,
                             image_paths: self.bottom_pane.take_recent_submission_images(),
@@ -1484,18 +1495,11 @@ impl ChatWidget {
             SlashCommand::TestApproval => {
                 use codex_core::protocol::EventMsg;
                 use std::collections::HashMap;
-
                 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
                 use codex_core::protocol::FileChange;
 
                 self.app_event_tx.send(AppEvent::CodexEvent(Event {
                     id: "1".to_string(),
-                    // msg: EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
-                    //     call_id: "1".to_string(),
-                    //     command: vec!["git".into(), "apply".into()],
-                    //     cwd: self.config.cwd.clone(),
-                    //     reason: Some("test".to_string()),
-                    // }),
                     msg: EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
                         call_id: "1".to_string(),
                         turn_id: "turn-1".to_string(),
@@ -1519,8 +1523,26 @@ impl ChatWidget {
                     }),
                 }));
             }
+            SlashCommand::Hist => {
+                self.handle_hist_command("");
+            }
         }
     }
+
+    fn handle_hist_command(&mut self, args: &str) {
+        match parse_hist_args(args) {
+            Ok(action) => {
+                self.submit_op(Op::ManageHistory { action });
+            }
+            Err(err) => {
+                self.add_error_message(err);
+            }
+        }
+    }
+
+
+
+
 
     pub(crate) fn handle_paste(&mut self, text: String) {
         self.bottom_pane.handle_paste(text);
@@ -1727,6 +1749,7 @@ impl ChatWidget {
             EventMsg::GetHistoryEntryResponse(ev) => self.on_get_history_entry_response(ev),
             EventMsg::McpListToolsResponse(ev) => self.on_list_mcp_tools(ev),
             EventMsg::ListCustomPromptsResponse(ev) => self.on_list_custom_prompts(ev),
+            EventMsg::HistoryView(ev) => self.on_history_view(ev),
             EventMsg::ShutdownComplete => self.on_shutdown_complete(),
             EventMsg::TurnDiff(TurnDiffEvent { unified_diff }) => self.on_turn_diff(unified_diff),
             EventMsg::DeprecationNotice(ev) => self.on_deprecation_notice(ev),
@@ -3187,3 +3210,119 @@ pub(crate) fn show_review_commit_picker_with_entries(
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+fn parse_hist_args(args: &str) -> Result<HistoryAction, String> {
+    let args: Vec<&str> = args.split_whitespace().collect();
+    if args.is_empty() {
+        return Ok(HistoryAction::ViewAll);
+    }
+    match args[0] {
+        "listall" => Ok(HistoryAction::ViewAll),
+        "ll" => {
+            let count = if args.len() > 1 {
+                args[1].parse::<usize>().map_err(|_| "Invalid count".to_string())?
+            } else {
+                10 // Default to last 10 if not specified
+            };
+            Ok(HistoryAction::ViewLast { count })
+        }
+        "la" => {
+            if args.len() < 2 {
+                return Err("Usage: /hist la <index>".to_string());
+            }
+            let index = args[1].parse::<usize>().map_err(|_| "Invalid index".to_string())?;
+            Ok(HistoryAction::ViewAround { index })
+        }
+        "del" => {
+            if args.len() < 2 {
+                return Err("Usage: /hist del <index>".to_string());
+            }
+            args[1].parse::<usize>()
+                .map(|index| HistoryAction::Delete { index })
+                .map_err(|_| "Invalid index".to_string())
+        }
+        "del-range" => {
+            // Expecting: del-range m,n
+            if args.len() < 2 {
+                return Err("Usage: /hist del-range <start>,<end>".to_string());
+            }
+            // args[1] should contain "m,n"
+            let parts: Vec<&str> = args[1].split(',').collect();
+            if parts.len() != 2 {
+                return Err("Usage: /hist del-range <start>,<end>".to_string());
+            }
+            let start = parts[0].parse::<usize>().map_err(|_| "Invalid start index".to_string())?;
+            let end = parts[1].parse::<usize>().map_err(|_| "Invalid end index".to_string())?;
+            Ok(HistoryAction::DeleteRange { start, end })
+        }
+        "del-last" => {
+            let count = if args.len() > 1 {
+                args[1].parse::<usize>().map_err(|_| "Invalid count".to_string())?
+            } else {
+                1
+            };
+            Ok(HistoryAction::DeleteLast { count })
+        }
+        "del-before" => {
+            if args.len() < 2 {
+                return Err("Usage: /hist del-before <index>".to_string());
+            }
+            let index = args[1].parse::<usize>().map_err(|_| "Invalid index".to_string())?;
+            Ok(HistoryAction::DeleteBefore { index })
+        }
+        "del-after" => {
+            if args.len() < 2 {
+                return Err("Usage: /hist del-after <index>".to_string());
+            }
+            let index = args[1].parse::<usize>().map_err(|_| "Invalid index".to_string())?;
+            Ok(HistoryAction::DeleteRange { start: index, end: usize::MAX })
+        }
+        _ => Err(format!("Unknown subcommand: {}", args[0])),
+    }
+}
+
+#[cfg(test)]
+mod hist_tests {
+    use super::*;
+    use codex_core::protocol::HistoryAction;
+
+    #[test]
+    fn test_parse_hist_args() {
+        assert_eq!(parse_hist_args(""), Ok(HistoryAction::ViewAll));
+        assert_eq!(parse_hist_args("listall"), Ok(HistoryAction::ViewAll));
+        
+        // ll
+        assert_eq!(parse_hist_args("ll"), Ok(HistoryAction::ViewLast { count: 10 }));
+        assert_eq!(parse_hist_args("ll 5"), Ok(HistoryAction::ViewLast { count: 5 }));
+        assert!(parse_hist_args("ll abc").is_err());
+
+        // la
+        assert_eq!(parse_hist_args("la 5"), Ok(HistoryAction::ViewAround { index: 5 }));
+        assert!(parse_hist_args("la").is_err());
+        assert!(parse_hist_args("la abc").is_err());
+
+        // del
+        assert_eq!(parse_hist_args("del 5"), Ok(HistoryAction::Delete { index: 5 }));
+        assert!(parse_hist_args("del").is_err());
+        assert!(parse_hist_args("del abc").is_err());
+
+        // del-range
+        assert_eq!(parse_hist_args("del-range 1,5"), Ok(HistoryAction::DeleteRange { start: 1, end: 5 }));
+        assert!(parse_hist_args("del-range 1 5").is_err()); // Space not allowed anymore
+        assert!(parse_hist_args("del-range 1").is_err());
+
+        // del-last
+        assert_eq!(parse_hist_args("del-last"), Ok(HistoryAction::DeleteLast { count: 1 }));
+        assert_eq!(parse_hist_args("del-last 5"), Ok(HistoryAction::DeleteLast { count: 5 }));
+
+        // del-before
+        assert_eq!(parse_hist_args("del-before 10"), Ok(HistoryAction::DeleteBefore { index: 10 }));
+        assert!(parse_hist_args("del-before").is_err());
+
+        // del-after
+        assert_eq!(parse_hist_args("del-after 10"), Ok(HistoryAction::DeleteRange { start: 10, end: usize::MAX }));
+        assert!(parse_hist_args("del-after").is_err());
+
+        assert!(parse_hist_args("unknown").is_err());
+    }
+}

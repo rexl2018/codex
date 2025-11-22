@@ -1465,6 +1465,9 @@ async fn submission_loop(sess: Arc<Session>, config: Arc<Config>, rx_sub: Receiv
             Op::Review { review_request } => {
                 handlers::review(&sess, &config, sub.id.clone(), review_request).await;
             }
+            Op::ManageHistory { action } => {
+                handlers::manage_history(&sess, sub.id.clone(), action).await;
+            }
             _ => {} // Ignore unknown ops; enum is non_exhaustive to allow extensions.
         }
     }
@@ -1792,6 +1795,22 @@ mod handlers {
             review_request,
         )
         .await;
+    }
+
+    pub async fn manage_history(
+        sess: &Arc<Session>,
+        sub_id: String,
+        action: codex_protocol::protocol::HistoryAction,
+    ) {
+        let content = {
+            let mut state = sess.state.lock().await;
+            state.history.handle_history_action(action)
+        };
+        let event = Event {
+            id: sub_id,
+            msg: EventMsg::HistoryView(codex_protocol::protocol::HistoryViewEvent { content }),
+        };
+        sess.send_event_raw(event).await;
     }
 }
 
