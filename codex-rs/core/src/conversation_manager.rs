@@ -132,6 +132,7 @@ impl ConversationManager {
         auth_manager: Arc<AuthManager>,
     ) -> CodexResult<NewConversation> {
         let initial_history = RolloutRecorder::get_rollout_history(&rollout_path).await?;
+        let initial_history = sanitize_history(initial_history);
         self.resume_conversation_with_history(config, initial_history, auth_manager)
             .await
     }
@@ -224,6 +225,43 @@ fn truncate_before_nth_user_message(history: InitialHistory, n: usize) -> Initia
     } else {
         InitialHistory::Forked(rolled)
     }
+}
+
+
+/// Sanitize history by removing `encrypted_content` from `Reasoning` items.
+/// This is necessary because server-side context expires, and sending stale
+/// encrypted content can cause 400 Bad Request errors.
+fn sanitize_history(history: InitialHistory) -> InitialHistory {
+    match history {
+        InitialHistory::New => InitialHistory::New,
+        InitialHistory::Resumed(mut resumed) => {
+            resumed.history = sanitize_rollout_items(resumed.history);
+            InitialHistory::Resumed(resumed)
+        }
+        InitialHistory::Forked(items) => {
+            InitialHistory::Forked(sanitize_rollout_items(items))
+        }
+    }
+}
+
+fn sanitize_rollout_items(items: Vec<RolloutItem>) -> Vec<RolloutItem> {
+    items
+        .into_iter()
+        .map(|item| match item {
+            RolloutItem::ResponseItem(ResponseItem::Reasoning {
+                id,
+                summary,
+                content,
+                encrypted_content: _,
+            }) => RolloutItem::ResponseItem(ResponseItem::Reasoning {
+                id,
+                summary,
+                content,
+                encrypted_content: None,
+            }),
+            other => other,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -335,5 +373,37 @@ mod tests {
             serde_json::to_value(&got_items).unwrap(),
             serde_json::to_value(&expected).unwrap()
         );
+    }
+
+    #[test]
+    fn test_sanitize_history_removes_encrypted_content() {
+        let items = vec![
+            ResponseItem::Reasoning {
+                id: "r1".to_string(),
+                summary: vec![],
+                content: None,
+                encrypted_content: Some("secret".to_string()),
+            },
+            assistant_msg("hello"),
+        ];
+
+        let rollout_items: Vec<RolloutItem> = items
+            .into_iter()
+            .map(RolloutItem::ResponseItem)
+            .collect();
+
+        let sanitized = sanitize_rollout_items(rollout_items);
+
+        if let RolloutItem::ResponseItem(ResponseItem::Reasoning { encrypted_content, .. }) = &sanitized[0] {
+            assert!(encrypted_content.is_none());
+        } else {
+            panic!("Expected Reasoning item");
+        }
+
+        if let RolloutItem::ResponseItem(ResponseItem::Message { .. }) = &sanitized[1] {
+            // ok
+        } else {
+            panic!("Expected Message item");
+        }
     }
 }
