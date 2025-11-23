@@ -225,6 +225,7 @@ pub enum HistoryAction {
     DeleteRange { start: usize, end: usize },
     DeleteLast { count: usize },
     DeleteBefore { index: usize },
+    Compact { start: usize, end: usize },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]

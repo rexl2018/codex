@@ -281,6 +281,9 @@ impl ContextManager {
                     format!("Invalid index: {}", index)
                 }
             }
+            HistoryAction::Compact { .. } => {
+                "Compaction is handled asynchronously.".to_string()
+            }
         }
     }
 

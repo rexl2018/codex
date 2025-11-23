@@ -147,6 +147,9 @@ pub enum CodexErr {
     #[error("Fatal error: {0}")]
     Fatal(String),
 
+    #[error("{0}")]
+    Other(String),
+
     // -----------------------------------------------------------------
     // Automatic conversions for common external error types
     // -----------------------------------------------------------------

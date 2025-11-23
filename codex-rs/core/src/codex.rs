@@ -1741,7 +1741,7 @@ mod handlers {
             vec![UserInput::Text {
                 text: turn_context.compact_prompt().to_string(),
             }],
-            CompactTask,
+            CompactTask { range: None },
         )
         .await;
     }
@@ -1802,6 +1802,24 @@ mod handlers {
         sub_id: String,
         action: codex_protocol::protocol::HistoryAction,
     ) {
+        if let codex_protocol::protocol::HistoryAction::Compact { start, end } = action {
+            let turn_context = sess
+                .new_turn_with_sub_id(sub_id, SessionSettingsUpdate::default())
+                .await;
+
+            sess.spawn_task(
+                Arc::clone(&turn_context),
+                vec![UserInput::Text {
+                    text: turn_context.compact_prompt().to_string(),
+                }],
+                CompactTask {
+                    range: Some((start, end)),
+                },
+            )
+            .await;
+            return;
+        }
+
         let content = {
             let mut state = sess.state.lock().await;
             state.history.handle_history_action(action)

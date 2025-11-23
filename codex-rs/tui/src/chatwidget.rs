@@ -3565,6 +3565,19 @@ fn parse_hist_args(args: &str) -> Result<HistoryAction, String> {
             let index = args[1].parse::<usize>().map_err(|_| "Invalid index".to_string())?;
             Ok(HistoryAction::DeleteRange { start: index, end: usize::MAX })
         }
+        "compact" => {
+            // Expecting: compact m,n
+            if args.len() < 2 {
+                return Err("Usage: /hist compact <start>,<end>".to_string());
+            }
+            let parts: Vec<&str> = args[1].split(',').collect();
+            if parts.len() != 2 {
+                return Err("Usage: /hist compact <start>,<end>".to_string());
+            }
+            let start = parts[0].parse::<usize>().map_err(|_| "Invalid start index".to_string())?;
+            let end = parts[1].parse::<usize>().map_err(|_| "Invalid end index".to_string())?;
+            Ok(HistoryAction::Compact { start, end })
+        }
         _ => Err(format!("Unknown subcommand: {}", args[0])),
     }
 }
