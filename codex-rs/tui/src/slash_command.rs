@@ -30,6 +30,7 @@ pub enum SlashCommand {
     Rollout,
     TestApproval,
     Hist,
+    Chat,
 }
 
 impl SlashCommand {
@@ -53,6 +54,7 @@ impl SlashCommand {
             SlashCommand::Rollout => "print the rollout file path",
             SlashCommand::TestApproval => "test approval request",
             SlashCommand::Hist => "manage conversation history (view, delete, etc.)",
+            SlashCommand::Chat => "manage chat sessions (list, resume, delete, share)",
         }
     }
 
@@ -83,6 +85,7 @@ impl SlashCommand {
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
             SlashCommand::Hist => true,
+            SlashCommand::Chat => true,
         }
     }
 

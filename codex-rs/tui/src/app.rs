@@ -511,6 +511,36 @@ impl App {
             AppEvent::ExitRequest => {
                 return Ok(false);
             }
+            AppEvent::ResumeSession(path) => {
+                let resumed = self
+                    .server
+                    .resume_conversation_from_rollout(
+                        self.config.clone(),
+                        path.clone(),
+                        self.auth_manager.clone(),
+                    )
+                    .await
+                    .wrap_err_with(|| {
+                        format!("Failed to resume session from {}", path.display())
+                    })?;
+
+                let init = crate::chatwidget::ChatWidgetInit {
+                    config: self.config.clone(),
+                    frame_requester: tui.frame_requester(),
+                    app_event_tx: self.app_event_tx.clone(),
+                    initial_prompt: None,
+                    initial_images: Vec::new(),
+                    enhanced_keys_supported: self.enhanced_keys_supported,
+                    auth_manager: self.auth_manager.clone(),
+                    feedback: self.feedback.clone(),
+                };
+                self.chat_widget = ChatWidget::new_from_existing(
+                    init,
+                    resumed.conversation,
+                    resumed.session_configured,
+                );
+                tui.frame_requester().schedule_frame();
+            }
             AppEvent::CodexOp(op) => self.chat_widget.submit_op(op),
             AppEvent::DiffResult(text) => {
                 // Clear the in-progress state in the bottom pane

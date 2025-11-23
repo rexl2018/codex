@@ -25,6 +25,9 @@ pub(crate) enum AppEvent {
     /// Request to exit the application gracefully.
     ExitRequest,
 
+    /// Request to resume a specific session.
+    ResumeSession(PathBuf),
+
     /// Forward an `Op` to the Agent. Using an `AppEvent` for this avoids
     /// bubbling channels through layers of widgets.
     CodexOp(codex_core::protocol::Op),

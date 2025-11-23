@@ -1561,6 +1561,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "sha2",
  "shlex",
  "strum 0.27.2",
  "strum_macros 0.27.2",
@@ -1578,6 +1579,7 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width 0.2.1",
  "url",
+ "urlencoding",
  "vt100",
 ]
 
