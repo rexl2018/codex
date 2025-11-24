@@ -4,8 +4,8 @@ use rand::Rng;
 use tracing::debug;
 use tracing::error;
 
-const INITIAL_DELAY_MS: u64 = 1000;
-const BACKOFF_FACTOR: f64 = 1.8;
+const INITIAL_DELAY_MS: u64 = 500;
+const BACKOFF_FACTOR: f64 = 2.0;
 
 pub(crate) fn backoff(attempt: u64) -> Duration {
     let exp = BACKOFF_FACTOR.powi(attempt.saturating_sub(1) as i32);
