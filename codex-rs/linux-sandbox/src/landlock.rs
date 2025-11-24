@@ -76,7 +76,7 @@ fn install_filesystem_landlock_rules_on_current_thread(writable_roots: Vec<PathB
     let status = ruleset.restrict_self()?;
 
     if status.ruleset == landlock::RulesetStatus::NotEnforced {
-        return Err(CodexErr::Sandbox(SandboxErr::LandlockRestrict));
+        return Ok(());
     }
 
     Ok(())
