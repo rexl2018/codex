@@ -2117,6 +2117,7 @@ async fn run_turn(
 
     let mut retries = 0;
     loop {
+        let mut progress_made = false;
         match try_run_turn(
             Arc::clone(&router),
             Arc::clone(&sess),
@@ -2124,6 +2125,7 @@ async fn run_turn(
             Arc::clone(&turn_diff_tracker),
             &prompt,
             cancellation_token.child_token(),
+            &mut progress_made,
         )
         .await
         {
@@ -2153,6 +2155,9 @@ async fn run_turn(
             Err(e @ CodexErr::QuotaExceeded) => return Err(e),
             Err(e @ CodexErr::RefreshTokenFailed(_)) => return Err(e),
             Err(e) => {
+                if progress_made {
+                    retries = 0;
+                }
                 // Use the configured provider-specific stream retry budget.
                 let max_retries = turn_context.client.get_provider().stream_max_retries();
                 if retries < max_retries {
@@ -2202,6 +2207,7 @@ async fn try_run_turn(
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
     cancellation_token: CancellationToken,
+    progress_made: &mut bool,
 ) -> CodexResult<Vec<ProcessedResponseItem>> {
     let rollout_item = RolloutItem::TurnContext(TurnContextItem {
         cwd: turn_context.cwd.clone(),
@@ -2246,7 +2252,10 @@ async fn try_run_turn(
         };
 
         let event = match event {
-            Some(res) => res?,
+            Some(res) => {
+                *progress_made = true;
+                res?
+            }
             None => {
                 return Err(CodexErr::Stream(
                     "stream closed before response.completed".into(),
