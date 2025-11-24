@@ -344,7 +344,7 @@ pub(crate) async fn stream_chat_completions(
     );
 
     let mut attempt = 0;
-    let max_retries = provider.request_max_retries();
+    let max_retries = provider.stream_max_retries();
     loop {
         attempt += 1;
 

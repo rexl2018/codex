@@ -280,7 +280,7 @@ impl ModelClient {
             attach_item_ids(&mut payload_json, &input_with_instructions);
         }
 
-        let max_attempts = self.provider.request_max_retries();
+        let max_attempts = self.provider.stream_max_retries();
         for attempt in 0..=max_attempts {
             match self
                 .attempt_stream_responses(attempt, &payload_json, &auth_manager)
