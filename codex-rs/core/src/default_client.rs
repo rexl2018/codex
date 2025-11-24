@@ -11,7 +11,6 @@ use std::fmt::Display;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 /// Set this to add a suffix to the User-Agent string.
 ///
@@ -268,11 +267,7 @@ pub fn create_client() -> CodexHttpClient {
     let mut builder = reqwest::Client::builder()
         // Set UA via dedicated helper to avoid header validation pitfalls
         .user_agent(ua)
-        .default_headers(headers)
-        .tcp_keepalive(Duration::from_secs(15))
-        .http2_keep_alive_interval(Duration::from_secs(15))
-        .http2_keep_alive_timeout(Duration::from_secs(5))
-        .connect_timeout(Duration::from_secs(30));
+        .default_headers(headers);
     if is_sandboxed() {
         builder = builder.no_proxy();
     }
