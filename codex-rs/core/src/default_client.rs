@@ -267,7 +267,8 @@ pub fn create_client() -> CodexHttpClient {
     let mut builder = reqwest::Client::builder()
         // Set UA via dedicated helper to avoid header validation pitfalls
         .user_agent(ua)
-        .default_headers(headers);
+        .default_headers(headers)
+        .tcp_keepalive(Duration::from_secs(60));
     if is_sandboxed() {
         builder = builder.no_proxy();
     }
