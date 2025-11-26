@@ -323,8 +323,18 @@ fn format_item_summary(item: &ResponseItem) -> String {
             };
             format!("[{}] {}", role, short_text)
         }
-        ResponseItem::FunctionCall { call_id, name, .. } => {
-            format!("[FunctionCall] {} (id: {})", name, call_id)
+        ResponseItem::FunctionCall {
+            call_id,
+            name,
+            arguments,
+            ..
+        } => {
+            let args = if arguments.len() > 100 {
+                format!("{}...", &arguments[..100])
+            } else {
+                arguments.clone()
+            };
+            format!("[FunctionCall] {}({}) (id: {})", name, args, call_id)
         }
         ResponseItem::FunctionCallOutput { call_id, .. } => {
             format!("[FunctionOutput] (id: {})", call_id)
