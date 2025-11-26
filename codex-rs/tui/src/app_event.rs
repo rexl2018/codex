@@ -170,8 +170,8 @@ pub(crate) enum AppEvent {
         category: FeedbackCategory,
     },
 
-    /// Copy the last agent message to the clipboard.
-    CopyLastAgentMessage,
+    /// Copy the last agent message to the clipboard or a file.
+    CopyLastAgentMessage(Option<String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

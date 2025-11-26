@@ -1420,6 +1420,12 @@ impl ChatWidget {
                             self.handle_chat_command(args);
                             return;
                         }
+                        if text.trim().starts_with("/copy") {
+                            let args = text.trim().strip_prefix("/copy").unwrap_or("").trim();
+                            let filename = if args.is_empty() { None } else { Some(args.to_string()) };
+                            self.app_event_tx.send(AppEvent::CopyLastAgentMessage(filename));
+                            return;
+                        }
                         let user_message = UserMessage {
                             text,
                             image_paths: self.bottom_pane.take_recent_submission_images(),
@@ -1585,7 +1591,7 @@ impl ChatWidget {
                 self.handle_chat_command("");
             }
             SlashCommand::Copy => {
-                self.app_event_tx.send(AppEvent::CopyLastAgentMessage);
+                self.app_event_tx.send(AppEvent::CopyLastAgentMessage(None));
             }
         }
     }
