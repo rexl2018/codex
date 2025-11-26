@@ -1681,48 +1681,47 @@ impl ChatWidget {
                     let tx = self.app_event_tx.clone();
                     let config = self.config.clone();
                     tokio::spawn(async move {
-                        match get_checkpoint_path(&tag, &config) {
-                            Ok(path) => {
-                                if path.exists() {
-                                    tx.send(AppEvent::ResumeSession(path));
-                                } else {
-                                     // Fallback: Check all checkpoint files in the directory to find matches
-                                    // This aligns with gemini-cli's fallback logic
-                                    let checkpoint_dir = codex_home.join("checkpoints");
-                                    let mut found = false;
-                                    if let Ok(mut entries) = tokio::fs::read_dir(&checkpoint_dir).await {
-                                        while let Ok(Some(entry)) = entries.next_entry().await {
-                                            let file_name = entry.file_name();
-                                            let file_name_str = file_name.to_string_lossy();
-                                            if file_name_str.ends_with(&format!("-{}.json", encode_tag_name(&tag))) {
-                                                tx.send(AppEvent::ResumeSession(entry.path()));
-                                                found = true;
-                                                break;
-                                            }
-                                        }
-                                    }
-
-                                    if !found {
-                                        tx.send(AppEvent::CodexEvent(Event {
-                                            id: "chat-resume-error".to_string(),
-                                            msg: EventMsg::Error(ErrorEvent {
-                                                message: format!("Checkpoint with tag '{tag}' not found"),
-                                                codex_error_info: None,
-                                            }),
-                                        }));
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tx.send(AppEvent::CodexEvent(Event {
-                                    id: "chat-resume-error".to_string(),
-                                    msg: EventMsg::Error(ErrorEvent {
-                                        message: format!("Failed to resolve checkpoint path: {e}"),
-                                        codex_error_info: None,
-                                    }),
-                                }));
+                        // 1. Try exact checkpoint path (hashed project root + tag)
+                        if let Ok(path) = get_checkpoint_path(&tag, &config) {
+                            if path.exists() {
+                                tx.send(AppEvent::ResumeSession(path));
+                                return;
                             }
                         }
+
+                        // 2. Try searching in checkpoints dir for suffix match
+                        let checkpoint_dir = codex_home.join("checkpoints");
+                        if let Ok(mut entries) = tokio::fs::read_dir(&checkpoint_dir).await {
+                            while let Ok(Some(entry)) = entries.next_entry().await {
+                                let file_name = entry.file_name();
+                                let file_name_str = file_name.to_string_lossy();
+                                if file_name_str.ends_with(&format!("-{}.json", encode_tag_name(&tag))) {
+                                    tx.send(AppEvent::ResumeSession(entry.path()));
+                                    return;
+                                }
+                            }
+                        }
+
+                        // 3. Try searching for session by ID (UUID)
+                        match codex_core::find_conversation_path_by_id_str(&codex_home, &tag).await {
+                            Ok(Some(path)) => {
+                                tx.send(AppEvent::ResumeSession(path));
+                                return;
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                tracing::warn!("Failed to search for session by ID: {}", e);
+                            }
+                        }
+
+                        // 4. Not found
+                        tx.send(AppEvent::CodexEvent(Event {
+                            id: "chat-resume-error".to_string(),
+                            msg: EventMsg::Error(ErrorEvent {
+                                message: format!("Checkpoint or session '{}' not found", tag),
+                                codex_error_info: None,
+                            }),
+                        }));
                     });
                 }
                 ChatAction::Share { path } => {
