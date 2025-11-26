@@ -242,6 +242,19 @@ impl AgentMessageCell {
             is_first_line,
         }
     }
+
+    pub(crate) fn text(&self) -> String {
+        self.lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 impl HistoryCell for AgentMessageCell {

@@ -1584,6 +1584,9 @@ impl ChatWidget {
             SlashCommand::Chat => {
                 self.handle_chat_command("");
             }
+            SlashCommand::Copy => {
+                self.app_event_tx.send(AppEvent::CopyLastAgentMessage);
+            }
         }
     }
 

@@ -169,6 +169,9 @@ pub(crate) enum AppEvent {
     OpenFeedbackConsent {
         category: FeedbackCategory,
     },
+
+    /// Copy the last agent message to the clipboard.
+    CopyLastAgentMessage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

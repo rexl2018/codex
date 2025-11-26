@@ -794,6 +794,25 @@ impl App {
             AppEvent::UpdateRateLimitSwitchPromptHidden(hidden) => {
                 self.chat_widget.set_rate_limit_switch_prompt_hidden(hidden);
             }
+            AppEvent::CopyLastAgentMessage => {
+                // Find the last AgentMessageCell in the transcript
+                let last_agent_message = self.transcript_cells.iter().rev().find_map(|cell| {
+                    if let Some(agent_cell) = cell.as_any().downcast_ref::<crate::history_cell::AgentMessageCell>() {
+                        Some(agent_cell.text())
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(text) = last_agent_message {
+                     match crate::clipboard_paste::copy_text(&text) {
+                         Ok(_) => self.chat_widget.add_info_message("Last output copied to clipboard".to_string(), None),
+                         Err(e) => self.chat_widget.add_error_message(format!("Failed to copy to clipboard: {e}")),
+                     }
+                } else {
+                    self.chat_widget.add_info_message("No output in history".to_string(), None);
+                }
+            }
             AppEvent::PersistFullAccessWarningAcknowledged => {
                 if let Err(err) = ConfigEditsBuilder::new(&self.config.codex_home)
                     .set_hide_full_access_warning(true)

@@ -31,6 +31,7 @@ pub enum SlashCommand {
     TestApproval,
     Hist,
     Chat,
+    Copy,
 }
 
 impl SlashCommand {
@@ -48,6 +49,7 @@ impl SlashCommand {
             SlashCommand::Mention => "mention a file",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Model => "choose what model and reasoning effort to use",
+            SlashCommand::Copy => "copy last AI output to clipboard",
             SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Logout => "log out of Codex",
@@ -86,6 +88,7 @@ impl SlashCommand {
             SlashCommand::TestApproval => true,
             SlashCommand::Hist => true,
             SlashCommand::Chat => true,
+            SlashCommand::Copy => true,
         }
     }
 
