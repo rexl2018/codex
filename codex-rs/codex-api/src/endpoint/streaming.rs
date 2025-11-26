@@ -66,7 +66,7 @@ impl<T: HttpTransport, A: AuthProvider> StreamingClient<T, A> {
         };
 
         let stream_response = run_with_request_telemetry(
-            self.provider.retry.to_policy(),
+            self.provider.stream_retry.to_policy(),
             self.request_telemetry.clone(),
             builder,
             |req| self.transport.stream(req),

@@ -74,6 +74,13 @@ fn provider(name: &str, wire: WireApi) -> Provider {
             retry_5xx: false,
             retry_transport: true,
         },
+        stream_retry: codex_api::provider::RetryConfig {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            retry_429: false,
+            retry_5xx: false,
+            retry_transport: true,
+        },
         stream_idle_timeout: Duration::from_millis(50),
     }
 }

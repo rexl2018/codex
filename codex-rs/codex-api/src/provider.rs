@@ -53,6 +53,7 @@ pub struct Provider {
     pub wire: WireApi,
     pub headers: HeaderMap,
     pub retry: RetryConfig,
+    pub stream_retry: RetryConfig,
     pub stream_idle_timeout: Duration,
 }
 

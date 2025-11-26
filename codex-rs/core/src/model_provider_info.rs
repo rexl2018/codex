@@ -148,6 +148,14 @@ impl ModelProviderInfo {
             retry_transport: true,
         };
 
+        let stream_retry = ApiRetryConfig {
+            max_attempts: self.stream_max_retries(),
+            base_delay: Duration::from_millis(200),
+            retry_429: false,
+            retry_5xx: true,
+            retry_transport: true,
+        };
+
         Ok(ApiProvider {
             name: self.name.clone(),
             base_url,
@@ -158,6 +166,7 @@ impl ModelProviderInfo {
             },
             headers,
             retry,
+            stream_retry,
             stream_idle_timeout: self.stream_idle_timeout(),
         })
     }

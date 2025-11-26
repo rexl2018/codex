@@ -132,6 +132,13 @@ fn provider(name: &str, wire: WireApi) -> Provider {
             retry_5xx: false,
             retry_transport: true,
         },
+        stream_retry: codex_api::provider::RetryConfig {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            retry_429: false,
+            retry_5xx: false,
+            retry_transport: true,
+        },
         stream_idle_timeout: Duration::from_millis(10),
     }
 }
@@ -289,7 +296,7 @@ async fn streaming_client_retries_on_transport_error() -> Result<()> {
     let transport = FlakyTransport::new();
 
     let mut provider = provider("openai", WireApi::Responses);
-    provider.retry.max_attempts = 2;
+    provider.stream_retry.max_attempts = 2;
 
     let client = ResponsesClient::new(transport.clone(), provider, NoAuth);
 

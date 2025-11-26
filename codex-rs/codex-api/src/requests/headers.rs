@@ -7,6 +7,11 @@ pub(crate) fn build_conversation_headers(conversation_id: Option<String>) -> Hea
     if let Some(id) = conversation_id {
         insert_header(&mut headers, "conversation_id", &id);
         insert_header(&mut headers, "session_id", &id);
+        insert_header(
+            &mut headers,
+            "extra",
+            &format!(r#"{{"session_id":"{}"}}"#, id),
+        );
     }
     headers
 }

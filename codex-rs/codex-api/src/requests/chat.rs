@@ -353,6 +353,13 @@ mod tests {
                 retry_5xx: true,
                 retry_transport: true,
             },
+            stream_retry: RetryConfig {
+                max_attempts: 1,
+                base_delay: Duration::from_millis(10),
+                retry_429: false,
+                retry_5xx: true,
+                retry_transport: true,
+            },
             stream_idle_timeout: Duration::from_secs(1),
         }
     }
@@ -383,6 +390,10 @@ mod tests {
         assert_eq!(
             req.headers.get("x-openai-subagent"),
             Some(&HeaderValue::from_static("review"))
+        );
+        assert_eq!(
+            req.headers.get("extra"),
+            Some(&HeaderValue::from_static(r#"{"session_id":"conv-1"}"#))
         );
     }
 }

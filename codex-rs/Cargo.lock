@@ -845,7 +845,7 @@ dependencies = [
 
 [[package]]
 name = "codex-api"
-version = "0.0.0"
+version = "1.63.0"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -976,7 +976,7 @@ dependencies = [
 
 [[package]]
 name = "codex-backend-client"
-version = "0.0.0"
+version = "1.63.0"
 dependencies = [
  "anyhow",
  "codex-backend-openapi-models",
@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "codex-client"
-version = "0.0.0"
+version = "1.63.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1682,7 +1682,7 @@ version = "1.63.0"
 
 [[package]]
 name = "codex-windows-sandbox"
-version = "0.0.0"
+version = "1.63.0"
 dependencies = [
  "anyhow",
  "codex-protocol",
