@@ -209,7 +209,7 @@ pub(crate) struct App {
     // Pager overlay state (Transcript or Static like Diff)
     pub(crate) overlay: Option<Overlay>,
     pub(crate) deferred_history_lines: Vec<Line<'static>>,
-    pub(crate) has_emitted_history_lines: bool,
+    has_emitted_history_lines: bool,
 
     pub(crate) enhanced_keys_supported: bool,
 
@@ -224,10 +224,10 @@ pub(crate) struct App {
 
     /// Ignore the next ShutdownComplete event when we're intentionally
     /// stopping a conversation (e.g., before starting a new one).
-    pub(crate) suppress_shutdown_complete: bool,
+    suppress_shutdown_complete: bool,
 
     // One-shot suppression of the next world-writable scan after user confirmation.
-    pub(crate) skip_world_writable_scan_once: bool,
+    skip_world_writable_scan_once: bool,
 }
 
 impl App {
@@ -482,7 +482,7 @@ impl App {
         Ok(true)
     }
 
-    pub(crate) async fn handle_event(&mut self, tui: &mut tui::Tui, event: AppEvent) -> Result<bool> {
+    async fn handle_event(&mut self, tui: &mut tui::Tui, event: AppEvent) -> Result<bool> {
         match event {
             AppEvent::NewSession => {
                 let summary = session_summary(
