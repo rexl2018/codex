@@ -84,6 +84,9 @@ mod version;
 mod wrapping;
 
 #[cfg(test)]
+mod copy_repro;
+
+#[cfg(test)]
 pub mod test_backend;
 
 use crate::onboarding::TrustDirectorySelection;

@@ -209,7 +209,7 @@ pub(crate) struct App {
     // Pager overlay state (Transcript or Static like Diff)
     pub(crate) overlay: Option<Overlay>,
     pub(crate) deferred_history_lines: Vec<Line<'static>>,
-    has_emitted_history_lines: bool,
+    pub(crate) has_emitted_history_lines: bool,
 
     pub(crate) enhanced_keys_supported: bool,
 
@@ -224,10 +224,10 @@ pub(crate) struct App {
 
     /// Ignore the next ShutdownComplete event when we're intentionally
     /// stopping a conversation (e.g., before starting a new one).
-    suppress_shutdown_complete: bool,
+    pub(crate) suppress_shutdown_complete: bool,
 
     // One-shot suppression of the next world-writable scan after user confirmation.
-    skip_world_writable_scan_once: bool,
+    pub(crate) skip_world_writable_scan_once: bool,
 }
 
 impl App {
@@ -396,6 +396,49 @@ impl App {
         })
     }
 
+    pub(crate) fn handle_copy_last_agent_message(&mut self, filename: Option<String>) {
+        // Find the last AgentMessageCell(s) in the transcript.
+        // We scan backwards. Once we find an AgentMessageCell, we keep collecting them
+        // until we hit a non-AgentMessageCell. This handles split messages.
+        let mut parts = Vec::new();
+        let mut found_any = false;
+
+        for cell in self.transcript_cells.iter().rev() {
+            if let Some(agent_cell) = cell.as_any().downcast_ref::<crate::history_cell::AgentMessageCell>() {
+                parts.push(agent_cell.text());
+                found_any = true;
+            } else if found_any {
+                // We found the block of agent messages, and now we hit something else (e.g. user message).
+                // Stop collecting.
+                break;
+            }
+            // If !found_any, we keep skipping non-agent cells (e.g. separators, errors) until we find the message.
+        }
+
+        if !parts.is_empty() {
+            // We collected them backwards, so reverse to get chronological order.
+            parts.reverse();
+            let text = parts.join("\n");
+
+            if let Some(filename) = filename {
+                // Save to file
+                let path = self.config.cwd.join(&filename);
+                match std::fs::write(&path, &text) {
+                    Ok(_) => self.chat_widget.add_info_message(format!("Saved output to {}", path.display()), None),
+                    Err(e) => self.chat_widget.add_error_message(format!("Failed to save to {}: {e}", path.display())),
+                }
+            } else {
+                // Copy to clipboard
+                match crate::clipboard_paste::copy_text(&text) {
+                    Ok(_) => self.chat_widget.add_info_message("Last output copied to clipboard".to_string(), None),
+                    Err(e) => self.chat_widget.add_error_message(format!("Failed to copy to clipboard: {e}")),
+                }
+            }
+        } else {
+            self.chat_widget.add_info_message("No output in history".to_string(), None);
+        }
+    }
+
     pub(crate) async fn handle_tui_event(
         &mut self,
         tui: &mut tui::Tui,
@@ -439,7 +482,7 @@ impl App {
         Ok(true)
     }
 
-    async fn handle_event(&mut self, tui: &mut tui::Tui, event: AppEvent) -> Result<bool> {
+    pub(crate) async fn handle_event(&mut self, tui: &mut tui::Tui, event: AppEvent) -> Result<bool> {
         match event {
             AppEvent::NewSession => {
                 let summary = session_summary(
@@ -795,33 +838,7 @@ impl App {
                 self.chat_widget.set_rate_limit_switch_prompt_hidden(hidden);
             }
             AppEvent::CopyLastAgentMessage(filename) => {
-                // Find the last AgentMessageCell in the transcript
-                let last_agent_message = self.transcript_cells.iter().rev().find_map(|cell| {
-                    if let Some(agent_cell) = cell.as_any().downcast_ref::<crate::history_cell::AgentMessageCell>() {
-                        Some(agent_cell.text())
-                    } else {
-                        None
-                    }
-                });
-
-                if let Some(text) = last_agent_message {
-                    if let Some(filename) = filename {
-                        // Save to file
-                        let path = self.config.cwd.join(&filename);
-                        match std::fs::write(&path, &text) {
-                            Ok(_) => self.chat_widget.add_info_message(format!("Saved output to {}", path.display()), None),
-                            Err(e) => self.chat_widget.add_error_message(format!("Failed to save to {}: {e}", path.display())),
-                        }
-                    } else {
-                        // Copy to clipboard
-                        match crate::clipboard_paste::copy_text(&text) {
-                            Ok(_) => self.chat_widget.add_info_message("Last output copied to clipboard".to_string(), None),
-                            Err(e) => self.chat_widget.add_error_message(format!("Failed to copy to clipboard: {e}")),
-                        }
-                    }
-                } else {
-                    self.chat_widget.add_info_message("No output in history".to_string(), None);
-                }
+                self.handle_copy_last_agent_message(filename);
             }
             AppEvent::PersistFullAccessWarningAcknowledged => {
                 if let Err(err) = ConfigEditsBuilder::new(&self.config.codex_home)
