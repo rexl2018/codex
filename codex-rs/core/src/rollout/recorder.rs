@@ -317,9 +317,12 @@ fn create_log_file(
         .map_err(|e| IoError::other(format!("failed to get local time: {e}")))?;
     let mut dir = config.codex_home.clone();
     dir.push(SESSIONS_SUBDIR);
-    dir.push(timestamp.year().to_string());
-    dir.push(format!("{:02}", u8::from(timestamp.month())));
-    dir.push(format!("{:02}", timestamp.day()));
+    dir.push(format!(
+        "{}{:02}{:02}",
+        timestamp.year(),
+        u8::from(timestamp.month()),
+        timestamp.day()
+    ));
     fs::create_dir_all(&dir)?;
 
     // Custom format for YYYY-MM-DDThh-mm-ss. Use `-` instead of `:` for

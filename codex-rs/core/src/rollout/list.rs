@@ -171,86 +171,73 @@ async fn traverse_directories_for_paths(
     };
     let mut more_matches_available = false;
 
-    let year_dirs = collect_dirs_desc(&root, |s| s.parse::<u16>().ok()).await?;
-
-    'outer: for (_year, year_path) in year_dirs.iter() {
+    let date_dirs = collect_dirs_desc(&root, |s| s.parse::<u32>().ok()).await?;
+    'outer: for (_date, date_path) in date_dirs.iter() {
         if scanned_files >= MAX_SCAN_FILES {
             break;
         }
-        let month_dirs = collect_dirs_desc(year_path, |s| s.parse::<u8>().ok()).await?;
-        for (_month, month_path) in month_dirs.iter() {
-            if scanned_files >= MAX_SCAN_FILES {
+        let mut day_files = collect_files(date_path, |name_str, path| {
+            if !name_str.starts_with("rollout-") || !name_str.ends_with(".jsonl") {
+                return None;
+            }
+
+            parse_timestamp_uuid_from_filename(name_str)
+                .map(|(ts, id)| (ts, id, name_str.to_string(), path.to_path_buf()))
+        })
+        .await?;
+        // Stable ordering within the same second: (timestamp desc, uuid desc)
+        day_files.sort_by_key(|(ts, sid, _name_str, _path)| (Reverse(*ts), Reverse(*sid)));
+        for (ts, sid, _name_str, path) in day_files.into_iter() {
+            scanned_files += 1;
+            if scanned_files >= MAX_SCAN_FILES && items.len() >= page_size {
+                more_matches_available = true;
                 break 'outer;
             }
-            let day_dirs = collect_dirs_desc(month_path, |s| s.parse::<u8>().ok()).await?;
-            for (_day, day_path) in day_dirs.iter() {
-                if scanned_files >= MAX_SCAN_FILES {
-                    break 'outer;
+            if !anchor_passed {
+                if ts < anchor_ts || (ts == anchor_ts && sid < anchor_id) {
+                    anchor_passed = true;
+                } else {
+                    continue;
                 }
-                let mut day_files = collect_files(day_path, |name_str, path| {
-                    if !name_str.starts_with("rollout-") || !name_str.ends_with(".jsonl") {
-                        return None;
-                    }
-
-                    parse_timestamp_uuid_from_filename(name_str)
-                        .map(|(ts, id)| (ts, id, name_str.to_string(), path.to_path_buf()))
-                })
-                .await?;
-                // Stable ordering within the same second: (timestamp desc, uuid desc)
-                day_files.sort_by_key(|(ts, sid, _name_str, _path)| (Reverse(*ts), Reverse(*sid)));
-                for (ts, sid, _name_str, path) in day_files.into_iter() {
-                    scanned_files += 1;
-                    if scanned_files >= MAX_SCAN_FILES && items.len() >= page_size {
-                        more_matches_available = true;
-                        break 'outer;
-                    }
-                    if !anchor_passed {
-                        if ts < anchor_ts || (ts == anchor_ts && sid < anchor_id) {
-                            anchor_passed = true;
-                        } else {
-                            continue;
-                        }
-                    }
-                    if items.len() == page_size {
-                        more_matches_available = true;
-                        break 'outer;
-                    }
-                    // Read head and simultaneously detect message events within the same
-                    // first N JSONL records to avoid a second file read.
-                    let summary = read_head_and_tail(&path, HEAD_RECORD_LIMIT, TAIL_RECORD_LIMIT)
-                        .await
-                        .unwrap_or_default();
-                    if !allowed_sources.is_empty()
-                        && !summary
-                            .source
-                            .is_some_and(|source| allowed_sources.iter().any(|s| s == &source))
-                    {
-                        continue;
-                    }
-                    if let Some(matcher) = provider_matcher
-                        && !matcher.matches(summary.model_provider.as_deref())
-                    {
-                        continue;
-                    }
-                    // Apply filters: must have session meta and at least one user message event
-                    if summary.saw_session_meta && summary.saw_user_event {
-                        let HeadTailSummary {
-                            head,
-                            tail,
-                            created_at,
-                            mut updated_at,
-                            ..
-                        } = summary;
-                        updated_at = updated_at.or_else(|| created_at.clone());
-                        items.push(ConversationItem {
-                            path,
-                            head,
-                            tail,
-                            created_at,
-                            updated_at,
-                        });
-                    }
-                }
+            }
+            if items.len() == page_size {
+                more_matches_available = true;
+                break 'outer;
+            }
+            // Read head and simultaneously detect message events within the same
+            // first N JSONL records to avoid a second file read.
+            let summary = read_head_and_tail(&path, HEAD_RECORD_LIMIT, TAIL_RECORD_LIMIT)
+                .await
+                .unwrap_or_default();
+            if !allowed_sources.is_empty()
+                && !summary
+                    .source
+                    .is_some_and(|source| allowed_sources.iter().any(|s| s == &source))
+            {
+                continue;
+            }
+            if let Some(matcher) = provider_matcher
+                && !matcher.matches(summary.model_provider.as_deref())
+            {
+                continue;
+            }
+            // Apply filters: must have session meta and at least one user message event
+            if summary.saw_session_meta && summary.saw_user_event {
+                let HeadTailSummary {
+                    head,
+                    tail,
+                    created_at,
+                    mut updated_at,
+                    ..
+                } = summary;
+                updated_at = updated_at.or_else(|| created_at.clone());
+                items.push(ConversationItem {
+                    path,
+                    head,
+                    tail,
+                    created_at,
+                    updated_at,
+                });
             }
         }
     }
