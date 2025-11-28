@@ -23,6 +23,7 @@ use crate::util::error_or_panic;
 use async_channel::Receiver;
 use async_channel::Sender;
 use codex_protocol::ConversationId;
+use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::TurnItem;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::HasLegacyEvent;
@@ -131,6 +132,8 @@ use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::models::ReasoningItemContent;
+use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::user_input::UserInput;
@@ -2044,6 +2047,12 @@ pub(crate) async fn run_task(
             Err(CodexErr::TurnAborted {
                 dangling_artifacts: processed_items,
             }) => {
+                // Emit ItemCompleted events for dangling artifacts so they are visible in TUI
+                for processed_item in &processed_items {
+                    if let Some(turn_item) = handle_non_tool_response_item(&processed_item.item).await {
+                        sess.emit_turn_item_completed(&turn_context, turn_item).await;
+                    }
+                }
                 let _ = process_items(processed_items, &sess, &turn_context).await;
                 // Aborted turn is reported via a different event.
                 break;
@@ -2248,7 +2257,17 @@ async fn try_run_turn(
         let event = match stream.next().or_cancel(&cancellation_token).await {
             Ok(event) => event,
             Err(codex_async_utils::CancelErr::Cancelled) => {
-                let processed_items = output.try_collect().await?;
+                let mut processed_items: Vec<ProcessedResponseItem> = output.try_collect().await?;
+                // If there's an active item when cancelled, convert it to a ResponseItem
+                // and add it to the dangling artifacts so partial content is preserved
+                if let Some(turn_item) = active_item.take() {
+                    if let Some(response_item) = turn_item_to_response_item(turn_item) {
+                        processed_items.push(ProcessedResponseItem {
+                            item: response_item,
+                            response: None,
+                        });
+                    }
+                }
                 return Err(CodexErr::TurnAborted {
                     dangling_artifacts: processed_items,
                 });
@@ -2382,7 +2401,15 @@ async fn try_run_turn(
             ResponseEvent::OutputTextDelta(delta) => {
                 // In review child threads, suppress assistant text deltas; the
                 // UI will show a selection popup from the final ReviewOutput.
-                if let Some(active) = active_item.as_ref() {
+                if let Some(active) = active_item.as_mut() {
+                    // Accumulate delta into active item
+                    if let TurnItem::AgentMessage(msg) = active {
+                        if let Some(AgentMessageContent::Text { text }) = msg.content.last_mut() {
+                            text.push_str(&delta);
+                        } else {
+                            msg.content.push(AgentMessageContent::Text { text: delta.clone() });
+                        }
+                    }
                     let event = AgentMessageContentDeltaEvent {
                         thread_id: sess.conversation_id.to_string(),
                         turn_id: turn_context.sub_id.clone(),
@@ -2399,7 +2426,15 @@ async fn try_run_turn(
                 delta,
                 summary_index,
             } => {
-                if let Some(active) = active_item.as_ref() {
+                if let Some(active) = active_item.as_mut() {
+                    // Accumulate summary delta into active item
+                    if let TurnItem::Reasoning(reasoning) = active {
+                        let idx = summary_index as usize;
+                        if idx >= reasoning.summary_text.len() {
+                            reasoning.summary_text.resize(idx + 1, String::new());
+                        }
+                        reasoning.summary_text[idx].push_str(&delta);
+                    }
                     let event = ReasoningContentDeltaEvent {
                         thread_id: sess.conversation_id.to_string(),
                         turn_id: turn_context.sub_id.clone(),
@@ -2429,7 +2464,15 @@ async fn try_run_turn(
                 delta,
                 content_index,
             } => {
-                if let Some(active) = active_item.as_ref() {
+                if let Some(active) = active_item.as_mut() {
+                    // Accumulate raw content delta into active item
+                    if let TurnItem::Reasoning(reasoning) = active {
+                        let idx = content_index as usize;
+                        if idx >= reasoning.raw_content.len() {
+                            reasoning.raw_content.resize(idx + 1, String::new());
+                        }
+                        reasoning.raw_content[idx].push_str(&delta);
+                    }
                     let event = ReasoningRawContentDeltaEvent {
                         thread_id: sess.conversation_id.to_string(),
                         turn_id: turn_context.sub_id.clone(),
@@ -2461,6 +2504,46 @@ async fn handle_non_tool_response_item(item: &ResponseItem) -> Option<TurnItem> 
         _ => None,
     }
 }
+
+/// Convert a TurnItem back to a ResponseItem.
+/// Used when persisting partial items on interruption.
+fn turn_item_to_response_item(turn_item: TurnItem) -> Option<ResponseItem> {
+    match turn_item {
+        TurnItem::AgentMessage(msg) => {
+            let content = msg.content.into_iter().map(|c| match c {
+                AgentMessageContent::Text { text } => ContentItem::OutputText { text },
+            }).collect();
+            Some(ResponseItem::Message {
+                id: Some(msg.id),
+                role: "assistant".to_string(),
+                content,
+            })
+        }
+        TurnItem::Reasoning(reasoning) => {
+            let summary = reasoning.summary_text.into_iter()
+                .map(|text| ReasoningItemReasoningSummary::SummaryText { text })
+                .collect();
+            let content = if reasoning.raw_content.is_empty() {
+                None
+            } else {
+                Some(reasoning.raw_content.into_iter()
+                    .map(|text| ReasoningItemContent::ReasoningText { text })
+                    .collect())
+            };
+            Some(ResponseItem::Reasoning {
+                id: reasoning.id,
+                summary,
+                content,
+                encrypted_content: None,
+            })
+        }
+        TurnItem::UserMessage(_) | TurnItem::WebSearch(_) => {
+            // These should not be active items during model streaming
+            None
+        }
+    }
+}
+
 
 pub(super) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -> Option<String> {
     responses.iter().rev().find_map(|item| {

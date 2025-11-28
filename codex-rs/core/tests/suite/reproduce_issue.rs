@@ -1,0 +1,90 @@
+use std::time::Duration;
+
+use codex_core::protocol::EventMsg;
+use codex_core::protocol::Op;
+use codex_protocol::items::TurnItem;
+use codex_protocol::user_input::UserInput;
+use core_test_support::responses::ev_reasoning_item_added;
+use core_test_support::responses::ev_reasoning_text_delta;
+use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::sse;
+use core_test_support::responses::start_mock_server;
+use core_test_support::test_codex::test_codex;
+use core_test_support::wait_for_event;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupt_reasoning_records_history() {
+    let reasoning_text = "I am thinking about the problem...";
+    
+    let server = start_mock_server().await;
+
+    // Mount a mock that sends reasoning but keeps the stream open  
+    use wiremock::{Mock, ResponseTemplate, matchers::method, matchers::path_regex};
+    
+    Mock::given(method("POST"))
+        .and(path_regex(".*/responses$"))
+        .respond_with(|_req: &wiremock::Request| {
+            let body = sse(vec![
+                ev_response_created("resp-reasoning"),
+                ev_reasoning_item_added("reasoning-1", &[]),
+                ev_reasoning_text_delta("I am thinking about the problem..."),
+            ]);
+            
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_raw(body, "text/event-stream")
+        })
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    let fixture = test_codex()
+        .with_model("gpt-5.1")
+        .build(&server)
+        .await
+        .unwrap();
+    let codex = fixture.codex;
+
+    // Kick off a turn
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "Think about it".into(),
+            }],
+        })
+        .await
+        .unwrap();
+
+    // Wait until we receive the reasoning delta (proving the stream started)
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ReasoningRawContentDelta(_))).await;
+
+    // Give the core a moment to fully process the delta into active_item
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Interrupt immediately after
+    codex.submit(Op::Interrupt).await.unwrap();
+
+    // Consume events until TurnAborted, looking for ItemCompleted with reasoning
+    let mut found_reasoning = false;
+    loop {
+        let ev = tokio::time::timeout(Duration::from_secs(5), codex.next_event())
+            .await
+            .expect("timeout waiting for event")
+            .expect("stream ended unexpectedly");
+            
+        match ev.msg {
+            EventMsg::TurnAborted(_) => break,
+            EventMsg::ItemCompleted(event) => {
+                if let TurnItem::Reasoning(reasoning_item) = event.item {
+                    if reasoning_item.raw_content.iter().any(|text| text.contains(reasoning_text)) {
+                        found_reasoning = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert!(found_reasoning, "Partial reasoning should be recorded in history after interruption");
+}
