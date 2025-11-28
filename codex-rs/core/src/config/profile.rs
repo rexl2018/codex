@@ -20,6 +20,7 @@ pub struct ConfigProfile {
     pub model_reasoning_effort: Option<ReasoningEffort>,
     pub model_reasoning_summary: Option<ReasoningSummary>,
     pub model_verbosity: Option<Verbosity>,
+    pub model_max_output_tokens: Option<i64>,
     pub chatgpt_base_url: Option<String>,
     pub experimental_instructions_file: Option<PathBuf>,
     pub experimental_compact_prompt_file: Option<PathBuf>,

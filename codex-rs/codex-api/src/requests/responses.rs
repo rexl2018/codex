@@ -28,6 +28,7 @@ pub struct ResponsesRequestBuilder<'a> {
     include: Vec<String>,
     prompt_cache_key: Option<String>,
     text: Option<TextControls>,
+    max_output_tokens: Option<i64>,
     conversation_id: Option<String>,
     session_source: Option<SessionSource>,
     store_override: Option<bool>,
@@ -71,6 +72,11 @@ impl<'a> ResponsesRequestBuilder<'a> {
 
     pub fn text(mut self, text: Option<TextControls>) -> Self {
         self.text = text;
+        self
+    }
+
+    pub fn max_output_tokens(mut self, max_output_tokens: Option<i64>) -> Self {
+        self.max_output_tokens = max_output_tokens;
         self
     }
 
@@ -123,6 +129,7 @@ impl<'a> ResponsesRequestBuilder<'a> {
             include: self.include,
             prompt_cache_key: self.prompt_cache_key,
             text: self.text,
+            max_output_tokens: self.max_output_tokens,
         };
 
         let mut body = serde_json::to_value(&req)

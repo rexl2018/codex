@@ -225,6 +225,9 @@ pub struct Config {
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
 
+    /// Optional max output tokens limit for Responses API.
+    pub model_max_output_tokens: Option<i64>,
+
     /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
     pub chatgpt_base_url: String,
 
@@ -671,6 +674,8 @@ pub struct ConfigToml {
     pub model_reasoning_summary: Option<ReasoningSummary>,
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
+    /// Optional max output tokens limit for Responses API.
+    pub model_max_output_tokens: Option<i64>,
 
     /// Override to force-enable reasoning summaries for the configured model.
     pub model_supports_reasoning_summaries: Option<bool>,
@@ -1234,6 +1239,9 @@ impl Config {
                 .or(cfg.model_reasoning_summary)
                 .unwrap_or_default(),
             model_verbosity: config_profile.model_verbosity.or(cfg.model_verbosity),
+            model_max_output_tokens: config_profile
+                .model_max_output_tokens
+                .or(cfg.model_max_output_tokens),
             chatgpt_base_url: config_profile
                 .chatgpt_base_url
                 .or(cfg.chatgpt_base_url)

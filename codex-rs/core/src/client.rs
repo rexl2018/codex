@@ -262,6 +262,7 @@ impl ModelClient {
                 include: include.clone(),
                 prompt_cache_key: Some(conversation_id.clone()),
                 text: text.clone(),
+                max_output_tokens: self.config.model_max_output_tokens,
                 store_override: None,
                 conversation_id: Some(conversation_id.clone()),
                 session_source: Some(session_source.clone()),

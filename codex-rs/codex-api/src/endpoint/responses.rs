@@ -28,6 +28,7 @@ pub struct ResponsesOptions {
     pub include: Vec<String>,
     pub prompt_cache_key: Option<String>,
     pub text: Option<TextControls>,
+    pub max_output_tokens: Option<i64>,
     pub store_override: Option<bool>,
     pub conversation_id: Option<String>,
     pub session_source: Option<SessionSource>,
@@ -68,6 +69,7 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
             include,
             prompt_cache_key,
             text,
+            max_output_tokens,
             store_override,
             conversation_id,
             session_source,
@@ -80,6 +82,7 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
             .include(include)
             .prompt_cache_key(prompt_cache_key)
             .text(text)
+            .max_output_tokens(max_output_tokens)
             .conversation(conversation_id)
             .session_source(session_source)
             .store_override(store_override)
