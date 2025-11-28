@@ -1835,6 +1835,26 @@ impl ChatWidget {
                         tokio::spawn(async move {
                              match get_checkpoint_path(&tag, &config) {
                                 Ok(target_path) => {
+                                    // Check if source and destination are the same file to avoid truncation
+                                    let same_file = if target_path.exists() {
+                                        match (tokio::fs::canonicalize(&current_path).await, tokio::fs::canonicalize(&target_path).await) {
+                                            (Ok(c), Ok(t)) => c == t,
+                                            _ => current_path == target_path,
+                                        }
+                                    } else {
+                                        false
+                                    };
+
+                                    if same_file {
+                                        tx.send(AppEvent::CodexEvent(Event {
+                                            id: "chat-save".to_string(),
+                                            msg: EventMsg::AgentMessage(AgentMessageEvent {
+                                                message: format!("Session is already saved as checkpoint '{}'", tag),
+                                            }),
+                                        }));
+                                        return;
+                                    }
+
                                     if let Some(parent) = target_path.parent() {
                                         let _ = tokio::fs::create_dir_all(parent).await;
                                     }
