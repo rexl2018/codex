@@ -77,8 +77,6 @@ struct Error {
 struct ResponseCompleted {
     id: String,
     #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
     usage: Option<ResponseCompletedUsage>,
 }
 
@@ -155,7 +153,7 @@ pub async fn process_sse(
             }
             Ok(None) => {
                 match response_completed.take() {
-                    Some(ResponseCompleted { id, usage, .. }) => {
+                    Some(ResponseCompleted { id, usage }) => {
                         let event = ResponseEvent::Completed {
                             response_id: id,
                             token_usage: usage.map(Into::into),
@@ -274,25 +272,10 @@ pub async fn process_sse(
                 }
             }
             "response.completed" => {
-                if let Some(ref resp_val) = event.response {
-                    match serde_json::from_value::<ResponseCompleted>(resp_val.clone()) {
+                if let Some(resp_val) = event.response {
+                    match serde_json::from_value::<ResponseCompleted>(resp_val) {
                         Ok(r) => {
-                            // Check if the response status is "incomplete"
-                            if r.status.as_deref() == Some("incomplete") {
-                                // Extract incomplete_details if available
-                                let incomplete_reason = event.response
-                                    .as_ref()
-                                    .and_then(|v| v.get("incomplete_details"))
-                                    .and_then(|d| d.get("reason"))
-                                    .and_then(|r| r.as_str())
-                                    .unwrap_or("max_output_tokens");
-                                
-                                response_error = Some(ApiError::Incomplete {
-                                    reason: incomplete_reason.to_string(),
-                                });
-                            } else {
-                                response_completed = Some(r);
-                            }
+                            response_completed = Some(r);
                         }
                         Err(e) => {
                             let error = format!("failed to parse ResponseCompleted: {e}");
