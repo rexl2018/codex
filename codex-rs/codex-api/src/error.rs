@@ -23,8 +23,6 @@ pub enum ApiError {
         message: String,
         delay: Option<Duration>,
     },
-    #[error("response incomplete: {reason}")]
-    Incomplete { reason: String },
     #[error("rate limit: {0}")]
     RateLimit(String),
 }

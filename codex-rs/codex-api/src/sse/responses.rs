@@ -258,19 +258,6 @@ pub async fn process_sse(
                     }
                 }
             }
-            "response.incomplete" => {
-                if let Some(resp_val) = event.response {
-                    let incomplete_reason = resp_val
-                        .get("incomplete_details")
-                        .and_then(|d| d.get("reason"))
-                        .and_then(|r| r.as_str())
-                        .unwrap_or("unknown");
-                    
-                    response_error = Some(ApiError::Incomplete {
-                        reason: incomplete_reason.to_string(),
-                    });
-                }
-            }
             "response.completed" => {
                 if let Some(resp_val) = event.response {
                     match serde_json::from_value::<ResponseCompleted>(resp_val) {

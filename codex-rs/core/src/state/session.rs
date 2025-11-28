@@ -14,8 +14,6 @@ pub(crate) struct SessionState {
     pub(crate) session_configuration: SessionConfiguration,
     pub(crate) history: ContextManager,
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
-    pub(crate) continuation_count: u32,
-    pub(crate) pending_inputs: Vec<codex_protocol::user_input::UserInput>,
 }
 
 impl SessionState {
@@ -26,8 +24,6 @@ impl SessionState {
             session_configuration,
             history,
             latest_rate_limits: None,
-            continuation_count: 0,
-            pending_inputs: Vec::new(),
         }
     }
 
@@ -81,23 +77,5 @@ impl SessionState {
 
     pub(crate) fn get_total_token_usage(&self) -> i64 {
         self.history.get_total_token_usage()
-    }
-
-    // Continuation helpers
-    pub(crate) fn increment_continuation_count(&mut self) -> u32 {
-        self.continuation_count += 1;
-        self.continuation_count
-    }
-
-    pub(crate) fn can_continue(&self) -> bool {
-        self.continuation_count < 1000
-    }
-
-    pub(crate) fn add_pending_input(&mut self, input: codex_protocol::user_input::UserInput) {
-        self.pending_inputs.push(input);
-    }
-
-    pub(crate) fn take_pending_inputs(&mut self) -> Vec<codex_protocol::user_input::UserInput> {
-        std::mem::take(&mut self.pending_inputs)
     }
 }

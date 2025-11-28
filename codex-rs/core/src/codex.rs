@@ -1282,30 +1282,14 @@ impl Session {
     }
 
     pub async fn get_pending_input(&self) -> Vec<ResponseInputItem> {
-        // First get auto-continuation inputs from session state
-        let continuation_inputs = {
-            let mut state = self.state.lock().await;
-            state.take_pending_inputs()
-        };
-
-        // Then get user-submitted inputs from active turn
         let mut active = self.active_turn.lock().await;
-        let turn_inputs = match active.as_mut() {
+        match active.as_mut() {
             Some(at) => {
                 let mut ts = at.turn_state.lock().await;
                 ts.take_pending_input()
             }
             None => Vec::with_capacity(0),
-        };
-
-        // Combine: continuation inputs first, then user inputs
-        let mut result = if !continuation_inputs.is_empty() {
-            vec![ResponseInputItem::from(continuation_inputs)]
-        } else {
-            Vec::new()
-        };
-        result.extend(turn_inputs);
-        result
+        }
     }
 
     pub async fn list_resources(
@@ -2072,50 +2056,6 @@ pub(crate) async fn run_task(
                 let _ = process_items(processed_items, &sess, &turn_context).await;
                 // Aborted turn is reported via a different event.
                 break;
-            }
-            Err(CodexErr::ResponseIncomplete { reason }) => {
-                // Check if we can continue
-                let can_continue = {
-                    let state = sess.state.lock().await;
-                    state.can_continue()
-                };
-
-                if can_continue {
-                    let count = {
-                        let mut state = sess.state.lock().await;
-                        state.increment_continuation_count()
-                    };
-
-                    // Notify user
-                    let msg = format!(
-                        "Response truncated ({}). Automatically continuing... (continuation #{})",
-                        reason, count
-                    );
-                    sess.send_event(&turn_context, EventMsg::Warning(codex_protocol::protocol::WarningEvent {
-                        message: msg,
-                    })).await;
-
-                    // Add continuation prompt to internal pending inputs
-                    {
-                        let mut state = sess.state.lock().await;
-                        state.add_pending_input(codex_protocol::user_input::UserInput::Text {
-                            text: "Please continue exactly where you left off.".to_string(),
-                        });
-                    }
-
-                    continue; // Loop will pick up the continuation prompt
-                } else {
-                    // Hit limit
-                    let msg = format!(
-                        "Response truncated ({}) but continuation limit reached (1000). \
-                        Please manually ask the model to continue if needed.",
-                        reason
-                    );
-                    sess.send_event(&turn_context, EventMsg::Warning(codex_protocol::protocol::WarningEvent {
-                        message: msg,
-                    })).await;
-                    break;
-                }
             }
             Err(e) => {
                 info!("Turn error: {e:#}");
