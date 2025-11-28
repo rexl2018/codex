@@ -2275,15 +2275,50 @@ async fn try_run_turn(
         };
 
         let event = match event {
-            Some(res) => {
+            Some(Ok(event)) => {
                 *progress_made = true;
-                res?
+                event
+            }
+            Some(Err(_e)) => {
+                // Stream error (e.g. connection closed, timeout).
+                // We should persist any active item (partial reasoning) and return what we have.
+                // This allows run_task to record the partial history and then retry.
+                let mut processed_items: Vec<ProcessedResponseItem> = output.try_collect().await?;
+                if let Some(turn_item) = active_item.take() {
+                    // Emit ItemCompleted so it's visible in TUI immediately
+                    sess.emit_turn_item_completed(&turn_context, turn_item.clone()).await;
+                    
+                    if let Some(response_item) = turn_item_to_response_item(turn_item) {
+                        processed_items.push(ProcessedResponseItem {
+                            item: response_item,
+                            response: None,
+                        });
+                    }
+                }
+                // We return Ok so that the partial items are recorded.
+                // run_task will likely loop again (retry behavior).
+                return Ok(processed_items);
             }
             None => {
-                return Err(CodexErr::Stream(
-                    "stream closed before response.completed".into(),
-                    None,
-                ));
+                // Stream closed before response.completed.
+                // We should persist any active item (partial reasoning) and return what we have.
+                // This allows run_task to record the partial history and then retry (loop again).
+                let mut processed_items: Vec<ProcessedResponseItem> = output.try_collect().await?;
+                if let Some(turn_item) = active_item.take() {
+                    // Emit ItemCompleted so it's visible in TUI immediately
+                    sess.emit_turn_item_completed(&turn_context, turn_item.clone()).await;
+                    
+                    if let Some(response_item) = turn_item_to_response_item(turn_item) {
+                        processed_items.push(ProcessedResponseItem {
+                            item: response_item,
+                            response: None,
+                        });
+                    }
+                }
+                // We return Ok so that the partial items are recorded.
+                // Since we didn't receive ResponseEvent::Completed, run_task will likely loop again
+                // (retry behavior) but with the partial history preserved.
+                return Ok(processed_items);
             }
         };
 

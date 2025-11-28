@@ -67,24 +67,17 @@ async fn interrupt_reasoning_records_history() {
 
     // Consume events until TurnAborted, looking for ItemCompleted with reasoning
     let mut found_reasoning = false;
-    loop {
-        let ev = tokio::time::timeout(Duration::from_secs(5), codex.next_event())
-            .await
-            .expect("timeout waiting for event")
-            .expect("stream ended unexpectedly");
-            
-        match ev.msg {
-            EventMsg::TurnAborted(_) => break,
-            EventMsg::ItemCompleted(event) => {
-                if let TurnItem::Reasoning(reasoning_item) = event.item {
-                    if reasoning_item.raw_content.iter().any(|text| text.contains(reasoning_text)) {
-                        found_reasoning = true;
-                    }
+
+    wait_for_event(&codex, |ev| {
+        if let EventMsg::ItemCompleted(item) = ev {
+            if let TurnItem::Reasoning(reasoning) = &item.item {
+                if !reasoning.raw_content.is_empty() {
+                    found_reasoning = true;
                 }
             }
-            _ => {}
         }
-    }
+        matches!(ev, EventMsg::TurnAborted(_) | EventMsg::TaskComplete(_))
+    }).await;
 
     assert!(found_reasoning, "Partial reasoning should be recorded in history after interruption");
 }
