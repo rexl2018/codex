@@ -248,9 +248,9 @@ impl ContextManager {
             HistoryAction::Delete { index } => {
                 if index > 0 && index <= self.items.len() {
                     self.items.remove(index - 1);
-                    format!("Deleted item #{}", index)
+                    format!("Deleted item #{index}")
                 } else {
-                    format!("Invalid index: {}", index)
+                    format!("Invalid index: {index}")
                 }
             }
             HistoryAction::DeleteRange { start, end } => {
@@ -258,9 +258,9 @@ impl ContextManager {
                     // drain is exclusive of end, but user range is inclusive
                     // start-1 to end
                     self.items.drain((start - 1)..end);
-                    format!("Deleted items #{} to #{}", start, end)
+                    format!("Deleted items #{start} to #{end}")
                 } else {
-                    format!("Invalid range: {}-{}", start, end)
+                    format!("Invalid range: {start}-{end}")
                 }
             }
             HistoryAction::DeleteLast { count } => {
@@ -268,9 +268,9 @@ impl ContextManager {
                 if count > 0 && count <= len {
                     let start = len - count;
                     self.items.drain(start..);
-                    format!("Deleted last {} items", count)
+                    format!("Deleted last {count} items")
                 } else {
-                    format!("Invalid count: {}", count)
+                    format!("Invalid count: {count}")
                 }
             }
             HistoryAction::DeleteBefore { index } => {
@@ -278,14 +278,12 @@ impl ContextManager {
                     // Delete 1..=index (inclusive)
                     // 0..index
                     self.items.drain(0..index);
-                    format!("Deleted items before and including #{}", index)
+                    format!("Deleted items before and including #{index}")
                 } else {
-                    format!("Invalid index: {}", index)
+                    format!("Invalid index: {index}")
                 }
             }
-            HistoryAction::Compact { .. } => {
-                "Compaction is handled asynchronously.".to_string()
-            }
+            HistoryAction::Compact { .. } => "Compaction is handled asynchronously.".to_string(),
         }
     }
 
@@ -298,7 +296,7 @@ impl ContextManager {
         for (i, item) in self.items.iter().enumerate().skip(start).take(end - start) {
             let index = i + 1;
             let content = format_item_summary(item);
-            output.push_str(&format!("{}. {}\n", index, content));
+            output.push_str(&format!("{index}. {content}\n"));
         }
         output
     }
@@ -313,7 +311,7 @@ fn format_item_summary(item: &ResponseItem) -> String {
                     codex_protocol::models::ContentItem::InputText { text } => text.clone(),
                     codex_protocol::models::ContentItem::OutputText { text } => text.clone(),
                     codex_protocol::models::ContentItem::InputImage { image_url } => {
-                        format!("[Image: {}]", image_url)
+                        format!("[Image: {image_url}]")
                     }
                 })
                 .collect::<Vec<_>>()
@@ -323,7 +321,7 @@ fn format_item_summary(item: &ResponseItem) -> String {
             } else {
                 text
             };
-            format!("[{}] {}", role, short_text)
+            format!("[{role}] {short_text}")
         }
         ResponseItem::FunctionCall {
             call_id,
@@ -336,30 +334,28 @@ fn format_item_summary(item: &ResponseItem) -> String {
             } else {
                 arguments.clone()
             };
-            format!("[FunctionCall] {}({}) (id: {})", name, args, call_id)
+            format!("[FunctionCall] {name}({args}) (id: {call_id})")
         }
         ResponseItem::FunctionCallOutput { call_id, .. } => {
-            format!("[FunctionOutput] (id: {})", call_id)
+            format!("[FunctionOutput] (id: {call_id})")
         }
         ResponseItem::Reasoning { .. } => "[Reasoning]".to_string(),
-        ResponseItem::LocalShellCall { action, .. } => {
-             match action {
-                codex_protocol::models::LocalShellAction::Exec(exec) => format!("[Shell] {:?}", exec.command),
+        ResponseItem::LocalShellCall { action, .. } => match action {
+            codex_protocol::models::LocalShellAction::Exec(exec) => {
+                format!("[Shell] {:?}", exec.command)
             }
-        }
-        ResponseItem::WebSearchCall { action, .. } => {
-            match action {
-                codex_protocol::models::WebSearchAction::Search { query } => {
-                    format!("[WebSearch] {}", query.as_deref().unwrap_or("?"))
-                }
-                _ => "[WebSearch]".to_string(),
+        },
+        ResponseItem::WebSearchCall { action, .. } => match action {
+            codex_protocol::models::WebSearchAction::Search { query } => {
+                format!("[WebSearch] {}", query.as_deref().unwrap_or("?"))
             }
-        }
+            _ => "[WebSearch]".to_string(),
+        },
         ResponseItem::CustomToolCall { name, .. } => {
-            format!("[Tool] {}", name)
+            format!("[Tool] {name}")
         }
         ResponseItem::CustomToolCallOutput { call_id, .. } => {
-            format!("[ToolOutput] (id: {})", call_id)
+            format!("[ToolOutput] (id: {call_id})")
         }
         ResponseItem::CompactionSummary { .. } => "[CompactionSummary]".to_string(),
         ResponseItem::GhostSnapshot { .. } => "[GhostSnapshot]".to_string(),

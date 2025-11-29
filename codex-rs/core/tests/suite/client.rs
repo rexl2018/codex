@@ -1,6 +1,7 @@
 use codex_app_server_protocol::AuthMode;
 use codex_core::CodexAuth;
 use codex_core::ContentItem;
+use codex_core::ConversationBuildStrategy;
 use codex_core::ConversationManager;
 use codex_core::LocalShellAction;
 use codex_core::LocalShellExecAction;
@@ -1673,5 +1674,129 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
         serde_json::Value::Array(actual_tail.to_vec()),
         r3_tail_expected,
         "request 3 tail mismatch",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn request_includes_previous_response_id_when_configured() {
+    skip_if_no_network!();
+
+    let server = MockServer::start().await;
+
+    let sse_body = "data: {\"type\":\"response.created\",\"response\":{}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n";
+
+    let template = ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_raw(sse_body, "text/event-stream");
+
+    Mock::given(method("POST"))
+        .and(path("/openai/responses"))
+        .respond_with(template)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = ModelProviderInfo {
+        name: "azure".into(),
+        base_url: Some(format!("{}/openai", server.uri())),
+        env_key: None,
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(0),
+        stream_idle_timeout_ms: Some(5_000),
+        requires_openai_auth: false,
+    };
+
+    let codex_home = TempDir::new().unwrap();
+    let mut config = load_default_config_for_test(&codex_home);
+    config.model_provider_id = provider.name.clone();
+    config.model_provider = provider.clone();
+    config.conversation_build_strategy = ConversationBuildStrategy::PreviousResponseId;
+    let effort = config.model_reasoning_effort;
+    let summary = config.model_reasoning_summary;
+    let config = Arc::new(config);
+
+    let conversation_id = ConversationId::new();
+    let otel_event_manager = OtelEventManager::new(
+        conversation_id,
+        config.model.as_str(),
+        config.model_family.slug.as_str(),
+        None,
+        Some("test@test.com".to_string()),
+        Some(AuthMode::ChatGPT),
+        false,
+        "test".to_string(),
+    );
+
+    let client = ModelClient::new(
+        Arc::clone(&config),
+        None,
+        otel_event_manager,
+        provider,
+        effort,
+        summary,
+        conversation_id,
+        codex_protocol::protocol::SessionSource::Exec,
+    );
+
+    let mut prompt = Prompt::default();
+    prompt.input.push(ResponseItem::Message {
+        id: Some("prev-msg-id".into()),
+        role: "assistant".into(),
+        content: vec![ContentItem::OutputText {
+            text: "prev".into(),
+        }],
+    });
+    prompt.input.push(ResponseItem::Message {
+        id: None,
+        role: "user".into(),
+        content: vec![ContentItem::InputText { text: "new".into() }],
+    });
+
+    let mut stream = client
+        .stream(&prompt)
+        .await
+        .expect("responses stream to start");
+    while let Some(event) = stream.next().await {
+        if let Ok(ResponseEvent::Completed { .. }) = event {
+            break;
+        }
+    }
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("mock server collected requests");
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = requests[0].body_json().expect("valid JSON");
+
+    assert_eq!(
+        body["previous_response_id"],
+        serde_json::Value::String("prev-msg-id".into())
+    );
+    assert_eq!(
+        body["instructions"],
+        serde_json::Value::String(String::new())
+    );
+    assert_eq!(body["input"].as_array().map(Vec::len), Some(2));
+    assert_eq!(body["input"][0]["role"], "system");
+    assert!(
+        body["input"][0]["content"][0]["text"]
+            .as_str()
+            .map(|text| !text.is_empty())
+            .unwrap_or(false),
+        "system message should contain instructions"
+    );
+    assert_eq!(body["input"][1]["role"], "user");
+
+    // Verify caching is enabled when the previous_response_id strategy is configured
+    assert_eq!(
+        body["caching"]["type"],
+        serde_json::Value::String("enabled".into())
     );
 }

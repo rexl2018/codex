@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+use crate::conversation_build::ConversationBuildStrategy;
 use crate::protocol::AskForApproval;
 use codex_protocol::config_types::ReasoningEffort;
 use codex_protocol::config_types::ReasoningSummary;
@@ -35,6 +36,7 @@ pub struct ConfigProfile {
     #[serde(default)]
     pub features: Option<crate::features::FeaturesToml>,
     pub oss_provider: Option<String>,
+    pub conversation_build_strategy: Option<ConversationBuildStrategy>,
 }
 
 impl From<ConfigProfile> for codex_app_server_protocol::Profile {

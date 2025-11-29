@@ -99,7 +99,6 @@ use crate::history_cell::HistoryCell;
 use crate::history_cell::McpToolCallCell;
 use crate::history_cell::PlainHistoryCell;
 use crate::markdown::append_markdown;
-use codex_core;
 use crate::render::Insets;
 use crate::render::renderable::ColumnRenderable;
 use crate::render::renderable::FlexRenderable;
@@ -110,6 +109,7 @@ use crate::slash_command::SlashCommand;
 use crate::status::RateLimitSnapshotDisplay;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
+use codex_core;
 mod interrupts;
 use self::interrupts::InterruptManager;
 mod agent;
@@ -1422,8 +1422,13 @@ impl ChatWidget {
                         }
                         if text.trim().starts_with("/copy") {
                             let args = text.trim().strip_prefix("/copy").unwrap_or("").trim();
-                            let filename = if args.is_empty() { None } else { Some(args.to_string()) };
-                            self.app_event_tx.send(AppEvent::CopyLastAgentMessage(filename));
+                            let filename = if args.is_empty() {
+                                None
+                            } else {
+                                Some(args.to_string())
+                            };
+                            self.app_event_tx
+                                .send(AppEvent::CopyLastAgentMessage(filename));
                             return;
                         }
                         let user_message = UserMessage {
@@ -1554,10 +1559,10 @@ impl ChatWidget {
                 }
             }
             SlashCommand::TestApproval => {
-                use codex_core::protocol::EventMsg;
-                use std::collections::HashMap;
                 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
+                use codex_core::protocol::EventMsg;
                 use codex_core::protocol::FileChange;
+                use std::collections::HashMap;
 
                 self.app_event_tx.send(AppEvent::CodexEvent(Event {
                     id: "1".to_string(),
@@ -1637,28 +1642,35 @@ impl ChatWidget {
                                         })
                                         .unwrap_or_else(|| "unknown".to_string());
 
-                                    let time =
-                                        item.created_at.as_deref().unwrap_or("unknown time");
+                                    let time = item.created_at.as_deref().unwrap_or("unknown time");
                                     output.push_str(&format!("- **{}** ({})\n", id, time));
                                 }
 
                                 // List checkpoints
                                 let checkpoints_dir = codex_home.join("checkpoints");
-                                if let Ok(mut entries) = tokio::fs::read_dir(&checkpoints_dir).await {
+                                if let Ok(mut entries) = tokio::fs::read_dir(&checkpoints_dir).await
+                                {
                                     output.push_str("\n## Saved Checkpoints\n\n");
                                     let mut checkpoints = Vec::new();
                                     while let Ok(Some(entry)) = entries.next_entry().await {
                                         let path = entry.path();
-                                        if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                                            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                                        if path.extension().and_then(|e| e.to_str()) == Some("json")
+                                        {
+                                            if let Some(file_name) =
+                                                path.file_name().and_then(|n| n.to_str())
+                                            {
                                                 // Format: <hash>-<shortDir>-<tag>.json
                                                 // We want to extract <tag>
                                                 // Simple regex replacement: remove first two dash-separated parts
-                                                let parts: Vec<&str> = file_name.splitn(3, '-').collect();
+                                                let parts: Vec<&str> =
+                                                    file_name.splitn(3, '-').collect();
                                                 if parts.len() == 3 {
                                                     let tag_with_ext = parts[2];
-                                                    let tag = tag_with_ext.strip_suffix(".json").unwrap_or(tag_with_ext);
-                                                    let decoded_tag = urlencoding::decode(tag).unwrap_or(std::borrow::Cow::Borrowed(tag));
+                                                    let tag = tag_with_ext
+                                                        .strip_suffix(".json")
+                                                        .unwrap_or(tag_with_ext);
+                                                    let decoded_tag = urlencoding::decode(tag)
+                                                        .unwrap_or(std::borrow::Cow::Borrowed(tag));
                                                     checkpoints.push(decoded_tag.into_owned());
                                                 }
                                             }
@@ -1753,7 +1765,9 @@ impl ChatWidget {
                             while let Ok(Some(entry)) = entries.next_entry().await {
                                 let file_name = entry.file_name();
                                 let file_name_str = file_name.to_string_lossy();
-                                if file_name_str.ends_with(&format!("-{}.json", encode_tag_name(&tag))) {
+                                if file_name_str
+                                    .ends_with(&format!("-{}.json", encode_tag_name(&tag)))
+                                {
                                     tx.send(AppEvent::ResumeSession(entry.path()));
                                     return;
                                 }
@@ -1761,7 +1775,8 @@ impl ChatWidget {
                         }
 
                         // 3. Try searching for session by ID (UUID)
-                        match codex_core::find_conversation_path_by_id_str(&codex_home, &tag).await {
+                        match codex_core::find_conversation_path_by_id_str(&codex_home, &tag).await
+                        {
                             Ok(Some(path)) => {
                                 tx.send(AppEvent::ResumeSession(path));
                                 return;
@@ -1833,11 +1848,14 @@ impl ChatWidget {
                         let config = self.config.clone();
                         let tag = tag.clone();
                         tokio::spawn(async move {
-                             match get_checkpoint_path(&tag, &config) {
+                            match get_checkpoint_path(&tag, &config) {
                                 Ok(target_path) => {
                                     // Check if source and destination are the same file to avoid truncation
                                     let same_file = if target_path.exists() {
-                                        match (tokio::fs::canonicalize(&current_path).await, tokio::fs::canonicalize(&target_path).await) {
+                                        match (
+                                            tokio::fs::canonicalize(&current_path).await,
+                                            tokio::fs::canonicalize(&target_path).await,
+                                        ) {
                                             (Ok(c), Ok(t)) => c == t,
                                             _ => current_path == target_path,
                                         }
@@ -1849,7 +1867,10 @@ impl ChatWidget {
                                         tx.send(AppEvent::CodexEvent(Event {
                                             id: "chat-save".to_string(),
                                             msg: EventMsg::AgentMessage(AgentMessageEvent {
-                                                message: format!("Session is already saved as checkpoint '{}'", tag),
+                                                message: format!(
+                                                    "Session is already saved as checkpoint '{}'",
+                                                    tag
+                                                ),
                                             }),
                                         }));
                                         return;
@@ -1875,7 +1896,9 @@ impl ChatWidget {
                                             tx.send(AppEvent::CodexEvent(Event {
                                                 id: "chat-save-error".to_string(),
                                                 msg: EventMsg::Error(ErrorEvent {
-                                                    message: format!("Failed to save checkpoint: {e}"),
+                                                    message: format!(
+                                                        "Failed to save checkpoint: {e}"
+                                                    ),
                                                     codex_error_info: None,
                                                 }),
                                             }));
@@ -1886,12 +1909,14 @@ impl ChatWidget {
                                     tx.send(AppEvent::CodexEvent(Event {
                                         id: "chat-save-error".to_string(),
                                         msg: EventMsg::Error(ErrorEvent {
-                                            message: format!("Failed to resolve checkpoint path: {e}"),
+                                            message: format!(
+                                                "Failed to resolve checkpoint path: {e}"
+                                            ),
                                             codex_error_info: None,
                                         }),
                                     }));
                                 }
-                             }
+                            }
                         });
                     } else {
                         self.add_error_message("No active session to save".to_string());
@@ -1903,10 +1928,6 @@ impl ChatWidget {
             }
         }
     }
-
-
-
-
 
     pub(crate) fn handle_paste(&mut self, text: String) {
         self.bottom_pane.handle_paste(text);
@@ -3605,7 +3626,6 @@ pub(crate) fn show_review_commit_picker_with_entries(
 #[cfg(test)]
 pub(crate) mod tests;
 
-
 fn parse_hist_args(args: &str) -> Result<HistoryAction, String> {
     let args: Vec<&str> = args.split_whitespace().collect();
     if args.is_empty() {
@@ -3615,7 +3635,9 @@ fn parse_hist_args(args: &str) -> Result<HistoryAction, String> {
         "listall" => Ok(HistoryAction::ViewAll),
         "ll" => {
             let count = if args.len() > 1 {
-                args[1].parse::<usize>().map_err(|_| "Invalid count".to_string())?
+                args[1]
+                    .parse::<usize>()
+                    .map_err(|_| "Invalid count".to_string())?
             } else {
                 10 // Default to last 10 if not specified
             };
@@ -3625,14 +3647,17 @@ fn parse_hist_args(args: &str) -> Result<HistoryAction, String> {
             if args.len() < 2 {
                 return Err("Usage: /hist la <index>".to_string());
             }
-            let index = args[1].parse::<usize>().map_err(|_| "Invalid index".to_string())?;
+            let index = args[1]
+                .parse::<usize>()
+                .map_err(|_| "Invalid index".to_string())?;
             Ok(HistoryAction::ViewAround { index })
         }
         "del" => {
             if args.len() < 2 {
                 return Err("Usage: /hist del <index>".to_string());
             }
-            args[1].parse::<usize>()
+            args[1]
+                .parse::<usize>()
                 .map(|index| HistoryAction::Delete { index })
                 .map_err(|_| "Invalid index".to_string())
         }
@@ -3646,13 +3671,19 @@ fn parse_hist_args(args: &str) -> Result<HistoryAction, String> {
             if parts.len() != 2 {
                 return Err("Usage: /hist del-range <start>,<end>".to_string());
             }
-            let start = parts[0].parse::<usize>().map_err(|_| "Invalid start index".to_string())?;
-            let end = parts[1].parse::<usize>().map_err(|_| "Invalid end index".to_string())?;
+            let start = parts[0]
+                .parse::<usize>()
+                .map_err(|_| "Invalid start index".to_string())?;
+            let end = parts[1]
+                .parse::<usize>()
+                .map_err(|_| "Invalid end index".to_string())?;
             Ok(HistoryAction::DeleteRange { start, end })
         }
         "del-last" => {
             let count = if args.len() > 1 {
-                args[1].parse::<usize>().map_err(|_| "Invalid count".to_string())?
+                args[1]
+                    .parse::<usize>()
+                    .map_err(|_| "Invalid count".to_string())?
             } else {
                 1
             };
@@ -3662,15 +3693,22 @@ fn parse_hist_args(args: &str) -> Result<HistoryAction, String> {
             if args.len() < 2 {
                 return Err("Usage: /hist del-before <index>".to_string());
             }
-            let index = args[1].parse::<usize>().map_err(|_| "Invalid index".to_string())?;
+            let index = args[1]
+                .parse::<usize>()
+                .map_err(|_| "Invalid index".to_string())?;
             Ok(HistoryAction::DeleteBefore { index })
         }
         "del-after" => {
             if args.len() < 2 {
                 return Err("Usage: /hist del-after <index>".to_string());
             }
-            let index = args[1].parse::<usize>().map_err(|_| "Invalid index".to_string())?;
-            Ok(HistoryAction::DeleteRange { start: index, end: usize::MAX })
+            let index = args[1]
+                .parse::<usize>()
+                .map_err(|_| "Invalid index".to_string())?;
+            Ok(HistoryAction::DeleteRange {
+                start: index,
+                end: usize::MAX,
+            })
         }
         "compact" => {
             // Expecting: compact m,n
@@ -3681,8 +3719,12 @@ fn parse_hist_args(args: &str) -> Result<HistoryAction, String> {
             if parts.len() != 2 {
                 return Err("Usage: /hist compact <start>,<end>".to_string());
             }
-            let start = parts[0].parse::<usize>().map_err(|_| "Invalid start index".to_string())?;
-            let end = parts[1].parse::<usize>().map_err(|_| "Invalid end index".to_string())?;
+            let start = parts[0]
+                .parse::<usize>()
+                .map_err(|_| "Invalid start index".to_string())?;
+            let end = parts[1]
+                .parse::<usize>()
+                .map_err(|_| "Invalid end index".to_string())?;
             Ok(HistoryAction::Compact { start, end })
         }
         _ => Err(format!("Unknown subcommand: {}", args[0])),
@@ -3698,37 +3740,67 @@ mod hist_tests {
     fn test_parse_hist_args() {
         assert_eq!(parse_hist_args(""), Ok(HistoryAction::ViewAll));
         assert_eq!(parse_hist_args("listall"), Ok(HistoryAction::ViewAll));
-        
+
         // ll
-        assert_eq!(parse_hist_args("ll"), Ok(HistoryAction::ViewLast { count: 10 }));
-        assert_eq!(parse_hist_args("ll 5"), Ok(HistoryAction::ViewLast { count: 5 }));
+        assert_eq!(
+            parse_hist_args("ll"),
+            Ok(HistoryAction::ViewLast { count: 10 })
+        );
+        assert_eq!(
+            parse_hist_args("ll 5"),
+            Ok(HistoryAction::ViewLast { count: 5 })
+        );
         assert!(parse_hist_args("ll abc").is_err());
 
         // la
-        assert_eq!(parse_hist_args("la 5"), Ok(HistoryAction::ViewAround { index: 5 }));
+        assert_eq!(
+            parse_hist_args("la 5"),
+            Ok(HistoryAction::ViewAround { index: 5 })
+        );
         assert!(parse_hist_args("la").is_err());
         assert!(parse_hist_args("la abc").is_err());
 
         // del
-        assert_eq!(parse_hist_args("del 5"), Ok(HistoryAction::Delete { index: 5 }));
+        assert_eq!(
+            parse_hist_args("del 5"),
+            Ok(HistoryAction::Delete { index: 5 })
+        );
         assert!(parse_hist_args("del").is_err());
         assert!(parse_hist_args("del abc").is_err());
 
         // del-range
-        assert_eq!(parse_hist_args("del-range 1,5"), Ok(HistoryAction::DeleteRange { start: 1, end: 5 }));
+        assert_eq!(
+            parse_hist_args("del-range 1,5"),
+            Ok(HistoryAction::DeleteRange { start: 1, end: 5 })
+        );
         assert!(parse_hist_args("del-range 1 5").is_err()); // Space not allowed anymore
         assert!(parse_hist_args("del-range 1").is_err());
 
         // del-last
-        assert_eq!(parse_hist_args("del-last"), Ok(HistoryAction::DeleteLast { count: 1 }));
-        assert_eq!(parse_hist_args("del-last 5"), Ok(HistoryAction::DeleteLast { count: 5 }));
+        assert_eq!(
+            parse_hist_args("del-last"),
+            Ok(HistoryAction::DeleteLast { count: 1 })
+        );
+        assert_eq!(
+            parse_hist_args("del-last 5"),
+            Ok(HistoryAction::DeleteLast { count: 5 })
+        );
 
         // del-before
-        assert_eq!(parse_hist_args("del-before 10"), Ok(HistoryAction::DeleteBefore { index: 10 }));
+        assert_eq!(
+            parse_hist_args("del-before 10"),
+            Ok(HistoryAction::DeleteBefore { index: 10 })
+        );
         assert!(parse_hist_args("del-before").is_err());
 
         // del-after
-        assert_eq!(parse_hist_args("del-after 10"), Ok(HistoryAction::DeleteRange { start: 10, end: usize::MAX }));
+        assert_eq!(
+            parse_hist_args("del-after 10"),
+            Ok(HistoryAction::DeleteRange {
+                start: 10,
+                end: usize::MAX
+            })
+        );
         assert!(parse_hist_args("del-after").is_err());
 
         assert!(parse_hist_args("unknown").is_err());
@@ -3753,21 +3825,24 @@ fn get_checkpoint_path(tag: &str, config: &Config) -> Result<PathBuf, String> {
         return Err("No checkpoint tag specified.".to_string());
     }
     let encoded_tag = encode_tag_name(tag);
-    
+
     // Get project root and generate short hash (first 4 chars of SHA-256)
     // In codex, we use config.cwd as the project root equivalent
     let project_root = config.cwd.to_string_lossy();
-    
-    use sha2::{Digest, Sha256};
+
+    use sha2::Digest;
+    use sha2::Sha256;
     let mut hasher = Sha256::new();
     hasher.update(project_root.as_bytes());
     let hash = format!("{:x}", hasher.finalize());
     let short_hash = &hash[0..4];
 
-    let project_dir_name = config.cwd.file_name()
+    let project_dir_name = config
+        .cwd
+        .file_name()
         .map(|n| n.to_string_lossy())
         .unwrap_or_else(|| "unknown".into());
-    
+
     // Filter to alphanumeric/underscore, take first 20 chars
     let short_dir_name: String = project_dir_name
         .chars()
@@ -3776,7 +3851,10 @@ fn get_checkpoint_path(tag: &str, config: &Config) -> Result<PathBuf, String> {
         .collect();
 
     let checkpoint_dir = config.codex_home.join("checkpoints");
-    Ok(checkpoint_dir.join(format!("{}-{}-{}.json", short_hash, short_dir_name, encoded_tag)))
+    Ok(checkpoint_dir.join(format!(
+        "{}-{}-{}.json",
+        short_hash, short_dir_name, encoded_tag
+    )))
 }
 
 fn parse_chat_args(args: &str) -> Result<ChatAction, String> {
@@ -3803,7 +3881,7 @@ fn parse_chat_args(args: &str) -> Result<ChatAction, String> {
             })
         }
         "share" => {
-             let path = if args.len() > 1 {
+            let path = if args.len() > 1 {
                 Some(args[1].to_string())
             } else {
                 None
@@ -3814,7 +3892,9 @@ fn parse_chat_args(args: &str) -> Result<ChatAction, String> {
             if args.len() < 2 {
                 return Err("Usage: /chat save <tag>".to_string());
             }
-            Ok(ChatAction::Save { tag: args[1].to_string() })
+            Ok(ChatAction::Save {
+                tag: args[1].to_string(),
+            })
         }
         _ => Err(format!("Unknown subcommand: {}", args[0])),
     }

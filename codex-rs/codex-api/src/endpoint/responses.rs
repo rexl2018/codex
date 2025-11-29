@@ -32,6 +32,8 @@ pub struct ResponsesOptions {
     pub store_override: Option<bool>,
     pub conversation_id: Option<String>,
     pub session_source: Option<SessionSource>,
+    pub previous_response_id: Option<String>,
+    pub caching: Option<crate::common::Caching>,
 }
 
 impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
@@ -73,9 +75,17 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
             store_override,
             conversation_id,
             session_source,
+            previous_response_id,
+            caching,
         } = options;
 
-        let request = ResponsesRequestBuilder::new(model, &prompt.instructions, &prompt.input)
+        let instructions = if prompt.include_instructions {
+            Some(prompt.instructions.as_str())
+        } else {
+            None
+        };
+
+        let request = ResponsesRequestBuilder::new(model, instructions, &prompt.input)
             .tools(&prompt.tools)
             .parallel_tool_calls(prompt.parallel_tool_calls)
             .reasoning(reasoning)
@@ -86,6 +96,8 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
             .conversation(conversation_id)
             .session_source(session_source)
             .store_override(store_override)
+            .previous_response_id(previous_response_id)
+            .caching(caching)
             .build(self.streaming.provider())?;
 
         self.stream_request(request).await

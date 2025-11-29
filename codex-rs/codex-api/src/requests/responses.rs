@@ -33,13 +33,15 @@ pub struct ResponsesRequestBuilder<'a> {
     session_source: Option<SessionSource>,
     store_override: Option<bool>,
     headers: HeaderMap,
+    previous_response_id: Option<String>,
+    caching: Option<crate::common::Caching>,
 }
 
 impl<'a> ResponsesRequestBuilder<'a> {
-    pub fn new(model: &'a str, instructions: &'a str, input: &'a [ResponseItem]) -> Self {
+    pub fn new(model: &'a str, instructions: Option<&'a str>, input: &'a [ResponseItem]) -> Self {
         Self {
             model: Some(model),
-            instructions: Some(instructions),
+            instructions,
             input: Some(input),
             ..Default::default()
         }
@@ -95,6 +97,16 @@ impl<'a> ResponsesRequestBuilder<'a> {
         self
     }
 
+    pub fn previous_response_id(mut self, id: Option<String>) -> Self {
+        self.previous_response_id = id;
+        self
+    }
+
+    pub fn caching(mut self, caching: Option<crate::common::Caching>) -> Self {
+        self.caching = caching;
+        self
+    }
+
     pub fn extra_headers(mut self, headers: HeaderMap) -> Self {
         self.headers = headers;
         self
@@ -104,9 +116,7 @@ impl<'a> ResponsesRequestBuilder<'a> {
         let model = self
             .model
             .ok_or_else(|| ApiError::Stream("missing model for responses request".into()))?;
-        let instructions = self
-            .instructions
-            .ok_or_else(|| ApiError::Stream("missing instructions for responses request".into()))?;
+        let instructions = self.instructions;
         let input = self
             .input
             .ok_or_else(|| ApiError::Stream("missing input for responses request".into()))?;
@@ -130,6 +140,8 @@ impl<'a> ResponsesRequestBuilder<'a> {
             prompt_cache_key: self.prompt_cache_key,
             text: self.text,
             max_output_tokens: self.max_output_tokens,
+            previous_response_id: self.previous_response_id,
+            caching: self.caching,
         };
 
         let mut body = serde_json::to_value(&req)
@@ -227,7 +239,7 @@ mod tests {
             },
         ];
 
-        let request = ResponsesRequestBuilder::new("gpt-test", "inst", &input)
+        let request = ResponsesRequestBuilder::new("gpt-test", Some("inst"), &input)
             .conversation(Some("conv-1".into()))
             .session_source(Some(SessionSource::SubAgent(SubAgentSource::Review)))
             .build(&provider)

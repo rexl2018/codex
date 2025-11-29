@@ -18,6 +18,8 @@ use tokio::sync::mpsc;
 pub struct Prompt {
     /// Fully-resolved system instructions for this turn.
     pub instructions: String,
+    /// Whether to include the `instructions` field in outbound API payloads.
+    pub include_instructions: bool,
     /// Conversation history and user/tool messages.
     pub input: Vec<ResponseItem>,
     /// JSON-encoded tool definitions compatible with the target API.
@@ -120,7 +122,8 @@ impl From<VerbosityConfig> for OpenAiVerbosity {
 #[derive(Debug, Serialize)]
 pub struct ResponsesApiRequest<'a> {
     pub model: &'a str,
-    pub instructions: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<&'a str>,
     pub input: &'a [ResponseItem],
     pub tools: &'a [serde_json::Value],
     pub tool_choice: &'static str,
@@ -128,6 +131,7 @@ pub struct ResponsesApiRequest<'a> {
     pub reasoning: Option<Reasoning>,
     pub store: bool,
     pub stream: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub include: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt_cache_key: Option<String>,
@@ -135,6 +139,23 @@ pub struct ResponsesApiRequest<'a> {
     pub text: Option<TextControls>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caching: Option<Caching>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct Caching {
+    pub r#type: CachingType,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum CachingType {
+    Enabled,
+    Disabled,
 }
 
 pub fn create_text_param_for_request(

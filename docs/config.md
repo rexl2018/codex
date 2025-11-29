@@ -113,6 +113,23 @@ base_url = "https://api.mistral.ai/v1"
 env_key = "MISTRAL_API_KEY"
 ```
 
+### conversation_build_strategy
+
+Controls how Codex assembles the conversation payload that is sent to the Responses API. Most providers use the default `full_history` mode, which includes every prior message and keeps the dedicated `instructions` field populated. Some providers—such as ByteDance ARK when `previous_response_id` + caching are enabled—expect the CLI to send only the delta since the last response ID and to move the instructions into an explicit system message.
+
+```toml
+# default: "full_history"
+conversation_build_strategy = "previous_response_id"
+```
+
+When set to `previous_response_id`, Codex:
+
+- Finds the most recent response item that carries an `id` and sets `previous_response_id` accordingly.
+- Enables the Responses API caching block and omits `prompt_cache_key`.
+- Clears the top-level `instructions` field and prepends those instructions as a `system` message at the beginning of the `input` array.
+
+This keeps configuration simple for providers that require the legacy behaviour while leaving the default untouched for everything else.
+
 It is also possible to configure a provider to include extra HTTP headers with a request. These can be hardcoded values (`http_headers`) or values read from environment variables (`env_http_headers`):
 
 ```toml

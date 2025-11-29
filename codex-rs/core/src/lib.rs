@@ -14,6 +14,7 @@ mod client_common;
 pub mod codex;
 mod codex_conversation;
 mod compact_remote;
+mod conversation_build;
 pub use codex_conversation::CodexConversation;
 mod codex_delegate;
 mod command_safety;
@@ -106,6 +107,7 @@ pub use codex_protocol::protocol;
 // Re-export protocol config enums to ensure call sites can use the same types
 // as those in the protocol crate when constructing protocol messages.
 pub use codex_protocol::config_types as protocol_config_types;
+pub use conversation_build::ConversationBuildStrategy;
 
 pub use client::ModelClient;
 pub use client_common::Prompt;

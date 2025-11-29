@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 
-
 use codex_core::error::Result;
 use codex_core::error::SandboxErr;
 use codex_core::protocol::SandboxPolicy;
@@ -66,7 +65,10 @@ fn install_filesystem_landlock_rules_on_current_thread(writable_roots: Vec<PathB
         .handle_access(access_rw)?
         .create()?
         .add_rules(landlock::path_beneath_rules(&["/"], access_ro))?
-        .add_rules(landlock::path_beneath_rules(&["/dev/null", "/tmp"], access_rw))?
+        .add_rules(landlock::path_beneath_rules(
+            &["/dev/null", "/tmp"],
+            access_rw,
+        ))?
         .set_no_new_privs(true);
 
     if !writable_roots.is_empty() {

@@ -35,18 +35,16 @@ impl SessionTask for CompactTask {
             // Let's just use remote if configured (ignoring range) OR force local if range is present.
             // Given the complexity, let's force local if range is present.
             if self.range.is_some() {
-                 if let Some((start, end)) = self.range {
+                if let Some((start, end)) = self.range {
                     crate::compact::run_compact_task_on_range(session, ctx, input, start, end).await
-                 }
+                }
             } else {
                 crate::compact_remote::run_remote_compact_task(session, ctx).await
             }
+        } else if let Some((start, end)) = self.range {
+            crate::compact::run_compact_task_on_range(session, ctx, input, start, end).await
         } else {
-            if let Some((start, end)) = self.range {
-                crate::compact::run_compact_task_on_range(session, ctx, input, start, end).await
-            } else {
-                crate::compact::run_compact_task(session, ctx, input).await
-            }
+            crate::compact::run_compact_task(session, ctx, input).await
         }
 
         None

@@ -17,6 +17,7 @@ use crate::config_loader::LoadedConfigLayers;
 use crate::config_loader::load_config_as_toml;
 use crate::config_loader::load_config_layers_with_overrides;
 use crate::config_loader::merge_toml_values;
+use crate::conversation_build::ConversationBuildStrategy;
 use crate::features::Feature;
 use crate::features::FeatureOverrides;
 use crate::features::Features;
@@ -227,6 +228,9 @@ pub struct Config {
 
     /// Optional max output tokens limit for Responses API.
     pub model_max_output_tokens: Option<i64>,
+
+    /// Strategy for constructing the conversation payload sent to the provider.
+    pub conversation_build_strategy: ConversationBuildStrategy,
 
     /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
     pub chatgpt_base_url: String,
@@ -676,6 +680,9 @@ pub struct ConfigToml {
     pub model_verbosity: Option<Verbosity>,
     /// Optional max output tokens limit for Responses API.
     pub model_max_output_tokens: Option<i64>,
+
+    /// Strategy for constructing the conversation payload sent to the provider.
+    pub conversation_build_strategy: Option<ConversationBuildStrategy>,
 
     /// Override to force-enable reasoning summaries for the configured model.
     pub model_supports_reasoning_summaries: Option<bool>,
@@ -1242,6 +1249,10 @@ impl Config {
             model_max_output_tokens: config_profile
                 .model_max_output_tokens
                 .or(cfg.model_max_output_tokens),
+            conversation_build_strategy: config_profile
+                .conversation_build_strategy
+                .or(cfg.conversation_build_strategy)
+                .unwrap_or_default(),
             chatgpt_base_url: config_profile
                 .chatgpt_base_url
                 .or(cfg.chatgpt_base_url)
@@ -2997,6 +3008,8 @@ model_verbosity = "high"
                 model_reasoning_effort: Some(ReasoningEffort::High),
                 model_reasoning_summary: ReasoningSummary::Detailed,
                 model_verbosity: None,
+                model_max_output_tokens: None,
+                conversation_build_strategy: ConversationBuildStrategy::FullHistory,
                 chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
                 base_instructions: None,
                 developer_instructions: None,
@@ -3070,6 +3083,8 @@ model_verbosity = "high"
             model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
             model_verbosity: None,
+            model_max_output_tokens: None,
+            conversation_build_strategy: ConversationBuildStrategy::FullHistory,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,
             developer_instructions: None,
@@ -3158,6 +3173,8 @@ model_verbosity = "high"
             model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
             model_verbosity: None,
+            model_max_output_tokens: None,
+            conversation_build_strategy: ConversationBuildStrategy::FullHistory,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,
             developer_instructions: None,
@@ -3232,6 +3249,8 @@ model_verbosity = "high"
             model_reasoning_effort: Some(ReasoningEffort::High),
             model_reasoning_summary: ReasoningSummary::Detailed,
             model_verbosity: Some(Verbosity::High),
+            model_max_output_tokens: None,
+            conversation_build_strategy: ConversationBuildStrategy::FullHistory,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,
             developer_instructions: None,

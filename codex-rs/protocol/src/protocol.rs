@@ -210,9 +210,7 @@ pub enum Op {
     },
 
     /// Manage conversation history (view, delete, etc.)
-    ManageHistory {
-        action: HistoryAction,
-    },
+    ManageHistory { action: HistoryAction },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema)]

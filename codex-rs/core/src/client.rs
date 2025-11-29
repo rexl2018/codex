@@ -42,6 +42,8 @@ use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::client_common::ResponseStream;
 use crate::config::Config;
+use crate::conversation_build::ConversationBuildInput;
+use crate::conversation_build::ConversationBuildPlan;
 use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
 use crate::error::Result;
@@ -153,7 +155,8 @@ impl ModelClient {
             .get_full_instructions(&self.config.model_family)
             .into_owned();
         let tools_json = create_tools_json_for_chat_completions_api(&prompt.tools)?;
-        let api_prompt = build_api_prompt(prompt, instructions, tools_json);
+        let formatted_input = prompt.get_formatted_input();
+        let api_prompt = build_api_prompt(prompt, instructions, tools_json, formatted_input, true);
         let conversation_id = self.conversation_id.to_string();
         let session_source = self.session_source.clone();
 
@@ -208,6 +211,7 @@ impl ModelClient {
             .get_full_instructions(&self.config.model_family)
             .into_owned();
         let tools_json: Vec<Value> = create_tools_json_for_responses_api(&prompt.tools)?;
+        let formatted_input = prompt.get_formatted_input();
 
         let reasoning = if self.config.model_family.supports_reasoning_summaries {
             Some(Reasoning {
@@ -218,12 +222,6 @@ impl ModelClient {
             })
         } else {
             None
-        };
-
-        let include: Vec<String> = if reasoning.is_some() {
-            vec!["reasoning.encrypted_content".to_string()]
-        } else {
-            vec![]
         };
 
         let verbosity = if self.config.model_family.support_verbosity {
@@ -241,8 +239,36 @@ impl ModelClient {
         };
 
         let text = create_text_param_for_request(verbosity, &prompt.output_schema);
-        let api_prompt = build_api_prompt(prompt, instructions.clone(), tools_json);
+
         let conversation_id = self.conversation_id.to_string();
+        let plan = self
+            .config
+            .conversation_build_strategy
+            .build_plan(ConversationBuildInput {
+                instructions,
+                formatted_input,
+                reasoning_requested: reasoning.is_some(),
+                conversation_id: conversation_id.clone(),
+            });
+
+        let ConversationBuildPlan {
+            instructions,
+            input,
+            include,
+            prompt_cache_key,
+            previous_response_id,
+            caching,
+            include_instructions_field,
+            force_store,
+        } = plan;
+
+        let api_prompt = build_api_prompt(
+            prompt,
+            instructions,
+            tools_json,
+            input,
+            include_instructions_field,
+        );
         let session_source = self.session_source.clone();
 
         let mut refreshed = false;
@@ -260,12 +286,14 @@ impl ModelClient {
             let options = ApiResponsesOptions {
                 reasoning: reasoning.clone(),
                 include: include.clone(),
-                prompt_cache_key: Some(conversation_id.clone()),
+                prompt_cache_key: prompt_cache_key.clone(),
                 text: text.clone(),
                 max_output_tokens: self.config.model_max_output_tokens,
-                store_override: None,
+                store_override: force_store,
                 conversation_id: Some(conversation_id.clone()),
                 session_source: Some(session_source.clone()),
+                previous_response_id: previous_response_id.clone(),
+                caching: caching.clone(),
             };
 
             let stream_result = client
@@ -391,13 +419,20 @@ impl ModelClient {
 }
 
 /// Adapts the core `Prompt` type into the `codex-api` payload shape.
-fn build_api_prompt(prompt: &Prompt, instructions: String, tools_json: Vec<Value>) -> ApiPrompt {
+fn build_api_prompt(
+    prompt: &Prompt,
+    instructions: String,
+    tools_json: Vec<Value>,
+    input: Vec<ResponseItem>,
+    include_instructions_field: bool,
+) -> ApiPrompt {
     ApiPrompt {
         instructions,
-        input: prompt.get_formatted_input(),
+        input,
         tools: tools_json,
         parallel_tool_calls: prompt.parallel_tool_calls,
         output_schema: prompt.output_schema.clone(),
+        include_instructions: include_instructions_field,
     }
 }
 

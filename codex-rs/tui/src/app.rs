@@ -404,7 +404,10 @@ impl App {
         let mut found_any = false;
 
         for cell in self.transcript_cells.iter().rev() {
-            if let Some(agent_cell) = cell.as_any().downcast_ref::<crate::history_cell::AgentMessageCell>() {
+            if let Some(agent_cell) = cell
+                .as_any()
+                .downcast_ref::<crate::history_cell::AgentMessageCell>()
+            {
                 parts.push(agent_cell.text());
                 found_any = true;
             } else if found_any {
@@ -424,18 +427,27 @@ impl App {
                 // Save to file
                 let path = self.config.cwd.join(&filename);
                 match std::fs::write(&path, &text) {
-                    Ok(_) => self.chat_widget.add_info_message(format!("Saved output to {}", path.display()), None),
-                    Err(e) => self.chat_widget.add_error_message(format!("Failed to save to {}: {e}", path.display())),
+                    Ok(_) => self
+                        .chat_widget
+                        .add_info_message(format!("Saved output to {}", path.display()), None),
+                    Err(e) => self
+                        .chat_widget
+                        .add_error_message(format!("Failed to save to {}: {e}", path.display())),
                 }
             } else {
                 // Copy to clipboard
                 match crate::clipboard_paste::copy_text(&text) {
-                    Ok(_) => self.chat_widget.add_info_message("Last output copied to clipboard".to_string(), None),
-                    Err(e) => self.chat_widget.add_error_message(format!("Failed to copy to clipboard: {e}")),
+                    Ok(_) => self
+                        .chat_widget
+                        .add_info_message("Last output copied to clipboard".to_string(), None),
+                    Err(e) => self
+                        .chat_widget
+                        .add_error_message(format!("Failed to copy to clipboard: {e}")),
                 }
             }
         } else {
-            self.chat_widget.add_info_message("No output in history".to_string(), None);
+            self.chat_widget
+                .add_info_message("No output in history".to_string(), None);
         }
     }
 

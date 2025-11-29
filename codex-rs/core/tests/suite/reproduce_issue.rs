@@ -7,7 +7,6 @@ use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_reasoning_item_added;
 use core_test_support::responses::ev_reasoning_text_delta;
 use core_test_support::responses::ev_response_created;
-use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
@@ -16,12 +15,15 @@ use core_test_support::wait_for_event;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interrupt_reasoning_records_history() {
     let reasoning_text = "I am thinking about the problem...";
-    
+
     let server = start_mock_server().await;
 
-    // Mount a mock that sends reasoning but keeps the stream open  
-    use wiremock::{Mock, ResponseTemplate, matchers::method, matchers::path_regex};
-    
+    // Mount a mock that sends reasoning but keeps the stream open
+    use wiremock::Mock;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path_regex;
+
     Mock::given(method("POST"))
         .and(path_regex(".*/responses$"))
         .respond_with(|_req: &wiremock::Request| {
@@ -30,7 +32,7 @@ async fn interrupt_reasoning_records_history() {
                 ev_reasoning_item_added("reasoning-1", &[]),
                 ev_reasoning_text_delta("I am thinking about the problem..."),
             ]);
-            
+
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
                 .set_body_raw(body, "text/event-stream")
@@ -57,7 +59,10 @@ async fn interrupt_reasoning_records_history() {
         .unwrap();
 
     // Wait until we receive the reasoning delta (proving the stream started)
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::ReasoningRawContentDelta(_))).await;
+    wait_for_event(&codex, |ev| {
+        matches!(ev, EventMsg::ReasoningRawContentDelta(_))
+    })
+    .await;
 
     // Give the core a moment to fully process the delta into active_item
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -69,15 +74,18 @@ async fn interrupt_reasoning_records_history() {
     let mut found_reasoning = false;
 
     wait_for_event(&codex, |ev| {
-        if let EventMsg::ItemCompleted(item) = ev {
-            if let TurnItem::Reasoning(reasoning) = &item.item {
-                if !reasoning.raw_content.is_empty() {
-                    found_reasoning = true;
-                }
-            }
+        if let EventMsg::ItemCompleted(item) = ev
+            && let TurnItem::Reasoning(reasoning) = &item.item
+            && !reasoning.raw_content.is_empty()
+        {
+            found_reasoning = true;
         }
         matches!(ev, EventMsg::TurnAborted(_) | EventMsg::TaskComplete(_))
-    }).await;
+    })
+    .await;
 
-    assert!(found_reasoning, "Partial reasoning should be recorded in history after interruption");
+    assert!(
+        found_reasoning,
+        "Partial reasoning should be recorded in history after interruption"
+    );
 }

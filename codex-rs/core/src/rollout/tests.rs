@@ -71,14 +71,12 @@ fn write_session_file_with_provider(
     let dt = PrimitiveDateTime::parse(ts_str, format)
         .unwrap()
         .assume_utc();
-    let dir = root
-        .join("sessions")
-        .join(format!(
-            "{}{:02}{:02}",
-            dt.year(),
-            u8::from(dt.month()),
-            dt.day()
-        ));
+    let dir = root.join("sessions").join(format!(
+        "{}{:02}{:02}",
+        dt.year(),
+        u8::from(dt.month()),
+        dt.day()
+    ));
     fs::create_dir_all(&dir)?;
 
     let filename = format!("rollout-{ts_str}-{uuid}.jsonl");

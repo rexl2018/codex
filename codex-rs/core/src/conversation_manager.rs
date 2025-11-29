@@ -231,7 +231,6 @@ fn truncate_before_nth_user_message(history: InitialHistory, n: usize) -> Initia
     }
 }
 
-
 /// Sanitize history by removing `encrypted_content` from `Reasoning` items.
 /// This is necessary because server-side context expires, and sending stale
 /// encrypted content can cause 400 Bad Request errors.
@@ -242,9 +241,7 @@ fn sanitize_history(history: InitialHistory) -> InitialHistory {
             resumed.history = sanitize_rollout_items(resumed.history);
             InitialHistory::Resumed(resumed)
         }
-        InitialHistory::Forked(items) => {
-            InitialHistory::Forked(sanitize_rollout_items(items))
-        }
+        InitialHistory::Forked(items) => InitialHistory::Forked(sanitize_rollout_items(items)),
     }
 }
 
@@ -391,14 +388,15 @@ mod tests {
             assistant_msg("hello"),
         ];
 
-        let rollout_items: Vec<RolloutItem> = items
-            .into_iter()
-            .map(RolloutItem::ResponseItem)
-            .collect();
+        let rollout_items: Vec<RolloutItem> =
+            items.into_iter().map(RolloutItem::ResponseItem).collect();
 
         let sanitized = sanitize_rollout_items(rollout_items);
 
-        if let RolloutItem::ResponseItem(ResponseItem::Reasoning { encrypted_content, .. }) = &sanitized[0] {
+        if let RolloutItem::ResponseItem(ResponseItem::Reasoning {
+            encrypted_content, ..
+        }) = &sanitized[0]
+        {
             assert!(encrypted_content.is_none());
         } else {
             panic!("Expected Reasoning item");

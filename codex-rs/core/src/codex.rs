@@ -130,10 +130,10 @@ use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
-use codex_protocol::models::ResponseInputItem;
-use codex_protocol::models::ResponseItem;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ReasoningItemReasoningSummary;
+use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::user_input::UserInput;
@@ -2049,8 +2049,11 @@ pub(crate) async fn run_task(
             }) => {
                 // Emit ItemCompleted events for dangling artifacts so they are visible in TUI
                 for processed_item in &processed_items {
-                    if let Some(turn_item) = handle_non_tool_response_item(&processed_item.item).await {
-                        sess.emit_turn_item_completed(&turn_context, turn_item).await;
+                    if let Some(turn_item) =
+                        handle_non_tool_response_item(&processed_item.item).await
+                    {
+                        sess.emit_turn_item_completed(&turn_context, turn_item)
+                            .await;
                     }
                 }
                 let _ = process_items(processed_items, &sess, &turn_context).await;
@@ -2260,13 +2263,13 @@ async fn try_run_turn(
                 let mut processed_items: Vec<ProcessedResponseItem> = output.try_collect().await?;
                 // If there's an active item when cancelled, convert it to a ResponseItem
                 // and add it to the dangling artifacts so partial content is preserved
-                if let Some(turn_item) = active_item.take() {
-                    if let Some(response_item) = turn_item_to_response_item(turn_item) {
-                        processed_items.push(ProcessedResponseItem {
-                            item: response_item,
-                            response: None,
-                        });
-                    }
+                if let Some(turn_item) = active_item.take()
+                    && let Some(response_item) = turn_item_to_response_item(turn_item)
+                {
+                    processed_items.push(ProcessedResponseItem {
+                        item: response_item,
+                        response: None,
+                    });
                 }
                 return Err(CodexErr::TurnAborted {
                     dangling_artifacts: processed_items,
@@ -2279,15 +2282,26 @@ async fn try_run_turn(
                 *progress_made = true;
                 event
             }
-            Some(Err(_e)) => {
+            Some(Err(e)) => {
+                if matches!(
+                    e,
+                    CodexErr::ContextWindowExceeded
+                        | CodexErr::UsageLimitReached(_)
+                        | CodexErr::QuotaExceeded
+                        | CodexErr::UsageNotIncluded
+                ) {
+                    return Err(e);
+                }
+
                 // Stream error (e.g. connection closed, timeout).
                 // We should persist any active item (partial reasoning) and return what we have.
                 // This allows run_task to record the partial history and then retry.
                 let mut processed_items: Vec<ProcessedResponseItem> = output.try_collect().await?;
                 if let Some(turn_item) = active_item.take() {
                     // Emit ItemCompleted so it's visible in TUI immediately
-                    sess.emit_turn_item_completed(&turn_context, turn_item.clone()).await;
-                    
+                    sess.emit_turn_item_completed(&turn_context, turn_item.clone())
+                        .await;
+
                     if let Some(response_item) = turn_item_to_response_item(turn_item) {
                         processed_items.push(ProcessedResponseItem {
                             item: response_item,
@@ -2306,8 +2320,9 @@ async fn try_run_turn(
                 let mut processed_items: Vec<ProcessedResponseItem> = output.try_collect().await?;
                 if let Some(turn_item) = active_item.take() {
                     // Emit ItemCompleted so it's visible in TUI immediately
-                    sess.emit_turn_item_completed(&turn_context, turn_item.clone()).await;
-                    
+                    sess.emit_turn_item_completed(&turn_context, turn_item.clone())
+                        .await;
+
                     if let Some(response_item) = turn_item_to_response_item(turn_item) {
                         processed_items.push(ProcessedResponseItem {
                             item: response_item,
@@ -2442,7 +2457,9 @@ async fn try_run_turn(
                         if let Some(AgentMessageContent::Text { text }) = msg.content.last_mut() {
                             text.push_str(&delta);
                         } else {
-                            msg.content.push(AgentMessageContent::Text { text: delta.clone() });
+                            msg.content.push(AgentMessageContent::Text {
+                                text: delta.clone(),
+                            });
                         }
                     }
                     let event = AgentMessageContentDeltaEvent {
@@ -2545,9 +2562,13 @@ async fn handle_non_tool_response_item(item: &ResponseItem) -> Option<TurnItem> 
 fn turn_item_to_response_item(turn_item: TurnItem) -> Option<ResponseItem> {
     match turn_item {
         TurnItem::AgentMessage(msg) => {
-            let content = msg.content.into_iter().map(|c| match c {
-                AgentMessageContent::Text { text } => ContentItem::OutputText { text },
-            }).collect();
+            let content = msg
+                .content
+                .into_iter()
+                .map(|c| match c {
+                    AgentMessageContent::Text { text } => ContentItem::OutputText { text },
+                })
+                .collect();
             Some(ResponseItem::Message {
                 id: Some(msg.id),
                 role: "assistant".to_string(),
@@ -2555,15 +2576,21 @@ fn turn_item_to_response_item(turn_item: TurnItem) -> Option<ResponseItem> {
             })
         }
         TurnItem::Reasoning(reasoning) => {
-            let summary = reasoning.summary_text.into_iter()
+            let summary = reasoning
+                .summary_text
+                .into_iter()
                 .map(|text| ReasoningItemReasoningSummary::SummaryText { text })
                 .collect();
             let content = if reasoning.raw_content.is_empty() {
                 None
             } else {
-                Some(reasoning.raw_content.into_iter()
-                    .map(|text| ReasoningItemContent::ReasoningText { text })
-                    .collect())
+                Some(
+                    reasoning
+                        .raw_content
+                        .into_iter()
+                        .map(|text| ReasoningItemContent::ReasoningText { text })
+                        .collect(),
+                )
             };
             Some(ResponseItem::Reasoning {
                 id: reasoning.id,
@@ -2578,7 +2605,6 @@ fn turn_item_to_response_item(turn_item: TurnItem) -> Option<ResponseItem> {
         }
     }
 }
-
 
 pub(super) fn get_last_assistant_message_from_turn(responses: &[ResponseItem]) -> Option<String> {
     responses.iter().rev().find_map(|item| {
