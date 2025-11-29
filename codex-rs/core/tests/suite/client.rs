@@ -1745,6 +1745,7 @@ async fn request_includes_previous_response_id_when_configured() {
     );
 
     let mut prompt = Prompt::default();
+    prompt.last_response_id = Some("prev-resp-id".into());
     prompt.input.push(ResponseItem::Message {
         id: Some("prev-msg-id".into()),
         role: "assistant".into(),
@@ -1777,11 +1778,11 @@ async fn request_includes_previous_response_id_when_configured() {
 
     assert_eq!(
         body["previous_response_id"],
-        serde_json::Value::String("prev-msg-id".into())
+        serde_json::Value::String("prev-resp-id".into())
     );
     assert_eq!(
         body["instructions"],
-        serde_json::Value::String(String::new())
+        serde_json::Value::Null
     );
     assert_eq!(body["input"].as_array().map(Vec::len), Some(2));
     assert_eq!(body["input"][0]["role"], "system");
@@ -1794,9 +1795,99 @@ async fn request_includes_previous_response_id_when_configured() {
     );
     assert_eq!(body["input"][1]["role"], "user");
 
-    // Verify caching is enabled when the previous_response_id strategy is configured
     assert_eq!(
         body["caching"]["type"],
         serde_json::Value::String("enabled".into())
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn previous_response_id_is_sent_in_subsequent_turn() {
+    skip_if_no_network!();
+    let server = MockServer::start().await;
+
+    let sse_body_1 = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\"}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_123\"}}\n\n";
+    let template_1 = ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_raw(sse_body_1, "text/event-stream");
+
+    let sse_body_2 = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_456\"}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_456\"}}\n\n";
+    let template_2 = ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_raw(sse_body_2, "text/event-stream");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("", "text/event-stream")) // Placeholder
+        .mount(&server)
+        .await;
+    
+    // We need to match requests sequentially or just inspect them later.
+    // Since Mock::given matches are stateless unless we use `up_to_n_times`, let's just use a sequence of responses.
+    // Actually, `respond_with` can take a sequence if we implement `Respond`.
+    // But simpler: just inspect the requests at the end.
+    // We'll use the same response for both for simplicity, or just verify the request body.
+    
+    server.reset().await;
+    
+    Mock::given(method("POST"))
+        .and(path("/v1/responses"))
+        .respond_with(template_1)
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let mut provider = built_in_model_providers()["openai"].clone();
+    provider.base_url = Some(format!("{}/v1", server.uri()));
+    provider.wire_api = WireApi::Responses;
+
+    let home = TempDir::new().unwrap();
+    let mut config = load_default_config_for_test(&home);
+    config.model_provider = provider;
+    config.conversation_build_strategy = ConversationBuildStrategy::PreviousResponseId;
+
+    let conversation_manager = ConversationManager::with_auth(CodexAuth::from_api_key("test"));
+    let codex = conversation_manager
+        .new_conversation(config)
+        .await
+        .expect("create conversation")
+        .conversation;
+
+    // Turn 1
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "turn 1".into(),
+            }],
+        })
+        .await
+        .unwrap();
+
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
+
+    // Turn 2
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "turn 2".into(),
+            }],
+        })
+        .await
+        .unwrap();
+
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
+
+    let requests = server.received_requests().await.expect("requests");
+    assert_eq!(requests.len(), 2);
+
+    // Check first request
+    let body_1: serde_json::Value = requests[0].body_json().unwrap();
+    assert!(body_1.get("previous_response_id").is_none());
+
+    // Check second request
+    let body_2: serde_json::Value = requests[1].body_json().unwrap();
+    assert_eq!(
+        body_2["previous_response_id"],
+        serde_json::Value::String("resp_123".into())
     );
 }

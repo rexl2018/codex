@@ -52,12 +52,14 @@ pub enum ResponseItem {
         #[ts(skip)]
         id: Option<String>,
         role: String,
+        #[serde(default)]
         content: Vec<ContentItem>,
     },
     Reasoning {
         #[serde(default, skip_serializing)]
         #[ts(skip)]
         id: String,
+        #[serde(default)]
         summary: Vec<ReasoningItemReasoningSummary>,
         #[serde(default, skip_serializing_if = "should_serialize_reasoning_content")]
         #[ts(optional)]
@@ -803,4 +805,32 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn deserializes_skeletal_payloads() -> Result<()> {
+        // Skeletal message (missing content)
+        let json_msg = r#"{
+            "type": "message",
+            "role": "assistant"
+        }"#;
+        let msg: ResponseItem = serde_json::from_str(json_msg)?;
+        match msg {
+            ResponseItem::Message { content, .. } => assert!(content.is_empty()),
+            _ => panic!("expected message"),
+        }
+
+        // Skeletal reasoning (missing summary)
+        let json_reasoning = r#"{
+            "type": "reasoning",
+            "id": "r1"
+        }"#;
+        let reasoning: ResponseItem = serde_json::from_str(json_reasoning)?;
+        match reasoning {
+            ResponseItem::Reasoning { summary, .. } => assert!(summary.is_empty()),
+            _ => panic!("expected reasoning"),
+        }
+
+        Ok(())
+    }
 }
+

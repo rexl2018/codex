@@ -249,6 +249,7 @@ impl ModelClient {
                 formatted_input,
                 reasoning_requested: reasoning.is_some(),
                 conversation_id: conversation_id.clone(),
+                last_response_id: prompt.last_response_id.clone(),
             });
 
         let ConversationBuildPlan {

@@ -41,6 +41,9 @@ pub struct Prompt {
 
     /// Optional the output schema for the model's response.
     pub output_schema: Option<Value>,
+
+    /// The response ID from the previous turn, used for the previous_response_id strategy.
+    pub last_response_id: Option<String>,
 }
 
 impl Prompt {
@@ -268,6 +271,7 @@ mod tests {
     #[test]
     fn get_full_instructions_no_user_content() {
         let prompt = Prompt {
+            last_response_id: None,
             ..Default::default()
         };
         let test_cases = vec![

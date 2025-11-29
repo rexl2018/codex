@@ -41,7 +41,9 @@ pub struct CompactionInput<'a> {
 
 #[derive(Debug)]
 pub enum ResponseEvent {
-    Created,
+    Created {
+        response_id: String,
+    },
     OutputItemDone(ResponseItem),
     OutputItemAdded(ResponseItem),
     Completed {
@@ -125,9 +127,12 @@ pub struct ResponsesApiRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<&'a str>,
     pub input: &'a [ResponseItem],
-    pub tools: &'a [serde_json::Value],
-    pub tool_choice: &'static str,
-    pub parallel_tool_calls: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<&'a [serde_json::Value]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parallel_tool_calls: Option<bool>,
     pub reasoning: Option<Reasoning>,
     pub store: bool,
     pub stream: bool,

@@ -14,6 +14,7 @@ pub(crate) struct SessionState {
     pub(crate) session_configuration: SessionConfiguration,
     pub(crate) history: ContextManager,
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
+    pub(crate) last_response_id: Option<String>,
 }
 
 impl SessionState {
@@ -24,6 +25,7 @@ impl SessionState {
             session_configuration,
             history,
             latest_rate_limits: None,
+            last_response_id: None,
         }
     }
 
@@ -77,5 +79,13 @@ impl SessionState {
 
     pub(crate) fn get_total_token_usage(&self) -> i64 {
         self.history.get_total_token_usage()
+    }
+
+    pub(crate) fn set_last_response_id(&mut self, response_id: String) {
+        self.last_response_id = Some(response_id);
+    }
+
+    pub(crate) fn get_last_response_id(&self) -> Option<String> {
+        self.last_response_id.clone()
     }
 }

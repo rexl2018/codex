@@ -283,6 +283,7 @@ async fn run_compact_task_inner(
 
         let prompt = Prompt {
             input: turn_input.clone(),
+            last_response_id: None,
             ..Default::default()
         };
         let attempt_result = drain_to_completed(&sess, turn_context.as_ref(), &prompt).await;

@@ -120,7 +120,11 @@ impl<'a> ResponsesRequestBuilder<'a> {
         let input = self
             .input
             .ok_or_else(|| ApiError::Stream("missing input for responses request".into()))?;
-        let tools = self.tools.unwrap_or_default();
+        let tools = if self.previous_response_id.is_some() {
+            None
+        } else {
+            Some(self.tools.unwrap_or_default())
+        };
 
         let store = self
             .store_override
@@ -131,8 +135,16 @@ impl<'a> ResponsesRequestBuilder<'a> {
             instructions,
             input,
             tools,
-            tool_choice: "auto",
-            parallel_tool_calls: self.parallel_tool_calls,
+            tool_choice: if self.previous_response_id.is_some() {
+                None
+            } else {
+                Some("auto")
+            },
+            parallel_tool_calls: if self.previous_response_id.is_some() {
+                None
+            } else {
+                Some(self.parallel_tool_calls)
+            },
             reasoning: self.reasoning,
             store,
             stream: true,
@@ -273,5 +285,79 @@ mod tests {
             request.headers.get("extra"),
             Some(&HeaderValue::from_static(r#"{"session_id":"conv-1"}"#))
         );
+    }
+
+    #[test]
+    fn omits_tools_when_previous_response_id_is_present() {
+        let provider = provider("azure", "https://example.openai.azure.com/v1");
+        let input = vec![ResponseItem::Message {
+            id: None,
+            role: "user".into(),
+            content: Vec::new(),
+        }];
+        let tools = vec![serde_json::json!({"type": "function", "function": {"name": "foo"}})];
+
+        // Case 1: No previous_response_id -> tools should be present
+        let req1 = ResponsesRequestBuilder::new("gpt-4", None, &input)
+            .tools(&tools)
+            .build(&provider)
+            .expect("request");
+        assert!(req1.body.get("tools").is_some());
+
+        // Case 2: With previous_response_id -> tools should be absent
+        let req2 = ResponsesRequestBuilder::new("gpt-4", None, &input)
+            .tools(&tools)
+            .previous_response_id(Some("resp_123".into()))
+            .build(&provider)
+            .expect("request");
+        assert!(req2.body.get("tools").is_none());
+    }
+
+    #[test]
+    fn omits_tool_choice_when_previous_response_id_is_present() {
+        let provider = provider("azure", "https://example.openai.azure.com/v1");
+        let input = vec![ResponseItem::Message {
+            id: None,
+            role: "user".into(),
+            content: Vec::new(),
+        }];
+
+        // Case 1: No previous_response_id -> tool_choice should be present
+        let req1 = ResponsesRequestBuilder::new("gpt-4", None, &input)
+            .build(&provider)
+            .expect("request");
+        assert!(req1.body.get("tool_choice").is_some());
+
+        // Case 2: With previous_response_id -> tool_choice should be absent
+        let req2 = ResponsesRequestBuilder::new("gpt-4", None, &input)
+            .previous_response_id(Some("resp_123".into()))
+            .build(&provider)
+            .expect("request");
+        assert!(req2.body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn omits_parallel_tool_calls_when_previous_response_id_is_present() {
+        let provider = provider("azure", "https://example.openai.azure.com/v1");
+        let input = vec![ResponseItem::Message {
+            id: None,
+            role: "user".into(),
+            content: Vec::new(),
+        }];
+
+        // Case 1: No previous_response_id -> parallel_tool_calls should be present
+        let req1 = ResponsesRequestBuilder::new("gpt-4", None, &input)
+            .parallel_tool_calls(true)
+            .build(&provider)
+            .expect("request");
+        assert!(req1.body.get("parallel_tool_calls").is_some());
+
+        // Case 2: With previous_response_id -> parallel_tool_calls should be absent
+        let req2 = ResponsesRequestBuilder::new("gpt-4", None, &input)
+            .parallel_tool_calls(true)
+            .previous_response_id(Some("resp_123".into()))
+            .build(&provider)
+            .expect("request");
+        assert!(req2.body.get("parallel_tool_calls").is_none());
     }
 }

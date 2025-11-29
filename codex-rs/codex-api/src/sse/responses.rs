@@ -232,8 +232,16 @@ pub async fn process_sse(
                 }
             }
             "response.created" => {
-                if event.response.is_some() {
-                    let _ = tx_event.send(Ok(ResponseEvent::Created {})).await;
+                if let Some(resp_val) = event.response {
+                    if let Some(id_val) = resp_val.get("id")
+                        && let Some(id) = id_val.as_str()
+                    {
+                        let _ = tx_event
+                            .send(Ok(ResponseEvent::Created {
+                                response_id: id.to_string(),
+                            }))
+                            .await;
+                    }
                 }
             }
             "response.failed" => {
@@ -562,7 +570,7 @@ mod tests {
         }
 
         fn is_created(ev: &ResponseEvent) -> bool {
-            matches!(ev, ResponseEvent::Created)
+            matches!(ev, ResponseEvent::Created { .. })
         }
         fn is_output(ev: &ResponseEvent) -> bool {
             matches!(ev, ResponseEvent::OutputItemDone(_))

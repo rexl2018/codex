@@ -200,7 +200,7 @@ impl Stream for AggregatedStream {
                         token_usage,
                     })));
                 }
-                Poll::Ready(Some(Ok(ResponseEvent::Created))) => {
+                Poll::Ready(Some(Ok(ResponseEvent::Created { .. }))) => {
                     continue;
                 }
                 Poll::Ready(Some(Ok(ResponseEvent::OutputTextDelta(delta)))) => {

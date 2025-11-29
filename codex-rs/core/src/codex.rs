@@ -1192,6 +1192,13 @@ impl Session {
         }
     }
 
+    pub(crate) async fn set_last_response_id(&self, _turn_context: &TurnContext, response_id: String) {
+        let mut state = self.state.lock().await;
+        state.set_last_response_id(response_id);
+    }
+
+
+
     /// Record a user input item to conversation history and also persist a
     /// corresponding UserMessage EventMsg to rollout.
     async fn record_input_and_rollout_usermsg(
@@ -2123,12 +2130,14 @@ async fn run_turn(
             base_instructions = Some(new_instructions);
         }
     }
+    let last_response_id = sess.state.lock().await.get_last_response_id();
     let prompt = Prompt {
         input,
         tools: router.specs(),
         parallel_tool_calls,
         base_instructions_override: base_instructions,
         output_schema: turn_context.final_output_json_schema.clone(),
+        last_response_id,
     };
 
     let mut retries = 0;
@@ -2342,7 +2351,10 @@ async fn try_run_turn(
         };
 
         match event {
-            ResponseEvent::Created => {}
+            ResponseEvent::Created { response_id } => {
+                // Store the response_id for use in the next request
+                sess.set_last_response_id(&turn_context, response_id).await;
+            }
             ResponseEvent::OutputItemDone(item) => {
                 let previously_active_item = active_item.take();
                 match ToolRouter::build_tool_call(sess.as_ref(), item.clone()).await {
