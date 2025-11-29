@@ -36,6 +36,7 @@ pub(crate) struct ToolsConfig {
     pub web_search_request: bool,
     pub include_view_image_tool: bool,
     pub experimental_supported_tools: Vec<String>,
+    pub freeform_as_function: bool,
 }
 
 pub(crate) struct ToolsConfigParams<'a> {
@@ -52,6 +53,7 @@ impl ToolsConfig {
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_web_search_request = features.enabled(Feature::WebSearchRequest);
         let include_view_image_tool = features.enabled(Feature::ViewImageTool);
+        let freeform_as_function = features.enabled(Feature::FreeformAsFunction);
 
         let shell_type = if !features.enabled(Feature::ShellTool) {
             ConfigShellToolType::Disabled
@@ -79,6 +81,7 @@ impl ToolsConfig {
             web_search_request: include_web_search_request,
             include_view_image_tool,
             experimental_supported_tools: model_family.experimental_supported_tools.clone(),
+            freeform_as_function,
         }
     }
 }
@@ -1040,7 +1043,12 @@ pub(crate) fn build_specs(
     if let Some(apply_patch_tool_type) = &config.apply_patch_tool_type {
         match apply_patch_tool_type {
             ApplyPatchToolType::Freeform => {
-                builder.push_spec(create_apply_patch_freeform_tool());
+                // If freeform_as_function is enabled, use Function type instead
+                if config.freeform_as_function {
+                    builder.push_spec(create_apply_patch_json_tool());
+                } else {
+                    builder.push_spec(create_apply_patch_freeform_tool());
+                }
             }
             ApplyPatchToolType::Function => {
                 builder.push_spec(create_apply_patch_json_tool());
@@ -1533,6 +1541,60 @@ mod tests {
                 .any(|tool| tool_name(&tool.spec) == "grep_files")
         );
         assert!(tools.iter().any(|tool| tool_name(&tool.spec) == "list_dir"));
+    }
+
+    #[test]
+    fn test_freeform_as_function_conversion() {
+        let model_family = find_family_for_model("gpt-5.1")
+            .expect("gpt-5.1 should be a valid model family");
+        let mut features = Features::with_defaults();
+        features.enable(Feature::ApplyPatchFreeform);
+        features.enable(Feature::FreeformAsFunction);
+        
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            features: &features,
+        });
+        
+        let (tools, _) = build_specs(&config, None).build();
+        
+        // Verify apply_patch is a Function, not Freeform
+        let apply_patch = tools.iter()
+            .find(|t| tool_name(&t.spec) == "apply_patch")
+            .expect("apply_patch tool should exist");
+        
+        match &apply_patch.spec {
+            ToolSpec::Function(_) => {}, // Expected
+            ToolSpec::Freeform(_) => panic!("Expected Function, got Freeform"),
+            _ => panic!("Unexpected tool type"),
+        }
+    }
+
+    #[test]
+    fn test_freeform_without_conversion() {
+        let model_family = find_family_for_model("gpt-5.1")
+            .expect("gpt-5.1 should be a valid model family");
+        let mut features = Features::with_defaults();
+        features.enable(Feature::ApplyPatchFreeform);
+        // Do NOT enable FreeformAsFunction
+        
+        let config = ToolsConfig::new(&ToolsConfigParams {
+            model_family: &model_family,
+            features: &features,
+        });
+        
+        let (tools, _) = build_specs(&config, None).build();
+        
+        // Verify apply_patch is Freeform
+        let apply_patch = tools.iter()
+            .find(|t| tool_name(&t.spec) == "apply_patch")
+            .expect("apply_patch tool should exist");
+        
+        match &apply_patch.spec {
+            ToolSpec::Freeform(_) => {}, // Expected
+            ToolSpec::Function(_) => panic!("Expected Freeform, got Function"),
+            _ => panic!("Unexpected tool type"),
+        }
     }
 
     #[test]

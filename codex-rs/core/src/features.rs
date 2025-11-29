@@ -51,6 +51,8 @@ pub enum Feature {
     ShellTool,
     /// Allow model to call multiple tools in parallel (only for models supporting it).
     ParallelToolCalls,
+    /// Convert freeform tools to function tools for Responses API compatibility.
+    FreeformAsFunction,
 }
 
 impl Feature {
@@ -325,5 +327,11 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "shell_tool",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::FreeformAsFunction,
+        key: "freeform_as_function",
+        stage: Stage::Experimental,
+        default_enabled: false,
     },
 ];
