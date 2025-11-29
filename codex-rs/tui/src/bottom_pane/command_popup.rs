@@ -1,6 +1,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::WidgetRef;
+use std::cmp::Ordering;
 
 use super::popup_consts::MAX_POPUP_ROWS;
 use super::scroll_state::ScrollState;
@@ -134,19 +135,25 @@ impl CommandPopup {
         }
         // When filtering, sort by ascending score and then by name for stability.
         out.sort_by(|a, b| {
-            a.2.cmp(&b.2).then_with(|| {
-                let an = match a.0 {
-                    CommandItem::Builtin(c) => c.command(),
-                    CommandItem::UserPrompt(i) => &self.prompts[i].name,
-                };
-                let bn = match b.0 {
-                    CommandItem::Builtin(c) => c.command(),
-                    CommandItem::UserPrompt(i) => &self.prompts[i].name,
-                };
-                an.cmp(bn)
+            a.2.cmp(&b.2).then_with(|| match (a.0, b.0) {
+                (CommandItem::Builtin(c1), CommandItem::Builtin(c2)) => {
+                    self.builtin_position(c1).cmp(&self.builtin_position(c2))
+                }
+                (CommandItem::Builtin(_), CommandItem::UserPrompt(_)) => Ordering::Less,
+                (CommandItem::UserPrompt(_), CommandItem::Builtin(_)) => Ordering::Greater,
+                (CommandItem::UserPrompt(i1), CommandItem::UserPrompt(i2)) => {
+                    self.prompts[i1].name.cmp(&self.prompts[i2].name)
+                }
             })
         });
         out
+    }
+
+    fn builtin_position(&self, cmd: SlashCommand) -> usize {
+        self.builtins
+            .iter()
+            .position(|(_, c)| *c == cmd)
+            .unwrap_or(usize::MAX)
     }
 
     fn filtered_items(&self) -> Vec<CommandItem> {

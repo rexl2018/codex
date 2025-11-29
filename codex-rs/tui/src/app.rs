@@ -1116,6 +1116,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
+    use tempfile::tempdir;
 
     fn make_test_app() -> App {
         let (chat_widget, app_event_tx, _rx, _op_rx) = make_chatwidget_manual_with_sender();
@@ -1187,6 +1188,33 @@ mod tests {
             rx,
             op_rx,
         )
+    }
+
+    #[test]
+    fn copy_last_agent_message_writes_to_file_when_filename_provided() {
+        let mut app = make_test_app();
+        let workdir = tempdir().expect("tempdir");
+        app.config.cwd = workdir.path().to_path_buf();
+        std::fs::create_dir_all(workdir.path().join("docs")).expect("docs dir");
+
+        let user_cell: Arc<dyn HistoryCell> = Arc::new(UserHistoryCell {
+            message: "question".to_string(),
+        }) as Arc<dyn HistoryCell>;
+        let agent_first: Arc<dyn HistoryCell> =
+            Arc::new(AgentMessageCell::new(vec![Line::from("first chunk")], true))
+                as Arc<dyn HistoryCell>;
+        let agent_continued: Arc<dyn HistoryCell> = Arc::new(AgentMessageCell::new(
+            vec![Line::from("second chunk")],
+            false,
+        )) as Arc<dyn HistoryCell>;
+
+        app.transcript_cells = vec![user_cell, agent_first, agent_continued];
+
+        app.handle_copy_last_agent_message(Some("docs/result.md".to_string()));
+
+        let saved =
+            std::fs::read_to_string(workdir.path().join("docs/result.md")).expect("saved file");
+        assert_eq!(saved, "first chunk\nsecond chunk");
     }
 
     #[test]

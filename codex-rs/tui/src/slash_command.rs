@@ -49,7 +49,7 @@ impl SlashCommand {
             SlashCommand::Mention => "mention a file",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Model => "choose what model and reasoning effort to use",
-            SlashCommand::Copy => "copy last AI output to clipboard",
+            SlashCommand::Copy => "copy last AI output to clipboard or file",
             SlashCommand::Approvals => "choose what Codex can do without approval",
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Logout => "log out of Codex",

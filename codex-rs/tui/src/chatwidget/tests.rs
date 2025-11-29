@@ -91,6 +91,21 @@ fn snapshot(percent: f64) -> RateLimitSnapshot {
 }
 
 #[test]
+fn parse_copy_command_accepts_optional_filename() {
+    assert_eq!(parse_copy_command("/copy"), Some(None));
+    assert_eq!(parse_copy_command("  /copy   "), Some(None));
+    assert_eq!(
+        parse_copy_command("/copy docs/result.md"),
+        Some(Some("docs/result.md".to_string())),
+    );
+    assert_eq!(
+        parse_copy_command("/copy \tdocs/my file.md"),
+        Some(Some("docs/my file.md".to_string())),
+    );
+    assert_eq!(parse_copy_command("/copycat"), None);
+}
+
+#[test]
 fn resumed_initial_messages_render_history() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual();
 

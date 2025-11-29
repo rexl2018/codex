@@ -1420,15 +1420,9 @@ impl ChatWidget {
                             self.handle_chat_command(args);
                             return;
                         }
-                        if text.trim().starts_with("/copy") {
-                            let args = text.trim().strip_prefix("/copy").unwrap_or("").trim();
-                            let filename = if args.is_empty() {
-                                None
-                            } else {
-                                Some(args.to_string())
-                            };
+                        if let Some(copy_destination) = parse_copy_command(&text) {
                             self.app_event_tx
-                                .send(AppEvent::CopyLastAgentMessage(filename));
+                                .send(AppEvent::CopyLastAgentMessage(copy_destination));
                             return;
                         }
                         let user_message = UserMessage {
@@ -3625,6 +3619,29 @@ pub(crate) fn show_review_commit_picker_with_entries(
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+pub(crate) fn parse_copy_command(text: &str) -> Option<Option<String>> {
+    let trimmed = text.trim();
+    if trimmed == "/copy" {
+        return Some(None);
+    }
+
+    let Some(rest) = trimmed.strip_prefix("/copy") else {
+        return None;
+    };
+
+    match rest.chars().next() {
+        Some(ch) if ch.is_whitespace() => {
+            let filename = rest.trim();
+            if filename.is_empty() {
+                Some(None)
+            } else {
+                Some(Some(filename.to_string()))
+            }
+        }
+        _ => None,
+    }
+}
 
 fn parse_hist_args(args: &str) -> Result<HistoryAction, String> {
     let args: Vec<&str> = args.split_whitespace().collect();

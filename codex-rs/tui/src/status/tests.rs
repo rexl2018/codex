@@ -1,6 +1,7 @@
 use super::new_status_output;
 use super::rate_limit_snapshot_display;
 use crate::history_cell::HistoryCell;
+use crate::version::CODEX_CLI_VERSION;
 use chrono::Duration as ChronoDuration;
 use chrono::TimeZone;
 use chrono::Utc;
@@ -50,12 +51,21 @@ fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
 }
 
 fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
+    const SNAPSHOT_VERSION: &str = "(v0.0.0)";
     lines
         .into_iter()
         .map(|line| {
-            if let (Some(dir_pos), Some(pipe_idx)) = (line.find("Directory: "), line.rfind('│')) {
-                let prefix = &line[..dir_pos + "Directory: ".len()];
-                let suffix = &line[pipe_idx..];
+            let version_token = format!("(v{CODEX_CLI_VERSION})");
+            let replacement = format!(
+                "{SNAPSHOT_VERSION}{}",
+                " ".repeat(version_token.len().saturating_sub(SNAPSHOT_VERSION.len()))
+            );
+            let sanitized = line.replace(&version_token, &replacement);
+            if let (Some(dir_pos), Some(pipe_idx)) =
+                (sanitized.find("Directory: "), sanitized.rfind('│'))
+            {
+                let prefix = &sanitized[..dir_pos + "Directory: ".len()];
+                let suffix = &sanitized[pipe_idx..];
                 let content_width = pipe_idx.saturating_sub(dir_pos + "Directory: ".len());
                 let replacement = "[[workspace]]";
                 let mut rebuilt = prefix.to_string();
@@ -66,7 +76,7 @@ fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
                 rebuilt.push_str(suffix);
                 rebuilt
             } else {
-                line
+                sanitized
             }
         })
         .collect()
