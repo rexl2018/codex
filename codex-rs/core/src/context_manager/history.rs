@@ -6,6 +6,8 @@ use crate::truncate::approx_tokens_from_byte_count;
 use crate::truncate::truncate_function_output_items_with_policy;
 use crate::truncate::truncate_text;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ReasoningItemContent;
+use codex_protocol::models::ReasoningItemReasoningSummary;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::HistoryAction;
 use codex_protocol::protocol::TokenUsage;
@@ -246,6 +248,9 @@ impl ContextManager {
                 self.view_history(start, end)
             }
             HistoryAction::ViewSnapshots => self.view_snapshots(),
+            HistoryAction::ViewAssistant => self.view_assistant_messages(),
+            HistoryAction::ViewReasoning => self.view_reasoning_items(),
+            HistoryAction::ViewUser => self.view_user_messages(),
             HistoryAction::Delete { index } => {
                 if index > 0 && index <= self.items.len() {
                     self.items.remove(index - 1);
@@ -255,13 +260,20 @@ impl ContextManager {
                 }
             }
             HistoryAction::DeleteRange { start, end } => {
-                if start > 0 && end >= start && end <= self.items.len() {
+                let len = self.items.len();
+                if start == 0 {
+                    return format!("Invalid range: {start}-{end}");
+                }
+
+                let normalized_end = if end == usize::MAX { len } else { end };
+
+                if normalized_end < start || normalized_end > len {
+                    format!("Invalid range: {start}-{end}")
+                } else {
                     // drain is exclusive of end, but user range is inclusive
                     // start-1 to end
-                    self.items.drain((start - 1)..end);
-                    format!("Deleted items #{start} to #{end}")
-                } else {
-                    format!("Invalid range: {start}-{end}")
+                    self.items.drain((start - 1)..normalized_end);
+                    format!("Deleted items #{start} to #{normalized_end}")
                 }
             }
             HistoryAction::DeleteLast { count } => {
@@ -331,6 +343,47 @@ impl ContextManager {
         }
         output
     }
+
+    fn view_filtered_history<F>(&self, predicate: F, empty_message: &str) -> String
+    where
+        F: Fn(&ResponseItem) -> bool,
+    {
+        let mut output = String::new();
+        for (i, item) in self.items.iter().enumerate() {
+            if predicate(item) {
+                let index = i + 1;
+                let content = format_item_summary(item);
+                output.push_str(&format!("{index}. {content}\n"));
+            }
+        }
+
+        if output.is_empty() {
+            empty_message.to_string()
+        } else {
+            output
+        }
+    }
+
+    fn view_assistant_messages(&self) -> String {
+        self.view_filtered_history(
+            |item| matches!(item, ResponseItem::Message { role, .. } if role == "assistant"),
+            "No assistant messages found.",
+        )
+    }
+
+    fn view_user_messages(&self) -> String {
+        self.view_filtered_history(
+            |item| matches!(item, ResponseItem::Message { role, .. } if role == "user"),
+            "No user messages found.",
+        )
+    }
+
+    fn view_reasoning_items(&self) -> String {
+        self.view_filtered_history(
+            |item| matches!(item, ResponseItem::Reasoning { .. }),
+            "No reasoning entries found.",
+        )
+    }
 }
 
 fn format_item_summary(item: &ResponseItem) -> String {
@@ -347,11 +400,7 @@ fn format_item_summary(item: &ResponseItem) -> String {
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            let short_text = if text.chars().count() > 100 {
-                format!("{}...", text.chars().take(100).collect::<String>())
-            } else {
-                text
-            };
+            let short_text = truncate_preview(&text, 100);
             format!("[{role}] {short_text}")
         }
         ResponseItem::FunctionCall {
@@ -370,7 +419,16 @@ fn format_item_summary(item: &ResponseItem) -> String {
         ResponseItem::FunctionCallOutput { call_id, .. } => {
             format!("[FunctionOutput] (id: {call_id})")
         }
-        ResponseItem::Reasoning { .. } => "[Reasoning]".to_string(),
+        ResponseItem::Reasoning {
+            summary, content, ..
+        } => {
+            if let Some(preview) = reasoning_preview(summary, content.as_ref()) {
+                let short_text = truncate_preview(&preview, 100);
+                format!("[Reasoning] {short_text}")
+            } else {
+                "[Reasoning]".to_string()
+            }
+        }
         ResponseItem::LocalShellCall { action, .. } => match action {
             codex_protocol::models::LocalShellAction::Exec(exec) => {
                 format!("[Shell] {:?}", exec.command)
@@ -392,6 +450,37 @@ fn format_item_summary(item: &ResponseItem) -> String {
         ResponseItem::GhostSnapshot { .. } => "[GhostSnapshot]".to_string(),
         ResponseItem::Other => "[Other]".to_string(),
     }
+}
+
+fn truncate_preview(text: &str, max_chars: usize) -> String {
+    if text.chars().count() > max_chars {
+        format!("{}...", text.chars().take(max_chars).collect::<String>())
+    } else {
+        text.to_string()
+    }
+}
+
+fn reasoning_preview(
+    summary: &[ReasoningItemReasoningSummary],
+    content: Option<&Vec<ReasoningItemContent>>,
+) -> Option<String> {
+    for item in summary {
+        if let ReasoningItemReasoningSummary::SummaryText { text } = item
+            && !text.is_empty() {
+                return Some(text.clone());
+            }
+    }
+
+    if let Some(content_items) = content {
+        for item in content_items {
+            if let ReasoningItemContent::ReasoningText { text } = item
+                && !text.is_empty() {
+                    return Some(text.clone());
+                }
+        }
+    }
+
+    None
 }
 
 /// API messages include every non-system item (user/assistant messages, reasoning,

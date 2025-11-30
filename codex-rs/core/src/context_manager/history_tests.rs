@@ -186,6 +186,65 @@ fn view_snapshots_lists_snapshots_with_indices() {
 }
 
 #[test]
+fn view_assistant_messages_lists_only_assistant_entries() {
+    let items = vec![
+        user_msg("first"),
+        assistant_msg("alpha"),
+        reasoning_msg("thinking"),
+        assistant_msg("beta"),
+    ];
+    let mut history = create_history_with_items(items);
+    let output = history.handle_history_action(HistoryAction::ViewAssistant);
+
+    assert_eq!(output, "2. [assistant] alpha\n4. [assistant] beta\n");
+}
+
+#[test]
+fn view_user_messages_reports_when_empty() {
+    let items = vec![assistant_msg("alpha"), reasoning_msg("thinking")];
+    let mut history = create_history_with_items(items);
+    let output = history.handle_history_action(HistoryAction::ViewUser);
+
+    assert_eq!(output, "No user messages found.");
+}
+
+#[test]
+fn view_reasoning_items_lists_entries() {
+    let items = vec![
+        reasoning_msg("first thought"),
+        user_msg("hi"),
+        reasoning_msg("second thought"),
+    ];
+    let mut history = create_history_with_items(items);
+    let output = history.handle_history_action(HistoryAction::ViewReasoning);
+
+    assert_eq!(
+        output,
+        "1. [Reasoning] first thought\n3. [Reasoning] second thought\n"
+    );
+}
+
+#[test]
+fn delete_range_supports_open_ended_del_after() {
+    let first = user_msg("first");
+    let items = vec![
+        first.clone(),
+        assistant_msg("second"),
+        user_msg("third"),
+        assistant_msg("fourth"),
+    ];
+    let mut history = create_history_with_items(items);
+
+    let output = history.handle_history_action(HistoryAction::DeleteRange {
+        start: 2,
+        end: usize::MAX,
+    });
+
+    assert_eq!(output, "Deleted items #2 to #4");
+    assert_eq!(history.contents(), vec![first]);
+}
+
+#[test]
 fn remove_first_item_removes_matching_output_for_function_call() {
     let items = vec![
         ResponseItem::FunctionCall {

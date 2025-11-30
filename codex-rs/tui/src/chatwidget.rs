@@ -3642,8 +3642,18 @@ fn parse_hist_args(args: &str) -> Result<HistoryAction, String> {
         return Ok(HistoryAction::ViewAll);
     }
     match args[0] {
-        "listall" => Ok(HistoryAction::ViewAll),
-        "snapshot" | "snapshots" => Ok(HistoryAction::ViewSnapshots),
+        "ls" => {
+            if args.len() == 1 {
+                return Ok(HistoryAction::ViewAll);
+            }
+            match args[1] {
+                "snapshot" | "snapshots" => Ok(HistoryAction::ViewSnapshots),
+                "assistant" => Ok(HistoryAction::ViewAssistant),
+                "reasoning" => Ok(HistoryAction::ViewReasoning),
+                "user" => Ok(HistoryAction::ViewUser),
+                other => Err(format!("Unknown ls filter: {other}")),
+            }
+        }
         "ll" => {
             let count = if args.len() > 1 {
                 args[1]
@@ -3750,15 +3760,25 @@ mod hist_tests {
     #[test]
     fn test_parse_hist_args() {
         assert_eq!(parse_hist_args(""), Ok(HistoryAction::ViewAll));
-        assert_eq!(parse_hist_args("listall"), Ok(HistoryAction::ViewAll));
+        assert_eq!(parse_hist_args("ls"), Ok(HistoryAction::ViewAll));
         assert_eq!(
-            parse_hist_args("snapshot"),
+            parse_hist_args("ls snapshot"),
             Ok(HistoryAction::ViewSnapshots)
         );
         assert_eq!(
-            parse_hist_args("snapshots"),
+            parse_hist_args("ls snapshots"),
             Ok(HistoryAction::ViewSnapshots)
         );
+        assert_eq!(
+            parse_hist_args("ls assistant"),
+            Ok(HistoryAction::ViewAssistant)
+        );
+        assert_eq!(
+            parse_hist_args("ls reasoning"),
+            Ok(HistoryAction::ViewReasoning)
+        );
+        assert_eq!(parse_hist_args("ls user"), Ok(HistoryAction::ViewUser));
+        assert!(parse_hist_args("ls unknown").is_err());
 
         // ll
         assert_eq!(
