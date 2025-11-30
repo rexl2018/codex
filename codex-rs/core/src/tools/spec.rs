@@ -1545,26 +1545,27 @@ mod tests {
 
     #[test]
     fn test_freeform_as_function_conversion() {
-        let model_family = find_family_for_model("gpt-5.1")
-            .expect("gpt-5.1 should be a valid model family");
+        let model_family =
+            find_family_for_model("gpt-5.1").expect("gpt-5.1 should be a valid model family");
         let mut features = Features::with_defaults();
         features.enable(Feature::ApplyPatchFreeform);
         features.enable(Feature::FreeformAsFunction);
-        
+
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
         });
-        
+
         let (tools, _) = build_specs(&config, None).build();
-        
+
         // Verify apply_patch is a Function, not Freeform
-        let apply_patch = tools.iter()
+        let apply_patch = tools
+            .iter()
             .find(|t| tool_name(&t.spec) == "apply_patch")
             .expect("apply_patch tool should exist");
-        
+
         match &apply_patch.spec {
-            ToolSpec::Function(_) => {}, // Expected
+            ToolSpec::Function(_) => {} // Expected
             ToolSpec::Freeform(_) => panic!("Expected Function, got Freeform"),
             _ => panic!("Unexpected tool type"),
         }
@@ -1572,26 +1573,27 @@ mod tests {
 
     #[test]
     fn test_freeform_without_conversion() {
-        let model_family = find_family_for_model("gpt-5.1")
-            .expect("gpt-5.1 should be a valid model family");
+        let model_family =
+            find_family_for_model("gpt-5.1").expect("gpt-5.1 should be a valid model family");
         let mut features = Features::with_defaults();
         features.enable(Feature::ApplyPatchFreeform);
         // Do NOT enable FreeformAsFunction
-        
+
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_family: &model_family,
             features: &features,
         });
-        
+
         let (tools, _) = build_specs(&config, None).build();
-        
+
         // Verify apply_patch is Freeform
-        let apply_patch = tools.iter()
+        let apply_patch = tools
+            .iter()
             .find(|t| tool_name(&t.spec) == "apply_patch")
             .expect("apply_patch tool should exist");
-        
+
         match &apply_patch.spec {
-            ToolSpec::Freeform(_) => {}, // Expected
+            ToolSpec::Freeform(_) => {} // Expected
             ToolSpec::Function(_) => panic!("Expected Freeform, got Function"),
             _ => panic!("Unexpected tool type"),
         }
@@ -1638,7 +1640,6 @@ mod tests {
                         r#type: "object".to_string(),
                     },
                     output_schema: None,
-                    last_response_id: None,
                     title: None,
                     annotations: None,
                     description: Some("Do something cool".to_string()),
@@ -1714,7 +1715,6 @@ mod tests {
                         r#type: "object".to_string(),
                     },
                     output_schema: None,
-                    last_response_id: None,
                     title: None,
                     annotations: None,
                     description: Some("a".to_string()),
@@ -1730,7 +1730,6 @@ mod tests {
                         r#type: "object".to_string(),
                     },
                     output_schema: None,
-                    last_response_id: None,
                     title: None,
                     annotations: None,
                     description: Some("b".to_string()),
@@ -1746,7 +1745,6 @@ mod tests {
                         r#type: "object".to_string(),
                     },
                     output_schema: None,
-                    last_response_id: None,
                     title: None,
                     annotations: None,
                     description: Some("c".to_string()),
@@ -1798,7 +1796,6 @@ mod tests {
                         r#type: "object".to_string(),
                     },
                     output_schema: None,
-                    last_response_id: None,
                     title: None,
                     annotations: None,
                     description: Some("Search docs".to_string()),
@@ -1854,7 +1851,6 @@ mod tests {
                         r#type: "object".to_string(),
                     },
                     output_schema: None,
-                    last_response_id: None,
                     title: None,
                     annotations: None,
                     description: Some("Pagination".to_string()),
@@ -1909,7 +1905,6 @@ mod tests {
                         r#type: "object".to_string(),
                     },
                     output_schema: None,
-                    last_response_id: None,
                     title: None,
                     annotations: None,
                     description: Some("Tags".to_string()),
@@ -1966,7 +1961,6 @@ mod tests {
                         r#type: "object".to_string(),
                     },
                     output_schema: None,
-                    last_response_id: None,
                     title: None,
                     annotations: None,
                     description: Some("AnyOf Value".to_string()),
@@ -2104,7 +2098,6 @@ Examples of valid command strings:
                         r#type: "object".to_string(),
                     },
                     output_schema: None,
-                    last_response_id: None,
                     title: None,
                     annotations: None,
                     description: Some("Do something cool".to_string()),

@@ -941,7 +941,6 @@ mod tests {
                 },
                 name: tool_name.to_string(),
                 output_schema: None,
-                last_response_id: None,
                 title: None,
             },
         }

@@ -9,6 +9,7 @@ use codex_protocol::models::LocalShellExecAction;
 use codex_protocol::models::LocalShellStatus;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ReasoningItemReasoningSummary;
+use codex_protocol::protocol::HistoryAction;
 use pretty_assertions::assert_eq;
 use regex_lite::Regex;
 
@@ -153,6 +154,35 @@ fn get_history_for_prompt_drops_ghost_commits() {
     let mut history = create_history_with_items(items);
     let filtered = history.get_history_for_prompt();
     assert_eq!(filtered, vec![]);
+}
+
+#[test]
+fn view_snapshots_lists_snapshots_with_indices() {
+    let items = vec![
+        user_msg("first"),
+        ResponseItem::GhostSnapshot {
+            ghost_commit: GhostCommit::new(
+                "abcdef0123456789".to_string(),
+                Some("1234567890abcdef".to_string()),
+                Vec::new(),
+                Vec::new(),
+            ),
+        },
+        ResponseItem::GhostSnapshot {
+            ghost_commit: GhostCommit::new(
+                "1122334455667788".to_string(),
+                None,
+                Vec::new(),
+                Vec::new(),
+            ),
+        },
+    ];
+    let mut history = create_history_with_items(items);
+    let output = history.handle_history_action(HistoryAction::ViewSnapshots);
+    assert_eq!(
+        output,
+        "2. Snapshot abcdef0 (parent 1234567)\n3. Snapshot 1122334\n"
+    );
 }
 
 #[test]

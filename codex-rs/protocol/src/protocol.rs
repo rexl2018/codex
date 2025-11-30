@@ -219,6 +219,7 @@ pub enum HistoryAction {
     ViewAll,
     ViewLast { count: usize },
     ViewAround { index: usize },
+    ViewSnapshots,
     Delete { index: usize },
     DeleteRange { start: usize, end: usize },
     DeleteLast { count: usize },

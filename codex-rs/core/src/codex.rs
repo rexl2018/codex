@@ -1192,12 +1192,14 @@ impl Session {
         }
     }
 
-    pub(crate) async fn set_last_response_id(&self, _turn_context: &TurnContext, response_id: String) {
+    pub(crate) async fn set_last_response_id(
+        &self,
+        _turn_context: &TurnContext,
+        response_id: String,
+    ) {
         let mut state = self.state.lock().await;
         state.set_last_response_id(response_id);
     }
-
-
 
     /// Record a user input item to conversation history and also persist a
     /// corresponding UserMessage EventMsg to rollout.

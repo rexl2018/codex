@@ -44,7 +44,7 @@ pub(crate) struct ConversationBuildPlan {
 }
 
 impl ConversationBuildStrategy {
-    pub(crate) fn build_plan(&self, params: ConversationBuildInput) -> ConversationBuildPlan {
+    pub(crate) fn build_plan(self, params: ConversationBuildInput) -> ConversationBuildPlan {
         match self {
             ConversationBuildStrategy::FullHistory => ConversationBuildPlan {
                 instructions: params.instructions,
@@ -59,7 +59,7 @@ impl ConversationBuildStrategy {
             ConversationBuildStrategy::PreviousResponseId => {
                 // Use the stored response ID from the previous turn
                 let previous_response_id = params.last_response_id;
-                
+
                 // Only send items after the last response
                 let trimmed_input = if previous_response_id.is_some() {
                     // If we have a previous response ID, we can trim the history
@@ -70,7 +70,7 @@ impl ConversationBuildStrategy {
                     // First request - send all items
                     params.formatted_input
                 };
-                
+
                 let mut input_with_instructions =
                     Vec::with_capacity(trimmed_input.len().saturating_add(1));
                 if let Some(system_message) = instructions_as_system_message(&params.instructions) {

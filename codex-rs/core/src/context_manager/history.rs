@@ -245,6 +245,7 @@ impl ContextManager {
                 let end = (center + 3).min(self.items.len());
                 self.view_history(start, end)
             }
+            HistoryAction::ViewSnapshots => self.view_snapshots(),
             HistoryAction::Delete { index } => {
                 if index > 0 && index <= self.items.len() {
                     self.items.remove(index - 1);
@@ -285,6 +286,36 @@ impl ContextManager {
             }
             HistoryAction::Compact { .. } => "Compaction is handled asynchronously.".to_string(),
         }
+    }
+
+    fn view_snapshots(&self) -> String {
+        let snapshots: Vec<(usize, &codex_git::GhostCommit)> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| match item {
+                ResponseItem::GhostSnapshot { ghost_commit } => Some((idx + 1, ghost_commit)),
+                _ => None,
+            })
+            .collect();
+
+        if snapshots.is_empty() {
+            return "No snapshots captured yet.".to_string();
+        }
+
+        let mut output = String::new();
+        for (index, ghost_commit) in snapshots {
+            let short_id: String = ghost_commit.id().chars().take(7).collect();
+            if let Some(parent) = ghost_commit.parent() {
+                let short_parent: String = parent.chars().take(7).collect();
+                output.push_str(&format!(
+                    "{index}. Snapshot {short_id} (parent {short_parent})\n"
+                ));
+            } else {
+                output.push_str(&format!("{index}. Snapshot {short_id}\n"));
+            }
+        }
+        output
     }
 
     fn view_history(&self, start: usize, end: usize) -> String {

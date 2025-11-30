@@ -109,7 +109,6 @@ use crate::slash_command::SlashCommand;
 use crate::status::RateLimitSnapshotDisplay;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
-use codex_core;
 mod interrupts;
 use self::interrupts::InterruptManager;
 mod agent;
@@ -1637,7 +1636,7 @@ impl ChatWidget {
                                         .unwrap_or_else(|| "unknown".to_string());
 
                                     let time = item.created_at.as_deref().unwrap_or("unknown time");
-                                    output.push_str(&format!("- **{}** ({})\n", id, time));
+                                    output.push_str(&format!("- **{id}** ({time})\n"));
                                 }
 
                                 // List checkpoints
@@ -1649,30 +1648,28 @@ impl ChatWidget {
                                     while let Ok(Some(entry)) = entries.next_entry().await {
                                         let path = entry.path();
                                         if path.extension().and_then(|e| e.to_str()) == Some("json")
-                                        {
-                                            if let Some(file_name) =
+                                            && let Some(file_name) =
                                                 path.file_name().and_then(|n| n.to_str())
-                                            {
-                                                // Format: <hash>-<shortDir>-<tag>.json
-                                                // We want to extract <tag>
-                                                // Simple regex replacement: remove first two dash-separated parts
-                                                let parts: Vec<&str> =
-                                                    file_name.splitn(3, '-').collect();
-                                                if parts.len() == 3 {
-                                                    let tag_with_ext = parts[2];
-                                                    let tag = tag_with_ext
-                                                        .strip_suffix(".json")
-                                                        .unwrap_or(tag_with_ext);
-                                                    let decoded_tag = urlencoding::decode(tag)
-                                                        .unwrap_or(std::borrow::Cow::Borrowed(tag));
-                                                    checkpoints.push(decoded_tag.into_owned());
-                                                }
+                                        {
+                                            // Format: <hash>-<shortDir>-<tag>.json
+                                            // We want to extract <tag>
+                                            // Simple regex replacement: remove first two dash-separated parts
+                                            let parts: Vec<&str> =
+                                                file_name.splitn(3, '-').collect();
+                                            if parts.len() == 3 {
+                                                let tag_with_ext = parts[2];
+                                                let tag = tag_with_ext
+                                                    .strip_suffix(".json")
+                                                    .unwrap_or(tag_with_ext);
+                                                let decoded_tag = urlencoding::decode(tag)
+                                                    .unwrap_or(std::borrow::Cow::Borrowed(tag));
+                                                checkpoints.push(decoded_tag.into_owned());
                                             }
                                         }
                                     }
                                     checkpoints.sort();
                                     for tag in checkpoints {
-                                        output.push_str(&format!("- **{}**\n", tag));
+                                        output.push_str(&format!("- **{tag}**\n"));
                                     }
                                 }
 
@@ -1746,11 +1743,11 @@ impl ChatWidget {
                     let config = self.config.clone();
                     tokio::spawn(async move {
                         // 1. Try exact checkpoint path (hashed project root + tag)
-                        if let Ok(path) = get_checkpoint_path(&tag, &config) {
-                            if path.exists() {
-                                tx.send(AppEvent::ResumeSession(path));
-                                return;
-                            }
+                        if let Ok(path) = get_checkpoint_path(&tag, &config)
+                            && path.exists()
+                        {
+                            tx.send(AppEvent::ResumeSession(path));
+                            return;
                         }
 
                         // 2. Try searching in checkpoints dir for suffix match
@@ -1785,7 +1782,7 @@ impl ChatWidget {
                         tx.send(AppEvent::CodexEvent(Event {
                             id: "chat-resume-error".to_string(),
                             msg: EventMsg::Error(ErrorEvent {
-                                message: format!("Checkpoint or session '{}' not found", tag),
+                                message: format!("Checkpoint or session '{tag}' not found"),
                                 codex_error_info: None,
                             }),
                         }));
@@ -1813,10 +1810,7 @@ impl ChatWidget {
                                     tx.send(AppEvent::CodexEvent(Event {
                                         id: "chat-share".to_string(),
                                         msg: EventMsg::AgentMessage(AgentMessageEvent {
-                                            message: format!(
-                                                "Shared session to {}",
-                                                target_path_str
-                                            ),
+                                            message: format!("Shared session to {target_path_str}"),
                                         }),
                                     }));
                                 }
@@ -1840,7 +1834,7 @@ impl ChatWidget {
                         let current_path = current_path.clone();
                         let tx = self.app_event_tx.clone();
                         let config = self.config.clone();
-                        let tag = tag.clone();
+                        let tag = tag;
                         tokio::spawn(async move {
                             match get_checkpoint_path(&tag, &config) {
                                 Ok(target_path) => {
@@ -1862,8 +1856,7 @@ impl ChatWidget {
                                             id: "chat-save".to_string(),
                                             msg: EventMsg::AgentMessage(AgentMessageEvent {
                                                 message: format!(
-                                                    "Session is already saved as checkpoint '{}'",
-                                                    tag
+                                                    "Session is already saved as checkpoint '{tag}'"
                                                 ),
                                             }),
                                         }));
@@ -3650,6 +3643,7 @@ fn parse_hist_args(args: &str) -> Result<HistoryAction, String> {
     }
     match args[0] {
         "listall" => Ok(HistoryAction::ViewAll),
+        "snapshot" | "snapshots" => Ok(HistoryAction::ViewSnapshots),
         "ll" => {
             let count = if args.len() > 1 {
                 args[1]
@@ -3757,6 +3751,14 @@ mod hist_tests {
     fn test_parse_hist_args() {
         assert_eq!(parse_hist_args(""), Ok(HistoryAction::ViewAll));
         assert_eq!(parse_hist_args("listall"), Ok(HistoryAction::ViewAll));
+        assert_eq!(
+            parse_hist_args("snapshot"),
+            Ok(HistoryAction::ViewSnapshots)
+        );
+        assert_eq!(
+            parse_hist_args("snapshots"),
+            Ok(HistoryAction::ViewSnapshots)
+        );
 
         // ll
         assert_eq!(
@@ -3868,10 +3870,7 @@ fn get_checkpoint_path(tag: &str, config: &Config) -> Result<PathBuf, String> {
         .collect();
 
     let checkpoint_dir = config.codex_home.join("checkpoints");
-    Ok(checkpoint_dir.join(format!(
-        "{}-{}-{}.json",
-        short_hash, short_dir_name, encoded_tag
-    )))
+    Ok(checkpoint_dir.join(format!("{short_hash}-{short_dir_name}-{encoded_tag}.json")))
 }
 
 fn parse_chat_args(args: &str) -> Result<ChatAction, String> {

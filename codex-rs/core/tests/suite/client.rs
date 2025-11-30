@@ -1780,10 +1780,7 @@ async fn request_includes_previous_response_id_when_configured() {
         body["previous_response_id"],
         serde_json::Value::String("prev-resp-id".into())
     );
-    assert_eq!(
-        body["instructions"],
-        serde_json::Value::Null
-    );
+    assert_eq!(body["instructions"], serde_json::Value::Null);
     assert_eq!(body["input"].as_array().map(Vec::len), Some(2));
     assert_eq!(body["input"][0]["role"], "system");
     assert!(
@@ -1821,15 +1818,15 @@ async fn previous_response_id_is_sent_in_subsequent_turn() {
         .respond_with(ResponseTemplate::new(200).set_body_raw("", "text/event-stream")) // Placeholder
         .mount(&server)
         .await;
-    
+
     // We need to match requests sequentially or just inspect them later.
     // Since Mock::given matches are stateless unless we use `up_to_n_times`, let's just use a sequence of responses.
     // Actually, `respond_with` can take a sequence if we implement `Respond`.
     // But simpler: just inspect the requests at the end.
     // We'll use the same response for both for simplicity, or just verify the request body.
-    
+
     server.reset().await;
-    
+
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .respond_with(template_1)

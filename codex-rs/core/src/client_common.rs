@@ -335,11 +335,11 @@ mod tests {
         let tools: Vec<serde_json::Value> = vec![];
         let req = ResponsesApiRequest {
             model: "gpt-5.1",
-            instructions: "i",
+            instructions: Some("i"),
             input: &input,
-            tools: &tools,
-            tool_choice: "auto",
-            parallel_tool_calls: true,
+            tools: Some(&tools),
+            tool_choice: Some("auto"),
+            parallel_tool_calls: Some(true),
             reasoning: None,
             store: false,
             stream: true,
@@ -379,11 +379,11 @@ mod tests {
 
         let req = ResponsesApiRequest {
             model: "gpt-5.1",
-            instructions: "i",
+            instructions: Some("i"),
             input: &input,
-            tools: &tools,
-            tool_choice: "auto",
-            parallel_tool_calls: true,
+            tools: Some(&tools),
+            tool_choice: Some("auto"),
+            parallel_tool_calls: Some(true),
             reasoning: None,
             store: false,
             stream: true,
@@ -418,11 +418,11 @@ mod tests {
         let tools: Vec<serde_json::Value> = vec![];
         let req = ResponsesApiRequest {
             model: "gpt-5.1",
-            instructions: "i",
+            instructions: Some("i"),
             input: &input,
-            tools: &tools,
-            tool_choice: "auto",
-            parallel_tool_calls: true,
+            tools: Some(&tools),
+            tool_choice: Some("auto"),
+            parallel_tool_calls: Some(true),
             reasoning: None,
             store: false,
             stream: true,
