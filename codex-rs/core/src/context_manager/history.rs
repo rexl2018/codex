@@ -14,6 +14,27 @@ use codex_protocol::protocol::TokenUsage;
 use codex_protocol::protocol::TokenUsageInfo;
 use std::ops::Deref;
 
+pub(crate) struct HistoryActionOutput {
+    pub content: String,
+    pub history_changed: bool,
+}
+
+impl HistoryActionOutput {
+    fn changed(content: String) -> Self {
+        Self {
+            content,
+            history_changed: true,
+        }
+    }
+
+    fn unchanged(content: String) -> Self {
+        Self {
+            content,
+            history_changed: false,
+        }
+    }
+}
+
 /// Transcript of conversation history
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ContextManager {
@@ -233,48 +254,58 @@ impl ContextManager {
         }
     }
 
-    pub(crate) fn handle_history_action(&mut self, action: HistoryAction) -> String {
+    pub(crate) fn handle_history_action(&mut self, action: HistoryAction) -> HistoryActionOutput {
         match action {
-            HistoryAction::ViewAll => self.view_history(0, self.items.len()),
+            HistoryAction::ViewAll => {
+                HistoryActionOutput::unchanged(self.view_history(0, self.items.len()))
+            }
             HistoryAction::ViewLast { count } => {
                 let start = self.items.len().saturating_sub(count);
-                self.view_history(start, self.items.len())
+                HistoryActionOutput::unchanged(self.view_history(start, self.items.len()))
             }
             HistoryAction::ViewAround { index } => {
                 // index is 1-based from user
                 let center = index.saturating_sub(1);
                 let start = center.saturating_sub(2);
                 let end = (center + 3).min(self.items.len());
-                self.view_history(start, end)
+                HistoryActionOutput::unchanged(self.view_history(start, end))
             }
-            HistoryAction::ViewItem { index } => self.view_item_details(index),
-            HistoryAction::ViewSnapshots => self.view_snapshots(),
-            HistoryAction::ViewAssistant => self.view_assistant_messages(),
-            HistoryAction::ViewReasoning => self.view_reasoning_items(),
-            HistoryAction::ViewUser => self.view_user_messages(),
+            HistoryAction::ViewItem { index } => {
+                HistoryActionOutput::unchanged(self.view_item_details(index))
+            }
+            HistoryAction::ViewSnapshots => HistoryActionOutput::unchanged(self.view_snapshots()),
+            HistoryAction::ViewAssistant => {
+                HistoryActionOutput::unchanged(self.view_assistant_messages())
+            }
+            HistoryAction::ViewReasoning => {
+                HistoryActionOutput::unchanged(self.view_reasoning_items())
+            }
+            HistoryAction::ViewUser => HistoryActionOutput::unchanged(self.view_user_messages()),
             HistoryAction::Delete { index } => {
                 if index > 0 && index <= self.items.len() {
                     self.items.remove(index - 1);
-                    format!("Deleted item #{index}")
+                    HistoryActionOutput::changed(format!("Deleted item #{index}"))
                 } else {
-                    format!("Invalid index: {index}")
+                    HistoryActionOutput::unchanged(format!("Invalid index: {index}"))
                 }
             }
             HistoryAction::DeleteRange { start, end } => {
                 let len = self.items.len();
                 if start == 0 {
-                    return format!("Invalid range: {start}-{end}");
+                    return HistoryActionOutput::unchanged(format!("Invalid range: {start}-{end}"));
                 }
 
                 let normalized_end = if end == usize::MAX { len } else { end };
 
                 if normalized_end < start || normalized_end > len {
-                    format!("Invalid range: {start}-{end}")
+                    HistoryActionOutput::unchanged(format!("Invalid range: {start}-{end}"))
                 } else {
                     // drain is exclusive of end, but user range is inclusive
                     // start-1 to end
                     self.items.drain((start - 1)..normalized_end);
-                    format!("Deleted items #{start} to #{normalized_end}")
+                    HistoryActionOutput::changed(format!(
+                        "Deleted items #{start} to #{normalized_end}"
+                    ))
                 }
             }
             HistoryAction::DeleteLast { count } => {
@@ -282,9 +313,9 @@ impl ContextManager {
                 if count > 0 && count <= len {
                     let start = len - count;
                     self.items.drain(start..);
-                    format!("Deleted last {count} items")
+                    HistoryActionOutput::changed(format!("Deleted last {count} items"))
                 } else {
-                    format!("Invalid count: {count}")
+                    HistoryActionOutput::unchanged(format!("Invalid count: {count}"))
                 }
             }
             HistoryAction::DeleteBefore { index } => {
@@ -292,12 +323,16 @@ impl ContextManager {
                     // Delete 1..=index (inclusive)
                     // 0..index
                     self.items.drain(0..index);
-                    format!("Deleted items before and including #{index}")
+                    HistoryActionOutput::changed(format!(
+                        "Deleted items before and including #{index}"
+                    ))
                 } else {
-                    format!("Invalid index: {index}")
+                    HistoryActionOutput::unchanged(format!("Invalid index: {index}"))
                 }
             }
-            HistoryAction::Compact { .. } => "Compaction is handled asynchronously.".to_string(),
+            HistoryAction::Compact { .. } => {
+                HistoryActionOutput::unchanged("Compaction is handled asynchronously.".to_string())
+            }
         }
     }
 

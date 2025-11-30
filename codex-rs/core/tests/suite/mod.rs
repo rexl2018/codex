@@ -32,6 +32,7 @@ mod exec;
 mod exec_policy;
 mod fork_conversation;
 mod grep_files;
+mod history_persistence;
 mod items;
 mod json_result;
 mod list_dir;

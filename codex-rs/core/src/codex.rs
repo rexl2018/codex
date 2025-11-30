@@ -1495,6 +1495,7 @@ mod handlers {
     use crate::codex::spawn_review_thread;
     use crate::config::Config;
     use crate::mcp::auth::compute_auth_statuses;
+    use crate::protocol::CompactedItem;
     use crate::tasks::CompactTask;
     use crate::tasks::RegularTask;
     use crate::tasks::UndoTask;
@@ -1508,6 +1509,7 @@ mod handlers {
     use codex_protocol::protocol::Op;
     use codex_protocol::protocol::ReviewDecision;
     use codex_protocol::protocol::ReviewRequest;
+    use codex_protocol::protocol::RolloutItem;
     use codex_protocol::protocol::TurnAbortReason;
 
     use codex_protocol::user_input::UserInput;
@@ -1836,10 +1838,25 @@ mod handlers {
             return;
         }
 
-        let content = {
+        let (content, replacement_history) = {
             let mut state = sess.state.lock().await;
-            state.history.handle_history_action(action)
+            let output = state.history.handle_history_action(action);
+            let replacement_history = if output.history_changed {
+                Some(state.history.get_history())
+            } else {
+                None
+            };
+            (output.content, replacement_history)
         };
+
+        if let Some(history) = replacement_history {
+            sess.persist_rollout_items(&[RolloutItem::Compacted(CompactedItem {
+                message: "History edited via /hist command".to_string(),
+                replacement_history: Some(history),
+            })])
+            .await;
+        }
+
         let event = Event {
             id: sub_id,
             msg: EventMsg::HistoryView(codex_protocol::protocol::HistoryViewEvent { content }),

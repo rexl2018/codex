@@ -191,9 +191,10 @@ fn view_snapshots_lists_snapshots_with_indices() {
     let mut history = create_history_with_items(items);
     let output = history.handle_history_action(HistoryAction::ViewSnapshots);
     assert_eq!(
-        output,
+        output.content,
         "2. Snapshot abcdef0 (parent 1234567)\n3. Snapshot 1122334\n"
     );
+    assert!(!output.history_changed);
 }
 
 #[test]
@@ -207,7 +208,11 @@ fn view_assistant_messages_lists_only_assistant_entries() {
     let mut history = create_history_with_items(items);
     let output = history.handle_history_action(HistoryAction::ViewAssistant);
 
-    assert_eq!(output, "2. [assistant] alpha\n4. [assistant] beta\n");
+    assert_eq!(
+        output.content,
+        "2. [assistant] alpha\n4. [assistant] beta\n"
+    );
+    assert!(!output.history_changed);
 }
 
 #[test]
@@ -216,7 +221,8 @@ fn view_user_messages_reports_when_empty() {
     let mut history = create_history_with_items(items);
     let output = history.handle_history_action(HistoryAction::ViewUser);
 
-    assert_eq!(output, "No user messages found.");
+    assert_eq!(output.content, "No user messages found.");
+    assert!(!output.history_changed);
 }
 
 #[test]
@@ -229,7 +235,11 @@ fn view_reasoning_items_lists_entries() {
     let mut history = create_history_with_items(items);
     let output = history.handle_history_action(HistoryAction::ViewReasoning);
 
-    assert_eq!(output, "1. [Reasoning] summary\n3. [Reasoning] summary\n");
+    assert_eq!(
+        output.content,
+        "1. [Reasoning] summary\n3. [Reasoning] summary\n"
+    );
+    assert!(!output.history_changed);
 }
 
 #[test]
@@ -243,9 +253,10 @@ fn view_reasoning_items_fall_back_to_content_when_summary_missing() {
     let output = history.handle_history_action(HistoryAction::ViewReasoning);
 
     assert_eq!(
-        output,
+        output.content,
         "1. [Reasoning] first thought\n3. [Reasoning] second thought\n"
     );
+    assert!(!output.history_changed);
 }
 
 #[test]
@@ -258,7 +269,8 @@ fn view_item_details_shows_full_json() {
     let expected = format!("2.\n{expected_json}\n");
     let output = history.handle_history_action(HistoryAction::ViewItem { index: 2 });
 
-    assert_eq!(output, expected);
+    assert_eq!(output.content, expected);
+    assert!(!output.history_changed);
 }
 
 #[test]
@@ -266,11 +278,15 @@ fn view_item_details_validates_index() {
     let mut history = create_history_with_items(vec![assistant_msg("alpha")]);
 
     assert_eq!(
-        history.handle_history_action(HistoryAction::ViewItem { index: 0 }),
+        history
+            .handle_history_action(HistoryAction::ViewItem { index: 0 })
+            .content,
         "Invalid index: 0"
     );
     assert_eq!(
-        history.handle_history_action(HistoryAction::ViewItem { index: 3 }),
+        history
+            .handle_history_action(HistoryAction::ViewItem { index: 3 })
+            .content,
         "Invalid index: 3"
     );
 }
@@ -291,8 +307,20 @@ fn delete_range_supports_open_ended_del_after() {
         end: usize::MAX,
     });
 
-    assert_eq!(output, "Deleted items #2 to #4");
+    assert_eq!(output.content, "Deleted items #2 to #4");
+    assert!(output.history_changed);
     assert_eq!(history.contents(), vec![first]);
+}
+
+#[test]
+fn delete_range_invalid_range_does_not_change_history() {
+    let first = user_msg("first");
+    let mut history = create_history_with_items(vec![first.clone(), assistant_msg("second")]);
+    let output = history.handle_history_action(HistoryAction::DeleteRange { start: 0, end: 2 });
+
+    assert_eq!(output.content, "Invalid range: 0-2");
+    assert!(!output.history_changed);
+    assert_eq!(history.contents(), vec![first, assistant_msg("second")]);
 }
 
 #[test]
