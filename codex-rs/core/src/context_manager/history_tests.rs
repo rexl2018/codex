@@ -57,6 +57,17 @@ fn reasoning_msg(text: &str) -> ResponseItem {
     }
 }
 
+fn reasoning_msg_without_summary(text: &str) -> ResponseItem {
+    ResponseItem::Reasoning {
+        id: String::new(),
+        summary: vec![],
+        content: Some(vec![ReasoningItemContent::ReasoningText {
+            text: text.to_string(),
+        }]),
+        encrypted_content: None,
+    }
+}
+
 fn reasoning_with_encrypted_content(len: usize) -> ResponseItem {
     ResponseItem::Reasoning {
         id: String::new(),
@@ -214,6 +225,19 @@ fn view_reasoning_items_lists_entries() {
         reasoning_msg("first thought"),
         user_msg("hi"),
         reasoning_msg("second thought"),
+    ];
+    let mut history = create_history_with_items(items);
+    let output = history.handle_history_action(HistoryAction::ViewReasoning);
+
+    assert_eq!(output, "1. [Reasoning] summary\n3. [Reasoning] summary\n");
+}
+
+#[test]
+fn view_reasoning_items_fall_back_to_content_when_summary_missing() {
+    let items = vec![
+        reasoning_msg_without_summary("first thought"),
+        user_msg("hi"),
+        reasoning_msg_without_summary("second thought"),
     ];
     let mut history = create_history_with_items(items);
     let output = history.handle_history_action(HistoryAction::ViewReasoning);

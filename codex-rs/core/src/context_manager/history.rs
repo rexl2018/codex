@@ -464,19 +464,22 @@ fn reasoning_preview(
     summary: &[ReasoningItemReasoningSummary],
     content: Option<&Vec<ReasoningItemContent>>,
 ) -> Option<String> {
-    for item in summary {
-        if let ReasoningItemReasoningSummary::SummaryText { text } = item
-            && !text.is_empty() {
-                return Some(text.clone());
-            }
+    if let Some(text) = summary.iter().find_map(|item| match item {
+        ReasoningItemReasoningSummary::SummaryText { text } if !text.is_empty() => {
+            Some(text.clone())
+        }
+        _ => None,
+    }) {
+        return Some(text);
     }
 
     if let Some(content_items) = content {
         for item in content_items {
-            if let ReasoningItemContent::ReasoningText { text } = item
-                && !text.is_empty() {
+            if let ReasoningItemContent::ReasoningText { text } = item {
+                if !text.is_empty() {
                     return Some(text.clone());
                 }
+            }
         }
     }
 

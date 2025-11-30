@@ -380,14 +380,7 @@ async fn run_compact_task_inner(
     let initial_context = sess.build_initial_context(turn_context.as_ref());
     let mut new_compacted_slice =
         build_compacted_history(initial_context, &user_messages, &summary_text);
-
-    // Ghost snapshots logic
-    let ghost_snapshots: Vec<ResponseItem> = items_to_collect
-        .iter()
-        .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
-        .cloned()
-        .collect();
-    new_compacted_slice.extend(ghost_snapshots);
+    new_compacted_slice = remove_ghost_snapshots(new_compacted_slice);
 
     let new_history = if let Some((start, _end)) = range {
         // Reconstruct full history: prefix + compacted_slice + suffix
@@ -421,13 +414,7 @@ async fn run_compact_task_inner(
 
         let mut middle =
             build_compacted_history(slice_initial_context, &user_messages, &summary_text);
-        // Add ghost snapshots from the slice
-        let slice_ghosts: Vec<ResponseItem> = items_to_collect
-            .iter()
-            .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
-            .cloned()
-            .collect();
-        middle.extend(slice_ghosts);
+        middle = remove_ghost_snapshots(middle);
 
         final_history.extend(middle);
 
@@ -439,13 +426,7 @@ async fn run_compact_task_inner(
         final_history
     } else {
         // Original logic
-        let ghost_snapshots: Vec<ResponseItem> = history_snapshot
-            .iter()
-            .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
-            .cloned()
-            .collect();
-        new_compacted_slice.extend(ghost_snapshots);
-        new_compacted_slice
+        remove_ghost_snapshots(new_compacted_slice)
     };
 
     sess.replace_history(new_history).await;
@@ -464,6 +445,13 @@ async fn run_compact_task_inner(
         message: "Heads up: Long conversations and multiple compactions can cause the model to be less accurate. Start a new conversation when possible to keep conversations small and targeted.".to_string(),
     });
     sess.send_event(&turn_context, warning).await;
+}
+
+pub(crate) fn remove_ghost_snapshots(items: Vec<ResponseItem>) -> Vec<ResponseItem> {
+    items
+        .into_iter()
+        .filter(|item| !matches!(item, ResponseItem::GhostSnapshot { .. }))
+        .collect()
 }
 
 pub fn content_items_to_text(content: &[ContentItem]) -> Option<String> {
@@ -757,5 +745,41 @@ mod tests {
             other => panic!("expected summary message, found {other:?}"),
         };
         assert_eq!(summary, summary_text);
+    }
+
+    #[test]
+    fn remove_ghost_snapshots_filters_out_entries() {
+        let items = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "kept".to_string(),
+                }],
+            },
+            ResponseItem::GhostSnapshot {
+                ghost_commit: codex_git::GhostCommit::new(
+                    "abc1234".to_string(),
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "also kept".to_string(),
+                }],
+            },
+        ];
+
+        let filtered = remove_ghost_snapshots(items);
+        assert_eq!(filtered.len(), 2);
+        assert!(
+            filtered
+                .iter()
+                .all(|item| { !matches!(item, ResponseItem::GhostSnapshot { .. }) })
+        );
     }
 }

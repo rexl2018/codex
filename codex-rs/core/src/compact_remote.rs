@@ -3,13 +3,13 @@ use std::sync::Arc;
 use crate::Prompt;
 use crate::codex::Session;
 use crate::codex::TurnContext;
+use crate::compact::remove_ghost_snapshots;
 use crate::error::Result as CodexResult;
 use crate::protocol::CompactedItem;
 use crate::protocol::ContextCompactedEvent;
 use crate::protocol::EventMsg;
 use crate::protocol::RolloutItem;
 use crate::protocol::TaskStartedEvent;
-use codex_protocol::models::ResponseItem;
 
 pub(crate) async fn run_inline_remote_auto_compact_task(
     sess: Arc<Session>,
@@ -54,17 +54,7 @@ async fn run_remote_compact_task_inner_impl(
         .client
         .compact_conversation_history(&prompt)
         .await?;
-    // Required to keep `/undo` available after compaction
-    let ghost_snapshots: Vec<ResponseItem> = history
-        .get_history()
-        .iter()
-        .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
-        .cloned()
-        .collect();
-
-    if !ghost_snapshots.is_empty() {
-        new_history.extend(ghost_snapshots);
-    }
+    new_history = remove_ghost_snapshots(new_history);
     sess.replace_history(new_history.clone()).await;
     sess.recompute_token_usage(turn_context).await;
 
