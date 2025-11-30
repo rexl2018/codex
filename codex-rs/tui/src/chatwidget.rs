@@ -3673,6 +3673,15 @@ fn parse_hist_args(args: &str) -> Result<HistoryAction, String> {
                 .map_err(|_| "Invalid index".to_string())?;
             Ok(HistoryAction::ViewAround { index })
         }
+        "view" => {
+            if args.len() < 2 {
+                return Err("Usage: /hist view <index>".to_string());
+            }
+            let index = args[1]
+                .parse::<usize>()
+                .map_err(|_| "Invalid index".to_string())?;
+            Ok(HistoryAction::ViewItem { index })
+        }
         "del" => {
             if args.len() < 2 {
                 return Err("Usage: /hist del <index>".to_string());
@@ -3798,6 +3807,14 @@ mod hist_tests {
         );
         assert!(parse_hist_args("la").is_err());
         assert!(parse_hist_args("la abc").is_err());
+
+        // view
+        assert_eq!(
+            parse_hist_args("view 7"),
+            Ok(HistoryAction::ViewItem { index: 7 })
+        );
+        assert!(parse_hist_args("view").is_err());
+        assert!(parse_hist_args("view abc").is_err());
 
         // del
         assert_eq!(

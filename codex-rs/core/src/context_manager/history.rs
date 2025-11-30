@@ -247,6 +247,7 @@ impl ContextManager {
                 let end = (center + 3).min(self.items.len());
                 self.view_history(start, end)
             }
+            HistoryAction::ViewItem { index } => self.view_item_details(index),
             HistoryAction::ViewSnapshots => self.view_snapshots(),
             HistoryAction::ViewAssistant => self.view_assistant_messages(),
             HistoryAction::ViewReasoning => self.view_reasoning_items(),
@@ -342,6 +343,18 @@ impl ContextManager {
             output.push_str(&format!("{index}. {content}\n"));
         }
         output
+    }
+
+    fn view_item_details(&self, index: usize) -> String {
+        if index == 0 || index > self.items.len() {
+            return format!("Invalid index: {index}");
+        }
+
+        let item = &self.items[index - 1];
+        match serde_json::to_string_pretty(item) {
+            Ok(json) => format!("{index}.\n{json}\n"),
+            Err(err) => format!("Failed to serialize item #{index}: {err}"),
+        }
     }
 
     fn view_filtered_history<F>(&self, predicate: F, empty_message: &str) -> String

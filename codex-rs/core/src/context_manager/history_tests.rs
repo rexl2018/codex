@@ -249,6 +249,33 @@ fn view_reasoning_items_fall_back_to_content_when_summary_missing() {
 }
 
 #[test]
+fn view_item_details_shows_full_json() {
+    let assistant = assistant_msg("alpha");
+    let user = user_msg("beta");
+    let mut history = create_history_with_items(vec![assistant, user.clone()]);
+
+    let expected_json = serde_json::to_string_pretty(&user).expect("serialize user item");
+    let expected = format!("2.\n{expected_json}\n");
+    let output = history.handle_history_action(HistoryAction::ViewItem { index: 2 });
+
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn view_item_details_validates_index() {
+    let mut history = create_history_with_items(vec![assistant_msg("alpha")]);
+
+    assert_eq!(
+        history.handle_history_action(HistoryAction::ViewItem { index: 0 }),
+        "Invalid index: 0"
+    );
+    assert_eq!(
+        history.handle_history_action(HistoryAction::ViewItem { index: 3 }),
+        "Invalid index: 3"
+    );
+}
+
+#[test]
 fn delete_range_supports_open_ended_del_after() {
     let first = user_msg("first");
     let items = vec![

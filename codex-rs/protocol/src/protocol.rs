@@ -219,6 +219,7 @@ pub enum HistoryAction {
     ViewAll,
     ViewLast { count: usize },
     ViewAround { index: usize },
+    ViewItem { index: usize },
     ViewSnapshots,
     ViewAssistant,
     ViewReasoning,
