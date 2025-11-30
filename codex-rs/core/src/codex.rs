@@ -61,6 +61,7 @@ use tracing::warn;
 
 use crate::ModelProviderInfo;
 use crate::client::ModelClient;
+use crate::client_common::MODEL_STREAM_IDLE_TIMEOUT;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
 use crate::compact::collect_user_messages;
@@ -2285,7 +2286,19 @@ async fn try_run_turn(
         // Poll the next item from the model stream. We must inspect *both* Ok and Err
         // cases so that transient stream failures (e.g., dropped SSE connection before
         // `response.completed`) bubble up and trigger the caller's retry logic.
-        let event = match stream.next().or_cancel(&cancellation_token).await {
+        let event_future = stream.next().or_cancel(&cancellation_token);
+        let event_result = match tokio::time::timeout(MODEL_STREAM_IDLE_TIMEOUT, event_future).await
+        {
+            Ok(event) => event,
+            Err(_) => {
+                return Err(CodexErr::Stream(
+                    "timeout waiting for SSE event".to_string(),
+                    None,
+                ));
+            }
+        };
+
+        let event = match event_result {
             Ok(event) => event,
             Err(codex_async_utils::CancelErr::Cancelled) => {
                 let mut processed_items: Vec<ProcessedResponseItem> = output.try_collect().await?;

@@ -13,6 +13,7 @@ use std::ops::Deref;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Review thread system prompt. Edit `core/src/review_prompt.md` to customize.
@@ -22,6 +23,9 @@ pub const REVIEW_PROMPT: &str = include_str!("../review_prompt.md");
 pub const REVIEW_EXIT_SUCCESS_TMPL: &str = include_str!("../templates/review/exit_success.xml");
 pub const REVIEW_EXIT_INTERRUPTED_TMPL: &str =
     include_str!("../templates/review/exit_interrupted.xml");
+
+/// Maximum idle time allowed between SSE events from the model stream.
+pub const MODEL_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// API request payload for a single model turn
 #[derive(Default, Debug, Clone)]

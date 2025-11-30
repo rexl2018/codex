@@ -1,7 +1,7 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::Prompt;
+use crate::client_common::MODEL_STREAM_IDLE_TIMEOUT;
 use crate::client_common::ResponseEvent;
 use crate::codex::Session;
 use crate::codex::TurnContext;
@@ -33,7 +33,6 @@ use tracing::error;
 pub const SUMMARIZATION_PROMPT: &str = include_str!("../templates/compact/prompt.md");
 pub const SUMMARY_PREFIX: &str = include_str!("../templates/compact/summary_prefix.md");
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
-const COMPACT_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub(crate) async fn should_use_remote_compact_task(session: &Session) -> bool {
     session
@@ -567,14 +566,9 @@ async fn drain_to_completed(
 ) -> CodexResult<()> {
     let mut stream = turn_context.client.clone().stream(prompt).await?;
     loop {
-        let maybe_event = timeout(COMPACT_STREAM_IDLE_TIMEOUT, stream.next())
+        let maybe_event = timeout(MODEL_STREAM_IDLE_TIMEOUT, stream.next())
             .await
-            .map_err(|_| {
-                CodexErr::Stream(
-                    "timeout waiting for SSE event during compaction".to_string(),
-                    None,
-                )
-            })?;
+            .map_err(|_| CodexErr::Stream("timeout waiting for SSE event".to_string(), None))?;
         let Some(event) = maybe_event else {
             return Err(CodexErr::Stream(
                 "stream closed before response.completed".into(),
