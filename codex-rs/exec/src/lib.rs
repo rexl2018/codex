@@ -391,24 +391,49 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
         });
     }
 
-    // Package images and prompt into a single user input turn.
-    let mut items: Vec<UserInput> = images
-        .into_iter()
-        .map(|path| UserInput::LocalImage { path })
-        .collect();
-    items.push(UserInput::Text { text: prompt });
-    let initial_prompt_task_id = conversation
-        .submit(Op::UserTurn {
-            items,
-            cwd: default_cwd,
-            approval_policy: default_approval_policy,
-            sandbox_policy: default_sandbox_policy,
-            model: default_model,
-            effort: default_effort,
-            summary: default_summary,
-            final_output_json_schema: output_schema,
-        })
-        .await?;
+    let initial_prompt_task_id = if let Some(stripped) = prompt.strip_prefix('!') {
+        let command = stripped.trim();
+        if command.is_empty() {
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!("No shell command provided after '!'. Provide a command, e.g. '!pwd'.");
+            }
+            std::process::exit(1);
+        }
+        if !images.is_empty() {
+            #[allow(clippy::print_stderr)]
+            {
+                eprintln!(
+                    "Shell commands cannot include attached images. Remove --image arguments or drop the '!'."
+                );
+            }
+            std::process::exit(1);
+        }
+        conversation
+            .submit(Op::RunUserShellCommand {
+                command: command.to_string(),
+            })
+            .await?
+    } else {
+        // Package images and prompt into a single user input turn.
+        let mut items: Vec<UserInput> = images
+            .into_iter()
+            .map(|path| UserInput::LocalImage { path })
+            .collect();
+        items.push(UserInput::Text { text: prompt });
+        conversation
+            .submit(Op::UserTurn {
+                items,
+                cwd: default_cwd,
+                approval_policy: default_approval_policy,
+                sandbox_policy: default_sandbox_policy,
+                model: default_model,
+                effort: default_effort,
+                summary: default_summary,
+                final_output_json_schema: output_schema,
+            })
+            .await?
+    };
     info!("Sent prompt with event ID: {initial_prompt_task_id}");
 
     // Run the loop until the task is complete.
