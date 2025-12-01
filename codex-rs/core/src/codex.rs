@@ -1501,11 +1501,14 @@ mod handlers {
     use crate::tasks::RegularTask;
     use crate::tasks::UndoTask;
     use crate::tasks::UserShellCommandTask;
+    use codex_git::restore_ghost_commit;
     use codex_protocol::custom_prompts::CustomPrompt;
+    use codex_protocol::models::ResponseItem;
     use codex_protocol::protocol::CodexErrorInfo;
     use codex_protocol::protocol::ErrorEvent;
     use codex_protocol::protocol::Event;
     use codex_protocol::protocol::EventMsg;
+    use codex_protocol::protocol::HistoryAction;
     use codex_protocol::protocol::ListCustomPromptsResponseEvent;
     use codex_protocol::protocol::Op;
     use codex_protocol::protocol::ReviewDecision;
@@ -1518,6 +1521,7 @@ mod handlers {
     use codex_rmcp_client::ElicitationResponse;
     use mcp_types::RequestId;
     use std::sync::Arc;
+    use tokio::task::block_in_place;
     use tracing::info;
     use tracing::warn;
 
@@ -1816,38 +1820,36 @@ mod handlers {
         .await;
     }
 
-    pub async fn manage_history(
-        sess: &Arc<Session>,
-        sub_id: String,
-        action: codex_protocol::protocol::HistoryAction,
-    ) {
-        if let codex_protocol::protocol::HistoryAction::Compact { start, end } = action {
-            let turn_context = sess
-                .new_turn_with_sub_id(sub_id, SessionSettingsUpdate::default())
+    pub async fn manage_history(sess: &Arc<Session>, sub_id: String, action: HistoryAction) {
+        let (content, replacement_history) = match action {
+            HistoryAction::Compact { start, end } => {
+                let turn_context = sess
+                    .new_turn_with_sub_id(sub_id, SessionSettingsUpdate::default())
+                    .await;
+
+                sess.spawn_task(
+                    Arc::clone(&turn_context),
+                    vec![UserInput::Text {
+                        text: turn_context.compact_prompt().to_string(),
+                    }],
+                    CompactTask {
+                        range: Some((start, end)),
+                    },
+                )
                 .await;
-
-            sess.spawn_task(
-                Arc::clone(&turn_context),
-                vec![UserInput::Text {
-                    text: turn_context.compact_prompt().to_string(),
-                }],
-                CompactTask {
-                    range: Some((start, end)),
-                },
-            )
-            .await;
-            return;
-        }
-
-        let (content, replacement_history) = {
-            let mut state = sess.state.lock().await;
-            let output = state.history.handle_history_action(action);
-            let replacement_history = if output.history_changed {
-                Some(state.history.get_history())
-            } else {
-                None
-            };
-            (output.content, replacement_history)
+                return;
+            }
+            HistoryAction::Undo { start } => history_undo(sess, start).await,
+            other => {
+                let mut state = sess.state.lock().await;
+                let output = state.history.handle_history_action(other);
+                let replacement_history = if output.history_changed {
+                    Some(state.history.get_history())
+                } else {
+                    None
+                };
+                (output.content, replacement_history)
+            }
         };
 
         if let Some(history) = replacement_history {
@@ -1863,6 +1865,78 @@ mod handlers {
             msg: EventMsg::HistoryView(codex_protocol::protocol::HistoryViewEvent { content }),
         };
         sess.send_event_raw(event).await;
+    }
+
+    async fn history_undo(
+        sess: &Arc<Session>,
+        start: Option<usize>,
+    ) -> (String, Option<Vec<ResponseItem>>) {
+        let mut state = sess.state.lock().await;
+        let history = state.history.get_history();
+        if history.is_empty() {
+            return ("History is empty; nothing to undo.".to_string(), None);
+        }
+
+        let len = history.len();
+        let start_index = start.unwrap_or(len);
+        if start_index == 0 || start_index > len {
+            return (format!("Invalid index: {start_index}"), None);
+        }
+
+        let items_to_remove: Vec<ResponseItem> = history[(start_index - 1)..].to_vec();
+        if items_to_remove.is_empty() {
+            return ("Nothing to undo.".to_string(), None);
+        }
+
+        let end_index = start_index + items_to_remove.len() - 1;
+        let repo_root = state.session_configuration.cwd.clone();
+        let mut restored_snapshots = Vec::new();
+
+        for item in items_to_remove.iter().rev() {
+            if let ResponseItem::GhostSnapshot { ghost_commit } = item {
+                let snapshot = ghost_commit.clone();
+                let commit_id = snapshot.id().to_string();
+                let short_id: String = commit_id.chars().take(7).collect();
+                let repo = repo_root.clone();
+                match block_in_place(move || restore_ghost_commit(repo.as_path(), &snapshot)) {
+                    Ok(()) => {
+                        restored_snapshots.push(short_id);
+                    }
+                    Err(err) => {
+                        return (
+                            format!("Failed to restore snapshot {commit_id}: {err}"),
+                            None,
+                        );
+                    }
+                }
+            }
+        }
+
+        let delete_action = HistoryAction::DeleteRange {
+            start: start_index,
+            end: end_index,
+        };
+        let delete_output = state.history.handle_history_action(delete_action);
+        if !delete_output.history_changed {
+            return (delete_output.content, None);
+        }
+        let replacement_history = state.history.get_history();
+
+        let mut content = if start_index == end_index {
+            format!("Undid item #{start_index}.")
+        } else {
+            format!("Undid items #{start_index} to #{end_index}.")
+        };
+        if !restored_snapshots.is_empty() {
+            content.push(' ');
+            let joined = restored_snapshots.join(", ");
+            content.push_str(&format!(
+                "Restored {} snapshot(s): {joined}.",
+                restored_snapshots.len()
+            ));
+        }
+
+        (content, Some(replacement_history))
     }
 }
 

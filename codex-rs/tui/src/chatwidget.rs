@@ -3802,6 +3802,21 @@ fn parse_hist_args(args: &str) -> Result<HistoryAction, String> {
                 .map_err(|_| "Invalid end index".to_string())?;
             Ok(HistoryAction::Compact { start, end })
         }
+        "undo" => {
+            if args.len() > 2 {
+                return Err("Usage: /hist undo [<index>]".to_string());
+            }
+            let start = if args.len() == 2 {
+                Some(
+                    args[1]
+                        .parse::<usize>()
+                        .map_err(|_| "Invalid index".to_string())?,
+                )
+            } else {
+                None
+            };
+            Ok(HistoryAction::Undo { start })
+        }
         _ => Err(format!("Unknown subcommand: {}", args[0])),
     }
 }
@@ -3903,6 +3918,18 @@ mod hist_tests {
             })
         );
         assert!(parse_hist_args("del-after").is_err());
+
+        // undo
+        assert_eq!(
+            parse_hist_args("undo"),
+            Ok(HistoryAction::Undo { start: None })
+        );
+        assert_eq!(
+            parse_hist_args("undo 3"),
+            Ok(HistoryAction::Undo { start: Some(3) })
+        );
+        assert!(parse_hist_args("undo abc").is_err());
+        assert!(parse_hist_args("undo 1 extra").is_err());
 
         assert!(parse_hist_args("unknown").is_err());
     }

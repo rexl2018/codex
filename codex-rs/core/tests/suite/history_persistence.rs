@@ -90,6 +90,79 @@ async fn deleting_history_persists_across_resume() {
     shutdown_conversation(&resumed).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn undo_history_range_persists_across_resume() {
+    skip_if_no_network!();
+
+    let server = start_mock_server().await;
+    let sse1 = sse(vec![
+        ev_assistant_message("m1", "assistant-one"),
+        ev_completed("r1"),
+    ]);
+    let sse2 = sse(vec![
+        ev_assistant_message("m2", "assistant-two"),
+        ev_completed("r2"),
+    ]);
+    mount_sse_sequence(&server, vec![sse1, sse2]).await;
+
+    let home = TempDir::new().unwrap();
+    let mut config = load_default_config_for_test(&home);
+    let model_provider = ModelProviderInfo {
+        base_url: Some(format!("{}/v1", server.uri())),
+        ..built_in_model_providers()["openai"].clone()
+    };
+    config.model_provider = model_provider;
+
+    let manager = ConversationManager::with_auth(CodexAuth::from_api_key("dummy"));
+    let conversation = manager
+        .new_conversation(config.clone())
+        .await
+        .expect("spawn conversation")
+        .conversation;
+    let rollout_path = conversation.rollout_path();
+
+    submit_user_text(&conversation, "first turn").await;
+    submit_user_text(&conversation, "second turn").await;
+
+    let history_view = fetch_history_view(&conversation).await;
+    let assistant_one_index = find_index(&history_view, "assistant-one");
+
+    undo_history_from(&conversation, Some(assistant_one_index)).await;
+
+    let post_undo_view = fetch_history_view(&conversation).await;
+    assert!(
+        !post_undo_view.contains("assistant-one"),
+        "expected undo to remove assistant-one\n{post_undo_view}"
+    );
+    assert!(
+        !post_undo_view.contains("assistant-two"),
+        "expected undo to remove assistant-two\n{post_undo_view}"
+    );
+
+    shutdown_conversation(&conversation).await;
+
+    let resume_auth =
+        codex_core::AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+    let resumed_manager = ConversationManager::with_auth(CodexAuth::from_api_key("dummy"));
+    let resumed = resumed_manager
+        .resume_conversation_from_rollout(config.clone(), rollout_path, resume_auth)
+        .await
+        .expect("resume conversation")
+        .conversation;
+
+    let resumed_view = fetch_history_view(&resumed).await;
+    assert!(
+        !resumed_view.contains("assistant-one"),
+        "assistant-one should remain removed after resume\n{resumed_view}"
+    );
+    assert!(
+        !resumed_view.contains("assistant-two"),
+        "assistant-two should remain removed after resume\n{resumed_view}"
+    );
+
+    shutdown_conversation(&resumed).await;
+}
+
 async fn submit_user_text(conversation: &Arc<CodexConversation>, text: &str) {
     conversation
         .submit(Op::UserInput {
@@ -119,13 +192,12 @@ async fn fetch_history_view(conversation: &Arc<CodexConversation>) -> String {
 
 fn find_index(view: &str, needle: &str) -> usize {
     for line in view.lines() {
-        if let Some((idx, rest)) = line.split_once(". ") {
-            if rest.contains(needle) {
+        if let Some((idx, rest)) = line.split_once(". ")
+            && rest.contains(needle) {
                 return idx
                     .parse()
                     .unwrap_or_else(|e| panic!("invalid index in history view: {line} ({e})"));
             }
-        }
     }
     panic!("needle {needle} not found in history view:\n{view}");
 }
@@ -137,6 +209,16 @@ async fn delete_history_entry(conversation: &Arc<CodexConversation>, index: usiz
         })
         .await
         .expect("delete history entry");
+    wait_for_event(conversation, |ev| matches!(ev, EventMsg::HistoryView(_))).await;
+}
+
+async fn undo_history_from(conversation: &Arc<CodexConversation>, start: Option<usize>) {
+    conversation
+        .submit(Op::ManageHistory {
+            action: HistoryAction::Undo { start },
+        })
+        .await
+        .expect("undo history range");
     wait_for_event(conversation, |ev| matches!(ev, EventMsg::HistoryView(_))).await;
 }
 

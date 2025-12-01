@@ -217,18 +217,40 @@ pub enum Op {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HistoryAction {
     ViewAll,
-    ViewLast { count: usize },
-    ViewAround { index: usize },
-    ViewItem { index: usize },
+    ViewLast {
+        count: usize,
+    },
+    ViewAround {
+        index: usize,
+    },
+    ViewItem {
+        index: usize,
+    },
     ViewSnapshots,
     ViewAssistant,
     ViewReasoning,
     ViewUser,
-    Delete { index: usize },
-    DeleteRange { start: usize, end: usize },
-    DeleteLast { count: usize },
-    DeleteBefore { index: usize },
-    Compact { start: usize, end: usize },
+    Delete {
+        index: usize,
+    },
+    DeleteRange {
+        start: usize,
+        end: usize,
+    },
+    DeleteLast {
+        count: usize,
+    },
+    DeleteBefore {
+        index: usize,
+    },
+    Compact {
+        start: usize,
+        end: usize,
+    },
+    Undo {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]

@@ -330,6 +330,9 @@ impl ContextManager {
                     HistoryActionOutput::unchanged(format!("Invalid index: {index}"))
                 }
             }
+            HistoryAction::Undo { .. } => {
+                HistoryActionOutput::unchanged("Undo must be handled by the session".to_string())
+            }
             HistoryAction::Compact { .. } => {
                 HistoryActionOutput::unchanged("Compaction is handled asynchronously.".to_string())
             }
@@ -523,11 +526,10 @@ fn reasoning_preview(
 
     if let Some(content_items) = content {
         for item in content_items {
-            if let ReasoningItemContent::ReasoningText { text } = item {
-                if !text.is_empty() {
+            if let ReasoningItemContent::ReasoningText { text } = item
+                && !text.is_empty() {
                     return Some(text.clone());
                 }
-            }
         }
     }
 
