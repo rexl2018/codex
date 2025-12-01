@@ -193,11 +193,12 @@ async fn fetch_history_view(conversation: &Arc<CodexConversation>) -> String {
 fn find_index(view: &str, needle: &str) -> usize {
     for line in view.lines() {
         if let Some((idx, rest)) = line.split_once(". ")
-            && rest.contains(needle) {
-                return idx
-                    .parse()
-                    .unwrap_or_else(|e| panic!("invalid index in history view: {line} ({e})"));
-            }
+            && rest.contains(needle)
+        {
+            return idx
+                .parse()
+                .unwrap_or_else(|e| panic!("invalid index in history view: {line} ({e})"));
+        }
     }
     panic!("needle {needle} not found in history view:\n{view}");
 }

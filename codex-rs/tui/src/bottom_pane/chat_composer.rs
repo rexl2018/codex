@@ -274,14 +274,14 @@ impl ChatComposer {
         self.footer_hint_override = items;
     }
 
-    /// Replace the entire composer content with `text` and reset cursor.
+    /// Replace the entire composer content with `text` and move the cursor to the end.
     pub(crate) fn set_text_content(&mut self, text: String) {
         // Clear any existing content, placeholders, and attachments first.
         self.textarea.set_text("");
         self.pending_pastes.clear();
         self.attached_images.clear();
         self.textarea.set_text(&text);
-        self.textarea.set_cursor(0);
+        self.textarea.set_cursor(text.len());
         self.sync_command_popup();
         self.sync_file_search_popup();
     }
@@ -1877,6 +1877,54 @@ mod tests {
             composer.history.navigate_up(&composer.app_event_tx),
             Some("draft text".to_string())
         );
+    }
+
+    #[test]
+    fn set_text_content_places_cursor_at_end() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        composer.set_text_content("some draft".to_string());
+
+        assert_eq!(composer.textarea.text(), "some draft");
+        assert_eq!(composer.textarea.cursor(), composer.textarea.text().len());
+    }
+
+    #[test]
+    fn history_navigation_continues_from_end_cursor() {
+        use crossterm::event::KeyCode;
+        use crossterm::event::KeyEvent;
+        use crossterm::event::KeyModifiers;
+
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            true,
+            sender,
+            false,
+            "Ask Codex to do anything".to_string(),
+            false,
+        );
+
+        composer.history.record_local_submission("first entry");
+        composer.history.record_local_submission("second entry");
+
+        let (_result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(composer.current_text(), "second entry");
+        assert_eq!(composer.textarea.cursor(), composer.textarea.text().len());
+
+        let (_result, _needs_redraw) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(composer.current_text(), "first entry");
+        assert_eq!(composer.textarea.cursor(), composer.textarea.text().len());
     }
 
     #[test]

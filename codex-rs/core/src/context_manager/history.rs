@@ -527,9 +527,10 @@ fn reasoning_preview(
     if let Some(content_items) = content {
         for item in content_items {
             if let ReasoningItemContent::ReasoningText { text } = item
-                && !text.is_empty() {
-                    return Some(text.clone());
-                }
+                && !text.is_empty()
+            {
+                return Some(text.clone());
+            }
         }
     }
 
