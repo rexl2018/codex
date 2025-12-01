@@ -20,6 +20,7 @@ use codex_core::protocol::AgentReasoningRawContentDeltaEvent;
 use codex_core::protocol::AgentReasoningRawContentEvent;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::BackgroundEventEvent;
+use codex_core::protocol::CodexErrorInfo;
 use codex_core::protocol::DeprecationNoticeEvent;
 use codex_core::protocol::ErrorEvent;
 use codex_core::protocol::Event;
@@ -893,11 +894,54 @@ impl ChatWidget {
         }
     }
 
-    fn on_stream_error(&mut self, message: String) {
+    fn on_stream_error(&mut self, message: String, codex_error_info: Option<CodexErrorInfo>) {
         if self.retry_status_header.is_none() {
             self.retry_status_header = Some(self.current_status_header.clone());
         }
-        self.set_status_header(message);
+        let header = Self::format_stream_error_header(message, codex_error_info);
+        self.set_status_header(header);
+    }
+
+    fn format_stream_error_header(
+        message: String,
+        codex_error_info: Option<CodexErrorInfo>,
+    ) -> String {
+        codex_error_info
+            .map(|info| format!("{message} – {}", Self::describe_codex_error(info)))
+            .unwrap_or(message)
+    }
+
+    fn describe_codex_error(info: CodexErrorInfo) -> String {
+        match info {
+            CodexErrorInfo::ContextWindowExceeded => "Context window exceeded".to_string(),
+            CodexErrorInfo::UsageLimitExceeded => "Usage limit exceeded".to_string(),
+            CodexErrorInfo::HttpConnectionFailed { http_status_code } => {
+                Self::format_error_with_status("HTTP connection failed", http_status_code)
+            }
+            CodexErrorInfo::ResponseStreamConnectionFailed { http_status_code } => {
+                Self::format_error_with_status(
+                    "Response stream connection failed",
+                    http_status_code,
+                )
+            }
+            CodexErrorInfo::InternalServerError => "Internal server error".to_string(),
+            CodexErrorInfo::Unauthorized => "Unauthorized".to_string(),
+            CodexErrorInfo::BadRequest => "Bad request".to_string(),
+            CodexErrorInfo::SandboxError => "Sandbox error".to_string(),
+            CodexErrorInfo::ResponseStreamDisconnected { http_status_code } => {
+                Self::format_error_with_status("Response stream disconnected", http_status_code)
+            }
+            CodexErrorInfo::ResponseTooManyFailedAttempts { http_status_code } => {
+                Self::format_error_with_status("Response retries exhausted", http_status_code)
+            }
+            CodexErrorInfo::Other => "Unknown error".to_string(),
+        }
+    }
+
+    fn format_error_with_status(label: &str, http_status_code: Option<u16>) -> String {
+        http_status_code
+            .map(|code| format!("{label} (HTTP {code})"))
+            .unwrap_or_else(|| label.to_string())
     }
 
     /// Periodic tick to commit at most one queued line to history with a small delay,
@@ -2130,9 +2174,10 @@ impl ChatWidget {
             }
             EventMsg::UndoStarted(ev) => self.on_undo_started(ev),
             EventMsg::UndoCompleted(ev) => self.on_undo_completed(ev),
-            EventMsg::StreamError(StreamErrorEvent { message, .. }) => {
-                self.on_stream_error(message)
-            }
+            EventMsg::StreamError(StreamErrorEvent {
+                message,
+                codex_error_info,
+            }) => self.on_stream_error(message, codex_error_info),
             EventMsg::UserMessage(ev) => {
                 if from_replay {
                     self.on_user_message_event(ev);

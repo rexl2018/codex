@@ -2705,7 +2705,36 @@ fn stream_error_updates_status_indicator() {
         .bottom_pane
         .status_widget()
         .expect("status indicator should be visible");
-    assert_eq!(status.header(), msg);
+    assert_eq!(status.header(), "Reconnecting... 2/5 – Unknown error");
+}
+
+#[test]
+fn stream_error_shows_http_status_code() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+    chat.bottom_pane.set_task_running(true);
+    chat.handle_codex_event(Event {
+        id: "sub-1".into(),
+        msg: EventMsg::StreamError(StreamErrorEvent {
+            message: "Reconnecting... 6/8".to_string(),
+            codex_error_info: Some(CodexErrorInfo::HttpConnectionFailed {
+                http_status_code: Some(502),
+            }),
+        }),
+    });
+
+    let cells = drain_insert_history(&mut rx);
+    assert!(
+        cells.is_empty(),
+        "expected no history cell for StreamError event"
+    );
+    let status = chat
+        .bottom_pane
+        .status_widget()
+        .expect("status indicator should be visible");
+    assert_eq!(
+        status.header(),
+        "Reconnecting... 6/8 – HTTP connection failed (HTTP 502)"
+    );
 }
 
 #[test]
