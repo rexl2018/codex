@@ -88,6 +88,20 @@ codex --sandbox danger-full-access
 
 The same setting can be persisted in `~/.codex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.
 
+### Managing the session history with `/hist`
+
+The fullscreen TUI exposes a `/hist` slash command that lets you inspect and curate the entries stored in `~/.codex/history.jsonl` (see `core/src/message_history.rs`). Type the command in the input box just like any other prompt—Codex will intercept it locally without sending anything to the model. Indices in every subcommand are **1-based** and match the numbering rendered in the history view.
+
+- `/hist ls [snapshots|assistant|reasoning|user]` — Shows the full history by default, or filters down to snapshots (saved Git states), assistant replies, reasoning traces, or user messages only.
+- `/hist ll [count]` — Prints the last `count` items (defaults to 10) so you can spot recent artifacts quickly.
+- `/hist la <index>` — Shows a small window around the indexed entry, which is useful when you only remember roughly where an event happened.
+- `/hist view <index>` — Expands a single entry with its full JSON payload and tool outputs.
+- `/hist del <index> | del-range <start>,<end> | del-before <index> | del-after <index> | del-last [count]` — Removes one item, a contiguous range, everything up to an index (inclusive), everything after an index, or the last *N* items. Use this to prune sensitive data before exporting sessions.
+- `/hist compact <start>,<end>` — Spawns a background compaction task that asks Codex to summarize and collapse a noisy span of turns. When it finishes, the resulting summary replaces the selected range.
+- `/hist undo [<index>]` — Reverts history edits starting at `index` (or the most recent edit if omitted). Any associated `GhostSnapshot` entries restore the saved working tree state as part of the undo.
+
+Every destructive action emits a confirmation message in the transcript, and actions that mutate the stored history also rewrite the persisted rollout so the TUI, the `codex exec` CLI, and external integrations stay in sync.
+
 ## Code Organization
 
 This folder is the root of a Cargo workspace. It contains quite a bit of experimental code, but here are the key crates:
