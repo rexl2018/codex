@@ -102,6 +102,18 @@ The fullscreen TUI exposes a `/hist` slash command that lets you inspect and cur
 
 Every destructive action emits a confirmation message in the transcript, and actions that mutate the stored history also rewrite the persisted rollout so the TUI, the `codex exec` CLI, and external integrations stay in sync.
 
+### Managing chat sessions with `/chat`
+
+Use `/chat` when you need to inspect or manipulate the persisted chat rollouts that live under `~/.codex`. Just like `/hist`, type the command straight into the composer—Codex intercepts it locally:
+
+- `/chat ls` — Lists the 20 most recent chat sessions along with their creation times, followed by any saved checkpoints found in `~/.codex/checkpoints`.
+- `/chat delete <id>` — Permanently removes the session whose UUID matches `id`.
+- `/chat resume <tag>` — Restores a previously saved checkpoint (looked up by tag) or an archived session (looked up by UUID) and makes it the active conversation.
+- `/chat share [path]` — Copies the currently loaded session to `path` (defaults to `codex-conversation-<timestamp>.json` in the CWD) so you can hand it off to other tools.
+- `/chat save <tag>` — Snapshots the active session into `~/.codex/checkpoints/<hash>-<project>-<tag>.json`, letting you return to that state later via `/chat resume`.
+
+Destructive operations confirm their outcome in the transcript, and Codex keeps the on-disk rollout synchronized so the CLI, TUI, and external integrations all see the same session state.
+
 ## Code Organization
 
 This folder is the root of a Cargo workspace. It contains quite a bit of experimental code, but here are the key crates:
