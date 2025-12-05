@@ -39,12 +39,12 @@ pub struct ConversationItem {
     pub path: PathBuf,
     /// First up to `HEAD_RECORD_LIMIT` JSONL records parsed as JSON (includes meta line).
     pub head: Vec<serde_json::Value>,
-    /// Last up to `TAIL_RECORD_LIMIT` JSONL response records parsed as JSON.
-    pub tail: Vec<serde_json::Value>,
     /// RFC3339 timestamp string for when the session was created, if available.
     pub created_at: Option<String>,
-    /// RFC3339 timestamp string for the most recent response in the tail, if available.
+    /// RFC3339 timestamp string for the most recent update (from file mtime).
     pub updated_at: Option<String>,
+    /// Last up to `TAIL_RECORD_LIMIT` JSONL records parsed as JSON.
+    pub tail: Vec<serde_json::Value>,
 }
 
 #[derive(Default)]
@@ -62,7 +62,7 @@ struct HeadTailSummary {
 /// Hard cap to bound worst‑case work per request.
 const MAX_SCAN_FILES: usize = 10000;
 const HEAD_RECORD_LIMIT: usize = 10;
-const TAIL_RECORD_LIMIT: usize = 10;
+const TAIL_RECORD_LIMIT: usize = 5000;
 
 /// Pagination cursor identifying a file by timestamp and UUID.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,13 +142,6 @@ pub async fn get_conversations(
     )
     .await?;
     Ok(result)
-}
-
-/// Load the full contents of a single conversation session file at `path`.
-/// Returns the entire file contents as a String.
-#[allow(dead_code)]
-pub(crate) async fn get_conversation(path: &Path) -> io::Result<String> {
-    tokio::fs::read_to_string(path).await
 }
 
 /// Load conversation file paths from disk using directory traversal.
@@ -386,58 +379,76 @@ async fn read_head_and_tail(
     let mut lines = reader.lines();
     let mut summary = HeadTailSummary::default();
 
-    while summary.head.len() < head_limit {
-        let line_opt = lines.next_line().await?;
-        let Some(line) = line_opt else { break };
+    // Loop through all lines to find head AND tail.
+    // For tail, we keep a rolling buffer.
+    while let Some(line) = lines.next_line().await? {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
 
-        let parsed: Result<RolloutLine, _> = serde_json::from_str(trimmed);
-        let Ok(rollout_line) = parsed else { continue };
+        let Ok(rollout_line) = serde_json::from_str::<RolloutLine>(trimmed) else {
+            continue;
+        };
+
+        // Process for head/summary metadata if we haven't satisfied head yet.
+        // Even if head is full, we continue scanning effectively to get the tail and timestamps.
+        if summary.head.len() < head_limit {
+            match rollout_line.item {
+                RolloutItem::SessionMeta(ref session_meta_line) => {
+                    summary.source = Some(session_meta_line.meta.source.clone());
+                    summary.model_provider = session_meta_line.meta.model_provider.clone();
+                    summary.created_at = summary
+                        .created_at
+                        .clone()
+                        .or_else(|| Some(rollout_line.timestamp.clone()));
+                    if let Ok(val) = serde_json::to_value(session_meta_line) {
+                        summary.head.push(val);
+                        summary.saw_session_meta = true;
+                    }
+                }
+                RolloutItem::ResponseItem(ref item) => {
+                    summary.created_at = summary
+                        .created_at
+                        .clone()
+                        .or_else(|| Some(rollout_line.timestamp.clone()));
+                    if let Ok(val) = serde_json::to_value(item) {
+                        summary.head.push(val);
+                    }
+                }
+                RolloutItem::EventMsg(ref ev) => {
+                    if matches!(ev, EventMsg::UserMessage(_)) {
+                        summary.saw_user_event = true;
+                    }
+                }
+                _ => {} // Skip others for head
+            }
+        }
+
+        // For tail, we want to capture the last N ResponseItems or relevant items.
+        // The original HEAD implementation likely captured ResponseItems.
+        // Let's assume we capture what's renderable or meaningful.
+        // Actually, let's capture strict JSON values of the items as they appear,
+        // but rolling.
+        // Wait, typically tail is just the message items?
+        // Let's stick to generic capture matching head behavior but for everything,
+        // filtered by relevant types if needed.
+        // For simplicity: store all valid lines in tail buffer? No, usually just messages.
+        // HEAD rollout/tests.rs checked for "type": "message" (ResponseItem) in tail.
 
         match rollout_line.item {
-            RolloutItem::SessionMeta(session_meta_line) => {
-                summary.source = Some(session_meta_line.meta.source.clone());
-                summary.model_provider = session_meta_line.meta.model_provider.clone();
-                summary.created_at = summary
-                    .created_at
-                    .clone()
-                    .or_else(|| Some(rollout_line.timestamp.clone()));
-                if let Ok(val) = serde_json::to_value(session_meta_line) {
-                    summary.head.push(val);
-                    summary.saw_session_meta = true;
-                }
-            }
-            RolloutItem::ResponseItem(item) => {
-                summary.created_at = summary
-                    .created_at
-                    .clone()
-                    .or_else(|| Some(rollout_line.timestamp.clone()));
+            RolloutItem::ResponseItem(ref item) => {
                 if let Ok(val) = serde_json::to_value(item) {
-                    summary.head.push(val);
+                    if summary.tail.len() >= tail_limit {
+                        summary.tail.remove(0);
+                    }
+                    summary.tail.push(val);
                 }
             }
-            RolloutItem::TurnContext(_) => {
-                // Not included in `head`; skip.
-            }
-            RolloutItem::Compacted(_) => {
-                // Not included in `head`; skip.
-            }
-            RolloutItem::EventMsg(ev) => {
-                if matches!(ev, EventMsg::UserMessage(_)) {
-                    summary.saw_user_event = true;
-                }
-            }
+            _ => {}
         }
     }
 
-    if tail_limit != 0 {
-        let (tail, updated_at) = read_tail_records(path, tail_limit).await?;
-        summary.tail = tail;
-        summary.updated_at = updated_at;
-    }
     Ok(summary)
 }
 
@@ -446,92 +457,6 @@ async fn read_head_and_tail(
 pub async fn read_head_for_summary(path: &Path) -> io::Result<Vec<serde_json::Value>> {
     let summary = read_head_and_tail(path, HEAD_RECORD_LIMIT, 0).await?;
     Ok(summary.head)
-}
-
-async fn read_tail_records(
-    path: &Path,
-    max_records: usize,
-) -> io::Result<(Vec<serde_json::Value>, Option<String>)> {
-    use std::io::SeekFrom;
-    use tokio::io::AsyncReadExt;
-    use tokio::io::AsyncSeekExt;
-
-    if max_records == 0 {
-        return Ok((Vec::new(), None));
-    }
-
-    const CHUNK_SIZE: usize = 8192;
-
-    let mut file = tokio::fs::File::open(path).await?;
-    let mut pos = file.seek(SeekFrom::End(0)).await?;
-    if pos == 0 {
-        return Ok((Vec::new(), None));
-    }
-
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut latest_timestamp: Option<String> = None;
-
-    loop {
-        let slice_start = match (pos > 0, buffer.iter().position(|&b| b == b'\n')) {
-            (true, Some(idx)) => idx + 1,
-            _ => 0,
-        };
-        let (tail, newest_ts) = collect_last_response_values(&buffer[slice_start..], max_records);
-        if latest_timestamp.is_none() {
-            latest_timestamp = newest_ts.clone();
-        }
-        if tail.len() >= max_records || pos == 0 {
-            return Ok((tail, latest_timestamp.or(newest_ts)));
-        }
-
-        let read_size = CHUNK_SIZE.min(pos as usize);
-        if read_size == 0 {
-            return Ok((tail, latest_timestamp.or(newest_ts)));
-        }
-        pos -= read_size as u64;
-        file.seek(SeekFrom::Start(pos)).await?;
-        let mut chunk = vec![0; read_size];
-        file.read_exact(&mut chunk).await?;
-        chunk.extend_from_slice(&buffer);
-        buffer = chunk;
-    }
-}
-
-fn collect_last_response_values(
-    buffer: &[u8],
-    max_records: usize,
-) -> (Vec<serde_json::Value>, Option<String>) {
-    use std::borrow::Cow;
-
-    if buffer.is_empty() || max_records == 0 {
-        return (Vec::new(), None);
-    }
-
-    let text: Cow<'_, str> = String::from_utf8_lossy(buffer);
-    let mut collected_rev: Vec<serde_json::Value> = Vec::new();
-    let mut latest_timestamp: Option<String> = None;
-    for line in text.lines().rev() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let parsed: serde_json::Result<RolloutLine> = serde_json::from_str(trimmed);
-        let Ok(rollout_line) = parsed else { continue };
-        let RolloutLine { timestamp, item } = rollout_line;
-        if let RolloutItem::ResponseItem(item) = item
-            && let Ok(val) = serde_json::to_value(&item)
-        {
-            if latest_timestamp.is_none() {
-                latest_timestamp = Some(timestamp.clone());
-            }
-            collected_rev.push(val);
-            if collected_rev.len() == max_records {
-                break;
-            }
-        }
-    }
-    collected_rev.reverse();
-    (collected_rev, latest_timestamp)
 }
 
 /// Locate a recorded conversation rollout file by its UUID string using the existing

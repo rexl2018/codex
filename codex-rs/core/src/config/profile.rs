@@ -3,10 +3,10 @@ use std::path::PathBuf;
 
 use crate::conversation_build::ConversationBuildStrategy;
 use crate::protocol::AskForApproval;
-use codex_protocol::config_types::ReasoningEffort;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::Verbosity;
+use codex_protocol::openai_models::ReasoningEffort;
 
 /// Collection of common configuration options that a user can define as a unit
 /// in `config.toml`.

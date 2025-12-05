@@ -20,9 +20,9 @@ use codex_api::error::ApiError;
 use codex_app_server_protocol::AuthMode;
 use codex_otel::otel_event_manager::OtelEventManager;
 use codex_protocol::ConversationId;
-use codex_protocol::config_types::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::SessionSource;
 use eventsource_stream::Event;
 use eventsource_stream::EventStreamError;
@@ -48,10 +48,10 @@ use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
 use crate::error::Result;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
-use crate::model_family::ModelFamily;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use crate::openai_model_info::get_model_info;
+use crate::openai_models::model_family::ModelFamily;
 use crate::tools::spec::create_tools_json_for_chat_completions_api;
 use crate::tools::spec::create_tools_json_for_responses_api;
 
@@ -59,6 +59,7 @@ use crate::tools::spec::create_tools_json_for_responses_api;
 pub struct ModelClient {
     config: Arc<Config>,
     auth_manager: Option<Arc<AuthManager>>,
+    model_family: ModelFamily,
     otel_event_manager: OtelEventManager,
     provider: ModelProviderInfo,
     conversation_id: ConversationId,
@@ -72,6 +73,7 @@ impl ModelClient {
     pub fn new(
         config: Arc<Config>,
         auth_manager: Option<Arc<AuthManager>>,
+        model_family: ModelFamily,
         otel_event_manager: OtelEventManager,
         provider: ModelProviderInfo,
         effort: Option<ReasoningEffortConfig>,
@@ -82,6 +84,7 @@ impl ModelClient {
         Self {
             config,
             auth_manager,
+            model_family,
             otel_event_manager,
             provider,
             conversation_id,
@@ -92,16 +95,18 @@ impl ModelClient {
     }
 
     pub fn get_model_context_window(&self) -> Option<i64> {
-        let pct = self.config.model_family.effective_context_window_percent;
+        let model_family = self.get_model_family();
+        let effective_context_window_percent = model_family.effective_context_window_percent;
         self.config
             .model_context_window
-            .or_else(|| get_model_info(&self.config.model_family).map(|info| info.context_window))
-            .map(|w| w.saturating_mul(pct) / 100)
+            .or_else(|| get_model_info(&model_family).map(|info| info.context_window))
+            .map(|w| w.saturating_mul(effective_context_window_percent) / 100)
     }
 
     pub fn get_auto_compact_token_limit(&self) -> Option<i64> {
+        let model_family = self.get_model_family();
         self.config.model_auto_compact_token_limit.or_else(|| {
-            get_model_info(&self.config.model_family).and_then(|info| info.auto_compact_token_limit)
+            get_model_info(&model_family).and_then(|info| info.auto_compact_token_limit)
         })
     }
 
@@ -151,9 +156,8 @@ impl ModelClient {
         }
 
         let auth_manager = self.auth_manager.clone();
-        let instructions = prompt
-            .get_full_instructions(&self.config.model_family)
-            .into_owned();
+        let model_family = self.get_model_family();
+        let instructions = prompt.get_full_instructions(&model_family).into_owned();
         let tools_json = create_tools_json_for_chat_completions_api(&prompt.tools)?;
         let formatted_input = prompt.get_formatted_input();
         let api_prompt = build_api_prompt(prompt, instructions, tools_json, formatted_input, true);
@@ -207,32 +211,29 @@ impl ModelClient {
         }
 
         let auth_manager = self.auth_manager.clone();
-        let instructions = prompt
-            .get_full_instructions(&self.config.model_family)
-            .into_owned();
+        let model_family = self.get_model_family();
+        let instructions = prompt.get_full_instructions(&model_family).into_owned();
         let tools_json: Vec<Value> = create_tools_json_for_responses_api(&prompt.tools)?;
         let formatted_input = prompt.get_formatted_input();
 
-        let reasoning = if self.config.model_family.supports_reasoning_summaries {
+        let reasoning = if model_family.supports_reasoning_summaries {
             Some(Reasoning {
-                effort: self
-                    .effort
-                    .or(self.config.model_family.default_reasoning_effort),
+                effort: self.effort.or(model_family.default_reasoning_effort),
                 summary: Some(self.summary),
             })
         } else {
             None
         };
 
-        let verbosity = if self.config.model_family.support_verbosity {
+        let verbosity = if model_family.support_verbosity {
             self.config
                 .model_verbosity
-                .or(self.config.model_family.default_verbosity)
+                .or(model_family.default_verbosity)
         } else {
             if self.config.model_verbosity.is_some() {
                 warn!(
                     "model_verbosity is set but ignored as the model does not support verbosity: {}",
-                    self.config.model_family.family
+                    model_family.family
                 );
             }
             None
@@ -335,7 +336,7 @@ impl ModelClient {
 
     /// Returns the currently configured model family.
     pub fn get_model_family(&self) -> ModelFamily {
-        self.config.model_family.clone()
+        self.model_family.clone()
     }
 
     /// Returns the current reasoning effort setting.
@@ -372,7 +373,7 @@ impl ModelClient {
             .with_telemetry(Some(request_telemetry));
 
         let instructions = prompt
-            .get_full_instructions(&self.config.model_family)
+            .get_full_instructions(&self.get_model_family())
             .into_owned();
         let payload = ApiCompactionInput {
             model: &self.config.model,

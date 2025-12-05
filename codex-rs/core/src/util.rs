@@ -1,3 +1,5 @@
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use rand::Rng;
@@ -15,11 +17,11 @@ pub(crate) fn backoff(attempt: u64) -> Duration {
     Duration::from_millis(millis.min(60_000))
 }
 
-pub(crate) fn error_or_panic(message: String) {
+pub(crate) fn error_or_panic(message: impl std::string::ToString) {
     if cfg!(debug_assertions) || env!("CARGO_PKG_VERSION").contains("alpha") {
-        panic!("{message}");
+        panic!("{}", message.to_string());
     } else {
-        error!("{message}");
+        error!("{}", message.to_string());
     }
 }
 
@@ -36,6 +38,14 @@ pub(crate) fn try_parse_error_message(text: &str) -> String {
         return "Unknown error".to_string();
     }
     text.to_string()
+}
+
+pub fn resolve_path(base: &Path, path: &PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path.clone()
+    } else {
+        base.join(path)
+    }
 }
 
 #[cfg(test)]

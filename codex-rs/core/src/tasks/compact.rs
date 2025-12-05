@@ -27,7 +27,7 @@ impl SessionTask for CompactTask {
         _cancellation_token: CancellationToken,
     ) -> Option<String> {
         let session = session.clone_session();
-        if crate::compact::should_use_remote_compact_task(&session).await {
+        if crate::compact::should_use_remote_compact_task(&session) {
             // Remote compaction does not support range yet, fallback or ignore range?
             // For now, let's assume remote compaction is full history only.
             // If range is set, we might want to force local compaction or error.
