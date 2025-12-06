@@ -1694,6 +1694,16 @@ impl ChatWidget {
             SlashCommand::Copy => {
                 self.app_event_tx.send(AppEvent::CopyLastAgentMessage(None));
             }
+            SlashCommand::AddDir => {
+                let input_string = self.bottom_pane.composer_text();
+                let input = input_string.trim();
+                // We expect the input to be "/add-dir <path>"
+                if let Some(arg) = input.split_whitespace().nth(1) {
+                     self.app_event_tx.send(AppEvent::AddWritableDir(std::path::PathBuf::from(arg)));
+                } else {
+                     self.add_error_message("Usage: /add-dir <path>".to_string());
+                }
+            }
         }
     }
 

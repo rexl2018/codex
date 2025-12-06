@@ -34,6 +34,7 @@ pub enum SlashCommand {
     Hist,
     Chat,
     Copy,
+    AddDir,
 }
 
 impl SlashCommand {
@@ -61,6 +62,7 @@ impl SlashCommand {
             SlashCommand::TestApproval => "test approval request",
             SlashCommand::Hist => "manage conversation history (view, delete, etc.)",
             SlashCommand::Chat => "manage chat sessions (list, resume, delete, share)",
+            SlashCommand::AddDir => "add a directory to the writable allowlist for this session",
         }
     }
 
@@ -95,6 +97,7 @@ impl SlashCommand {
             SlashCommand::Hist => true,
             SlashCommand::Chat => true,
             SlashCommand::Copy => true,
+            SlashCommand::AddDir => true,
         }
     }
 

@@ -11,7 +11,7 @@ use std::cell::UnsafeCell;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::num::NonZero;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -102,6 +102,7 @@ pub async fn run_main<T: Reporter>(
         &pattern_text,
         limit,
         &search_directory,
+        Vec::new(),
         exclude,
         threads,
         cancel_flag,
@@ -128,6 +129,7 @@ pub fn run(
     pattern_text: &str,
     limit: NonZero<usize>,
     search_directory: &Path,
+    additional_paths: Vec<PathBuf>,
     exclude: Vec<String>,
     threads: NonZero<usize>,
     cancel_flag: Arc<AtomicBool>,
@@ -155,6 +157,9 @@ pub fn run(
     // Use the same tree-walker library that ripgrep uses. We use it directly so
     // that we can leverage the parallelism it provides.
     let mut walk_builder = WalkBuilder::new(search_directory);
+    for path in additional_paths {
+        walk_builder.add(path);
+    }
     walk_builder
         .threads(num_walk_builder_threads)
         // Allow hidden entries.

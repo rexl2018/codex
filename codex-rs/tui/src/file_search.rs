@@ -58,6 +58,9 @@ struct SearchState {
 
     /// If there is an active search, this will be the query being searched.
     active_search: Option<ActiveSearch>,
+
+    /// Additional paths to include in the search.
+    additional_paths: Vec<PathBuf>,
 }
 
 struct ActiveSearch {
@@ -72,9 +75,18 @@ impl FileSearchManager {
                 latest_query: String::new(),
                 is_search_scheduled: false,
                 active_search: None,
+                additional_paths: Vec::new(),
             })),
             search_dir,
             app_tx: tx,
+        }
+    }
+
+    pub fn add_search_path(&self, path: PathBuf) {
+        #[expect(clippy::unwrap_used)]
+        let mut st = self.state.lock().unwrap();
+        if !st.additional_paths.contains(&path) {
+            st.additional_paths.push(path);
         }
     }
 
@@ -133,21 +145,23 @@ impl FileSearchManager {
             // latest query.
             let cancellation_token = Arc::new(AtomicBool::new(false));
             let token = cancellation_token.clone();
-            let query = {
+            let (query, additional_paths) = {
                 #[expect(clippy::unwrap_used)]
                 let mut st = state.lock().unwrap();
                 let query = st.latest_query.clone();
+                let additional_paths = st.additional_paths.clone();
                 st.is_search_scheduled = false;
                 st.active_search = Some(ActiveSearch {
                     query: query.clone(),
                     cancellation_token: token,
                 });
-                query
+                (query, additional_paths)
             };
 
             FileSearchManager::spawn_file_search(
                 query,
                 search_dir,
+                additional_paths,
                 tx_clone,
                 cancellation_token,
                 state,
@@ -158,6 +172,7 @@ impl FileSearchManager {
     fn spawn_file_search(
         query: String,
         search_dir: PathBuf,
+        additional_paths: Vec<PathBuf>,
         tx: AppEventSender,
         cancellation_token: Arc<AtomicBool>,
         search_state: Arc<Mutex<SearchState>>,
@@ -168,6 +183,7 @@ impl FileSearchManager {
                 &query,
                 MAX_FILE_SEARCH_RESULTS,
                 &search_dir,
+                additional_paths,
                 Vec::new(),
                 NUM_FILE_SEARCH_THREADS,
                 cancellation_token.clone(),

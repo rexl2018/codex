@@ -774,6 +774,56 @@ impl App {
             AppEvent::OpenFullAccessConfirmation { preset } => {
                 self.chat_widget.open_full_access_confirmation(preset);
             }
+            AppEvent::AddWritableDir(path) => {
+                // Determine absolute path
+                let path = if path.is_absolute() {
+                    path
+                } else {
+                    self.config.cwd.join(path)
+                };
+
+                // Check existence
+                match path.canonicalize() {
+                    Ok(path) => {
+                        let path_lossy = path.to_string_lossy().to_string();
+
+                        // Add to search
+                        self.file_search.add_search_path(path.clone());
+
+                        // Add to config roots (persisted in memory for this session)
+                        if !self.config.additional_writable_roots.contains(&path) {
+                            self.config.additional_writable_roots.push(path.clone());
+                        }
+
+                        // Update effective sandbox policy if write access is enabled
+                        match &mut self.config.sandbox_policy {
+                            codex_core::protocol::SandboxPolicy::WorkspaceWrite { writable_roots, .. } => {
+                                if !writable_roots.contains(&path) {
+                                    writable_roots.push(path.clone());
+                                }
+                                // Propagate to logic/UI
+                                self.chat_widget.set_sandbox_policy(self.config.sandbox_policy.clone());
+                                self.chat_widget.add_info_message(format!("Added {} to session.", path_lossy), None);
+                            }
+                            codex_core::protocol::SandboxPolicy::ReadOnly => {
+                                self.chat_widget.add_info_message(
+                                    format!("Added {} to search paths (Sandbox is ReadOnly).", path_lossy),
+                                    None
+                                );
+                            }
+                            codex_core::protocol::SandboxPolicy::DangerFullAccess => {
+                                self.chat_widget.add_info_message(
+                                    format!("Added {} to search paths (FullAccess is enabled).", path_lossy),
+                                    None
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.chat_widget.add_error_message(format!("Could not access {}: {}", path.display(), e));
+                    }
+                }
+            }
             AppEvent::OpenWorldWritableWarningConfirmation {
                 preset,
                 sample_paths,

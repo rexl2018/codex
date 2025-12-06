@@ -175,6 +175,9 @@ pub(crate) enum AppEvent {
 
     /// Copy the last agent message to the clipboard or a file.
     CopyLastAgentMessage(Option<String>),
+
+    /// Add a directory to the writable roots and file search.
+    AddWritableDir(PathBuf),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

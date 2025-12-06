@@ -165,6 +165,9 @@ pub struct Config {
     /// resolved against this path.
     pub cwd: PathBuf,
 
+    /// Additional directories that should be treated as writable roots.
+    pub additional_writable_roots: Vec<PathBuf>,
+
     /// Preferred store for CLI auth credentials.
     /// file (default): Use a file in the Codex home directory.
     /// keyring: Use an OS-specific keyring service.
@@ -1047,9 +1050,9 @@ impl Config {
             forced_auto_mode_downgraded_on_windows,
         } = cfg.derive_sandbox_policy(sandbox_mode, config_profile.sandbox_mode, &resolved_cwd);
         if let SandboxPolicy::WorkspaceWrite { writable_roots, .. } = &mut sandbox_policy {
-            for path in additional_writable_roots {
-                if !writable_roots.iter().any(|existing| existing == &path) {
-                    writable_roots.push(path);
+            for path in &additional_writable_roots {
+                if !writable_roots.iter().any(|existing| existing == path) {
+                    writable_roots.push(path.clone());
                 }
             }
         }
@@ -1185,6 +1188,7 @@ impl Config {
             model_provider_id,
             model_provider,
             cwd: resolved_cwd,
+            additional_writable_roots,
             approval_policy,
             sandbox_policy,
             did_user_set_custom_approval_policy_or_sandbox_mode,
