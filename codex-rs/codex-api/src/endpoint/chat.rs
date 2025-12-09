@@ -67,10 +67,14 @@ impl<T: HttpTransport, A: AuthProvider> ChatClient<T, A> {
         self.stream_request(request).await
     }
 
-    fn path(&self) -> &'static str {
-        match self.streaming.provider().wire {
-            WireApi::Chat => "chat/completions",
-            _ => "responses",
+    fn path(&self) -> String {
+        let provider = self.streaming.provider();
+        match provider.wire {
+            WireApi::Chat => provider
+                .base_url_suffix
+                .clone()
+                .unwrap_or_else(|| "chat/completions".to_string()),
+            _ => "responses".to_string(),
         }
     }
 
@@ -80,7 +84,7 @@ impl<T: HttpTransport, A: AuthProvider> ChatClient<T, A> {
         extra_headers: HeaderMap,
     ) -> Result<ResponseStream, ApiError> {
         self.streaming
-            .stream(self.path(), body, extra_headers, spawn_chat_stream)
+            .stream(&self.path(), body, extra_headers, spawn_chat_stream)
             .await
     }
 }

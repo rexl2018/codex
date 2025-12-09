@@ -55,6 +55,7 @@ pub struct Provider {
     pub retry: RetryConfig,
     pub stream_retry: RetryConfig,
     pub stream_idle_timeout: Duration,
+    pub base_url_suffix: Option<String>,
 }
 
 impl Provider {

@@ -51,6 +51,8 @@ pub struct ModelProviderInfo {
     pub name: String,
     /// Base URL for the provider's OpenAI-compatible API.
     pub base_url: Option<String>,
+    /// Optional suffix to append to the base URL (e.g. for custom paths vs default "/chat/completions").
+    pub base_url_suffix: Option<String>,
     /// Environment variable that stores the user's API key for this provider.
     pub env_key: Option<String>,
 
@@ -168,6 +170,7 @@ impl ModelProviderInfo {
             retry,
             stream_retry,
             stream_idle_timeout: self.stream_idle_timeout(),
+            base_url_suffix: self.base_url_suffix.clone(),
         })
     }
 
@@ -271,6 +274,7 @@ pub fn built_in_model_providers() -> HashMap<String, ModelProviderInfo> {
                 request_max_retries: None,
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
+                base_url_suffix: None,
                 requires_openai_auth: true,
             },
         ),
@@ -322,6 +326,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        base_url_suffix: None,
         requires_openai_auth: false,
     }
 }
