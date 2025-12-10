@@ -234,17 +234,18 @@ impl<'a> ChatRequestBuilder<'a> {
 
                     // Include thought_signature in extra_content.google if present (for Gemini)
                     if let Some(sig) = thought_signature
-                        && let Some(obj) = tool_call.as_object_mut() {
-                            obj.insert("signature".to_string(), json!(sig));
-                            obj.insert(
-                                "extra_content".to_string(),
-                                json!({
-                                    "google": {
-                                        "thought_signature": sig
-                                    }
-                                }),
-                            );
-                        }
+                        && let Some(obj) = tool_call.as_object_mut()
+                    {
+                        obj.insert("signature".to_string(), json!(sig));
+                        obj.insert(
+                            "extra_content".to_string(),
+                            json!({
+                                "google": {
+                                    "thought_signature": sig
+                                }
+                            }),
+                        );
+                    }
 
                     let mut msg = json!({
                         "role": "assistant",
@@ -373,6 +374,8 @@ impl<'a> ChatRequestBuilder<'a> {
 
         ensure_tool_results_balanced(&messages, self.model);
 
+        let messages = coalesce_messages(messages);
+
         let payload = json!({
             "model": self.model,
             "messages": messages,
@@ -475,6 +478,63 @@ fn ensure_tool_results_balanced(messages: &[Value], model: &str) {
             pending = ?pending,
             "Conversation ended with unmatched Gemini tool calls"
         );
+    }
+}
+
+fn coalesce_messages(messages: Vec<Value>) -> Vec<Value> {
+    let mut merged = Vec::with_capacity(messages.len());
+    let mut iter = messages.into_iter();
+
+    if let Some(mut current) = iter.next() {
+        for next in iter {
+            if is_assistant(&current) && is_assistant(&next) {
+                merge_json_objects(&mut current, next);
+            } else {
+                merged.push(current);
+                current = next;
+            }
+        }
+        merged.push(current);
+    }
+
+    merged
+}
+
+fn is_assistant(msg: &Value) -> bool {
+    msg.get("role")
+        .and_then(|r| r.as_str()) == Some("assistant")
+}
+
+fn merge_json_objects(target: &mut Value, source: Value) {
+    if let (Some(target_obj), Some(source_obj)) = (target.as_object_mut(), source.as_object()) {
+        // Merge content
+        if let Some(source_content) = source_obj.get("content")
+            && !source_content.is_null()
+                && (!target_obj.contains_key("content") || target_obj["content"].is_null()) {
+                    target_obj.insert("content".to_string(), source_content.clone());
+                }
+                // If both have content, we keep target's (first) content, similar to the strategy in responses.rs
+                // to avoid overwriting preamble with potentially conflicting content or duplicating.
+                // For "Preamble" + "ToolCall", target has content, source (ToolCall) usually has null content.
+
+        // Merge tool_calls
+        if let Some(source_tools) = source_obj.get("tool_calls").and_then(|v| v.as_array()) {
+            if let Some(target_tools) = target_obj
+                .get_mut("tool_calls")
+                .and_then(|v| v.as_array_mut())
+            {
+                target_tools.extend(source_tools.clone());
+            } else {
+                target_obj.insert("tool_calls".to_string(), Value::Array(source_tools.clone()));
+            }
+        }
+
+        // Merge reasoning?
+        // If target has reasoning, keep it. If not, take source.
+        if !target_obj.contains_key("reasoning")
+            && let Some(reasoning) = source_obj.get("reasoning") {
+                target_obj.insert("reasoning".to_string(), reasoning.clone());
+            }
     }
 }
 

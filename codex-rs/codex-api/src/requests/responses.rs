@@ -1,5 +1,4 @@
 use crate::common::Reasoning;
-use crate::common::ResponsesApiRequest;
 use crate::common::TextControls;
 use crate::error::ApiError;
 use crate::provider::Provider;
@@ -117,7 +116,7 @@ impl<'a> ResponsesRequestBuilder<'a> {
             .model
             .ok_or_else(|| ApiError::Stream("missing model for responses request".into()))?;
         let instructions = self.instructions;
-        let input = self
+        let original_input = self
             .input
             .ok_or_else(|| ApiError::Stream("missing input for responses request".into()))?;
         let tools = if self.previous_response_id.is_some() {
@@ -130,10 +129,16 @@ impl<'a> ResponsesRequestBuilder<'a> {
             .store_override
             .unwrap_or_else(|| provider.is_azure_responses_endpoint());
 
-        let req = ResponsesApiRequest {
+        let coalesced_input = coalesce_input(
+            original_input,
+            store,
+            provider.is_azure_responses_endpoint(),
+        );
+
+        let req = MergedResponsesApiRequest {
             model,
             instructions,
-            input,
+            input: &coalesced_input,
             tools,
             tool_choice: if self.previous_response_id.is_some() {
                 None
@@ -156,12 +161,8 @@ impl<'a> ResponsesRequestBuilder<'a> {
             caching: self.caching,
         };
 
-        let mut body = serde_json::to_value(&req)
+        let body = serde_json::to_value(&req)
             .map_err(|e| ApiError::Stream(format!("failed to encode responses request: {e}")))?;
-
-        if store && provider.is_azure_responses_endpoint() {
-            attach_item_ids(&mut body, input);
-        }
 
         let mut headers = self.headers;
         headers.extend(build_conversation_headers(self.conversation_id));
@@ -173,29 +174,126 @@ impl<'a> ResponsesRequestBuilder<'a> {
     }
 }
 
-fn attach_item_ids(payload_json: &mut Value, original_items: &[ResponseItem]) {
-    let Some(input_value) = payload_json.get_mut("input") else {
-        return;
-    };
-    let Value::Array(items) = input_value else {
-        return;
-    };
-
-    for (value, item) in items.iter_mut().zip(original_items.iter()) {
-        if let ResponseItem::Reasoning { id, .. }
-        | ResponseItem::Message { id: Some(id), .. }
+fn get_response_item_id(item: &ResponseItem) -> Option<&str> {
+    match item {
+        ResponseItem::Message { id: Some(id), .. }
+        | ResponseItem::Reasoning { id, .. }
         | ResponseItem::WebSearchCall { id: Some(id), .. }
         | ResponseItem::FunctionCall { id: Some(id), .. }
         | ResponseItem::LocalShellCall { id: Some(id), .. }
-        | ResponseItem::CustomToolCall { id: Some(id), .. } = item
-        {
-            if id.is_empty() {
-                continue;
+        | ResponseItem::CustomToolCall { id: Some(id), .. } => {
+            if !id.is_empty() {
+                Some(id.as_str())
+            } else {
+                None
             }
+        }
+        _ => None,
+    }
+}
 
-            if let Some(obj) = value.as_object_mut() {
-                obj.insert("id".to_string(), Value::String(id.clone()));
+// Mirrors ResponsesApiRequest but allows arbitrary JSON Values for input items
+#[derive(serde::Serialize)]
+struct MergedResponsesApiRequest<'a> {
+    model: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions: Option<&'a str>,
+    input: &'a [Value],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<&'a [serde_json::Value]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parallel_tool_calls: Option<bool>,
+    reasoning: Option<Reasoning>,
+    store: bool,
+    stream: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    include: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<TextControls>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_output_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_response_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    caching: Option<crate::common::Caching>,
+}
+
+fn coalesce_input(items: &[ResponseItem], store: bool, is_azure: bool) -> Vec<Value> {
+    let mut merged: Vec<Value> = Vec::new();
+    let mut current_merge: Option<serde_json::Map<String, Value>> = None;
+
+    for item in items {
+        let mut item_value = match serde_json::to_value(item) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        // Attach ID before merging if needed
+        if store && is_azure
+            && let Some(id) = get_response_item_id(item)
+                && let Some(obj) = item_value.as_object_mut() {
+                    obj.insert("id".to_string(), Value::String(id.to_string()));
+                }
+
+        if is_mergeable_assistant_item(item) {
+            if let Some(mut existing) = current_merge.take() {
+                merge_assistant_objects(&mut existing, item_value);
+                current_merge = Some(existing);
+            } else if let Value::Object(obj) = item_value {
+                current_merge = Some(obj);
+            } else {
+                merged.push(item_value);
             }
+        } else {
+            // Flush any pending merge
+            if let Some(existing) = current_merge.take() {
+                merged.push(Value::Object(existing));
+            }
+            merged.push(item_value);
+        }
+    }
+
+    if let Some(existing) = current_merge {
+        merged.push(Value::Object(existing));
+    }
+
+    merged
+}
+
+fn is_mergeable_assistant_item(item: &ResponseItem) -> bool {
+    match item {
+        ResponseItem::Message { role, .. } => role == "assistant",
+        ResponseItem::FunctionCall { .. }
+        | ResponseItem::LocalShellCall { .. }
+        | ResponseItem::CustomToolCall { .. }
+        | ResponseItem::WebSearchCall { .. } => true,
+        _ => false,
+    }
+}
+
+fn merge_assistant_objects(target: &mut serde_json::Map<String, Value>, source: Value) {
+    let Value::Object(mut source_obj) = source else {
+        return;
+    };
+
+    // Merge content
+    if let Some(source_content) = source_obj.remove("content")
+        && !source_content.is_null()
+            && (!target.contains_key("content") || target["content"].is_null()) {
+                target.insert("content".to_string(), source_content);
+            }
+            // Else: target has content, source has content. We assume target (first) is valid preamble.
+
+    // Merge tool_calls
+    if let Some(Value::Array(source_tools)) = source_obj.remove("tool_calls") {
+        if let Some(Value::Array(target_tools)) = target.get_mut("tool_calls") {
+            target_tools.extend(source_tools);
+        } else {
+            target.insert("tool_calls".to_string(), Value::Array(source_tools));
         }
     }
 }

@@ -234,14 +234,14 @@ pub async fn process_sse(
             "response.created" => {
                 if let Some(resp_val) = event.response
                     && let Some(id_val) = resp_val.get("id")
-                        && let Some(id) = id_val.as_str()
-                    {
-                        let _ = tx_event
-                            .send(Ok(ResponseEvent::Created {
-                                response_id: id.to_string(),
-                            }))
-                            .await;
-                    }
+                    && let Some(id) = id_val.as_str()
+                {
+                    let _ = tx_event
+                        .send(Ok(ResponseEvent::Created {
+                            response_id: id.to_string(),
+                        }))
+                        .await;
+                }
             }
             "response.failed" => {
                 if let Some(resp_val) = event.response {
