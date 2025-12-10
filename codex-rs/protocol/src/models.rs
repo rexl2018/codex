@@ -87,6 +87,12 @@ pub enum ResponseItem {
         // Chat Completions + Responses API behavior.
         arguments: String,
         call_id: String,
+        /// Google Gemini thought signature for maintaining reasoning context across turns.
+        /// This field is populated from `extra_content.google.thought_signature` in the
+        /// Chat Completions API response and must be echoed back in subsequent requests.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        thought_signature: Option<String>,
     },
     // NOTE: The input schema for `function_call_output` objects that clients send to the
     // OpenAI /v1/responses endpoint is NOT the same shape as the objects the server returns on the

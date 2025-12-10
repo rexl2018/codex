@@ -12,6 +12,8 @@ use http::HeaderMap;
 use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
+use std::collections::VecDeque;
+use tracing::warn;
 
 /// Assembled request body plus headers for Chat Completions streaming calls.
 pub struct ChatRequest {
@@ -58,6 +60,7 @@ impl<'a> ChatRequestBuilder<'a> {
     pub fn build(self, _provider: &Provider) -> Result<ChatRequest, ApiError> {
         let mut messages = Vec::<Value>::new();
         messages.push(json!({"role": "system", "content": self.instructions}));
+        let mut tool_call_id_overrides: HashMap<String, String> = HashMap::new();
 
         let input = self.input;
         let mut reasoning_by_anchor_index: HashMap<usize, String> = HashMap::new();
@@ -199,22 +202,54 @@ impl<'a> ChatRequestBuilder<'a> {
                     messages.push(msg);
                 }
                 ResponseItem::FunctionCall {
+                    id,
                     name,
                     arguments,
                     call_id,
+                    thought_signature,
                     ..
                 } => {
+                    if let Some(provider_id) = id.as_ref() {
+                        tool_call_id_overrides.insert(call_id.clone(), provider_id.clone());
+                    }
+                    if self.model.contains("gemini") && thought_signature.is_none() {
+                        warn!(
+                            model = self.model,
+                            call_id,
+                            "Gemini function call missing thought_signature before serialization"
+                        );
+                    }
+                    let request_tool_id = tool_call_id_overrides
+                        .get(call_id)
+                        .cloned()
+                        .unwrap_or_else(|| call_id.clone());
+                    let mut tool_call = json!({
+                        "id": request_tool_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": arguments,
+                        }
+                    });
+
+                    // Include thought_signature in extra_content.google if present (for Gemini)
+                    if let Some(sig) = thought_signature
+                        && let Some(obj) = tool_call.as_object_mut() {
+                            obj.insert("signature".to_string(), json!(sig));
+                            obj.insert(
+                                "extra_content".to_string(),
+                                json!({
+                                    "google": {
+                                        "thought_signature": sig
+                                    }
+                                }),
+                            );
+                        }
+
                     let mut msg = json!({
                         "role": "assistant",
                         "content": null,
-                        "tool_calls": [{
-                            "id": call_id,
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": arguments,
-                            }
-                        }]
+                        "tool_calls": [tool_call]
                     });
                     if let Some(reasoning) = reasoning_by_anchor_index.get(&idx)
                         && let Some(obj) = msg.as_object_mut()
@@ -225,15 +260,27 @@ impl<'a> ChatRequestBuilder<'a> {
                 }
                 ResponseItem::LocalShellCall {
                     id,
-                    call_id: _,
+                    call_id,
                     status,
                     action,
                 } => {
+                    if let (Some(original_call_id), Some(provider_id)) =
+                        (call_id.as_ref(), id.as_ref())
+                    {
+                        tool_call_id_overrides
+                            .insert(original_call_id.clone(), provider_id.clone());
+                    }
+                    let resolved_id = call_id
+                        .as_ref()
+                        .and_then(|original| tool_call_id_overrides.get(original))
+                        .cloned()
+                        .or_else(|| id.clone())
+                        .unwrap_or_default();
                     let mut msg = json!({
                         "role": "assistant",
                         "content": null,
                         "tool_calls": [{
-                            "id": id.clone().unwrap_or_default(),
+                            "id": resolved_id,
                             "type": "local_shell_call",
                             "status": status,
                             "action": action,
@@ -264,24 +311,35 @@ impl<'a> ChatRequestBuilder<'a> {
                         json!(output.content)
                     };
 
+                    let response_call_id = tool_call_id_overrides
+                        .get(call_id)
+                        .cloned()
+                        .unwrap_or_else(|| call_id.clone());
                     messages.push(json!({
                         "role": "tool",
-                        "tool_call_id": call_id,
+                        "tool_call_id": response_call_id,
                         "content": content_value,
                     }));
                 }
                 ResponseItem::CustomToolCall {
                     id,
-                    call_id: _,
+                    call_id,
                     name,
                     input,
                     status: _,
                 } => {
+                    if let Some(provider_id) = id.as_ref() {
+                        tool_call_id_overrides.insert(call_id.clone(), provider_id.clone());
+                    }
+                    let request_tool_id = tool_call_id_overrides
+                        .get(call_id)
+                        .cloned()
+                        .unwrap_or_else(|| call_id.clone());
                     messages.push(json!({
                         "role": "assistant",
                         "content": null,
                         "tool_calls": [{
-                            "id": id,
+                            "id": request_tool_id,
                             "type": "custom",
                             "custom": {
                                 "name": name,
@@ -291,9 +349,13 @@ impl<'a> ChatRequestBuilder<'a> {
                     }));
                 }
                 ResponseItem::CustomToolCallOutput { call_id, output } => {
+                    let response_call_id = tool_call_id_overrides
+                        .get(call_id)
+                        .cloned()
+                        .unwrap_or_else(|| call_id.clone());
                     messages.push(json!({
                         "role": "tool",
-                        "tool_call_id": call_id,
+                        "tool_call_id": response_call_id,
                         "content": output,
                     }));
                 }
@@ -308,6 +370,8 @@ impl<'a> ChatRequestBuilder<'a> {
                 }
             }
         }
+
+        ensure_tool_results_balanced(&messages, self.model);
 
         let payload = json!({
             "model": self.model,
@@ -325,6 +389,92 @@ impl<'a> ChatRequestBuilder<'a> {
             body: payload,
             headers,
         })
+    }
+}
+
+fn ensure_tool_results_balanced(messages: &[Value], model: &str) {
+    if !model.contains("gemini") {
+        return;
+    }
+
+    let mut pending: VecDeque<String> = VecDeque::new();
+
+    for (idx, message) in messages.iter().enumerate() {
+        let role = message
+            .get("role")
+            .and_then(|r| r.as_str())
+            .unwrap_or_default();
+
+        match role {
+            "assistant" => {
+                if let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
+                    for (tool_idx, call) in tool_calls.iter().enumerate() {
+                        let id = call
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+
+                        if id.is_empty() {
+                            warn!(
+                                model,
+                                assistant_index = idx,
+                                tool_index = tool_idx,
+                                "Gemini tool call missing id"
+                            );
+                        }
+
+                        pending.push_back(id);
+                    }
+                }
+            }
+            "tool" => {
+                let call_id = message
+                    .get("tool_call_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+
+                if call_id.is_empty() {
+                    warn!(
+                        model,
+                        message_index = idx,
+                        "Gemini tool result missing tool_call_id"
+                    );
+                    continue;
+                }
+
+                if let Some(pos) = pending.iter().position(|pending_id| pending_id == &call_id) {
+                    pending.remove(pos);
+                } else {
+                    warn!(
+                        model,
+                        message_index = idx,
+                        tool_call_id = call_id,
+                        "Gemini tool result without matching pending call"
+                    );
+                }
+            }
+            "user" | "system" => {
+                if !pending.is_empty() {
+                    warn!(
+                        model,
+                        message_index = idx,
+                        pending = ?pending,
+                        "Encountered message while Gemini tool calls are still pending"
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !pending.is_empty() {
+        warn!(
+            model,
+            pending = ?pending,
+            "Conversation ended with unmatched Gemini tool calls"
+        );
     }
 }
 
@@ -361,6 +511,7 @@ mod tests {
                 retry_transport: true,
             },
             stream_idle_timeout: Duration::from_secs(1),
+            base_url_suffix: None,
         }
     }
 

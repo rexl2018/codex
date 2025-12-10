@@ -29,6 +29,14 @@ pub(crate) fn spawn_chat_stream(
     ResponseStream { rx_event }
 }
 
+#[derive(Default, Debug)]
+struct ToolCallState {
+    name: Option<String>,
+    arguments: String,
+    thought_signature: Option<String>,
+    provider_id: Option<String>,
+}
+
 pub async fn process_chat_sse<S>(
     stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent, ApiError>>,
@@ -38,12 +46,6 @@ pub async fn process_chat_sse<S>(
     S: Stream<Item = Result<bytes::Bytes, codex_client::TransportError>> + Unpin,
 {
     let mut stream = stream.eventsource();
-
-    #[derive(Default, Debug)]
-    struct ToolCallState {
-        name: Option<String>,
-        arguments: String,
-    }
 
     let mut tool_calls: HashMap<String, ToolCallState> = HashMap::new();
     let mut tool_call_order: Vec<String> = Vec::new();
@@ -149,28 +151,7 @@ pub async fn process_chat_sse<S>(
 
                 if let Some(tool_call_values) = delta.get("tool_calls").and_then(|c| c.as_array()) {
                     for tool_call in tool_call_values {
-                        let id = tool_call
-                            .get("id")
-                            .and_then(|i| i.as_str())
-                            .map(str::to_string)
-                            .unwrap_or_else(|| format!("tool-call-{}", tool_call_order.len()));
-
-                        let call_state = tool_calls.entry(id.clone()).or_default();
-                        if !tool_call_order.contains(&id) {
-                            tool_call_order.push(id.clone());
-                        }
-
-                        if let Some(func) = tool_call.get("function") {
-                            if let Some(fname) = func.get("name").and_then(|n| n.as_str())
-                                && !fname.is_empty()
-                            {
-                                call_state.name.get_or_insert_with(|| fname.to_string());
-                            }
-                            if let Some(arguments) = func.get("arguments").and_then(|a| a.as_str())
-                            {
-                                call_state.arguments.push_str(arguments);
-                            }
-                        }
+                        record_tool_call(tool_call, &mut tool_calls, &mut tool_call_order);
                     }
                 }
             }
@@ -184,6 +165,17 @@ pub async fn process_chat_sse<S>(
                     append_reasoning_text(&tx_event, &mut reasoning_item, text.to_string()).await;
                 } else if let Some(text) = reasoning.get("content").and_then(|v| v.as_str()) {
                     append_reasoning_text(&tx_event, &mut reasoning_item, text.to_string()).await;
+                }
+            }
+
+            if let Some(message) = choice.get("message")
+                && let Some(tool_call_values) = message.get("tool_calls").and_then(|v| v.as_array())
+            {
+                for (idx, tool_call) in tool_call_values.iter().enumerate() {
+                    if idx < tool_call_order.len() {
+                        continue;
+                    }
+                    record_tool_call(tool_call, &mut tool_calls, &mut tool_call_order);
                 }
             }
 
@@ -227,14 +219,74 @@ pub async fn process_chat_sse<S>(
                 for call_id in tool_call_order.drain(..) {
                     let state = tool_calls.remove(&call_id).unwrap_or_default();
                     let item = ResponseItem::FunctionCall {
-                        id: None,
+                        id: state.provider_id.clone(),
                         name: state.name.unwrap_or_default(),
                         arguments: state.arguments,
                         call_id: call_id.clone(),
+                        thought_signature: state.thought_signature,
                     };
                     let _ = tx_event.send(Ok(ResponseEvent::OutputItemDone(item))).await;
                 }
             }
+        }
+    }
+}
+
+fn record_tool_call(
+    tool_call: &serde_json::Value,
+    tool_calls: &mut HashMap<String, ToolCallState>,
+    tool_call_order: &mut Vec<String>,
+) {
+    let provider_id = tool_call
+        .get("id")
+        .and_then(|i| i.as_str())
+        .map(str::to_string);
+    let missing_id = provider_id.as_deref().map(str::is_empty).unwrap_or(true);
+    let id = if missing_id {
+        format!("tool-call-{}", tool_call_order.len())
+    } else {
+        provider_id.as_ref().unwrap().clone()
+    };
+
+    if missing_id {
+        debug!(
+            order_index = tool_call_order.len(),
+            placeholder = %id,
+            "Gemini emitted tool call without id; synthesized placeholder"
+        );
+    }
+
+    let call_state = tool_calls.entry(id.clone()).or_default();
+    if call_state.provider_id.is_none() {
+        call_state.provider_id = provider_id.filter(|s| !s.is_empty());
+    }
+    if !tool_call_order.contains(&id) {
+        tool_call_order.push(id);
+    }
+
+    if let Some(extra) = tool_call.get("extra_content")
+        && let Some(google) = extra.get("google")
+        && let Some(sig) = google.get("thought_signature").and_then(|s| s.as_str())
+    {
+        call_state
+            .thought_signature
+            .get_or_insert_with(|| sig.to_string());
+    }
+
+    if let Some(sig) = tool_call.get("signature").and_then(|s| s.as_str()) {
+        call_state
+            .thought_signature
+            .get_or_insert_with(|| sig.to_string());
+    }
+
+    if let Some(func) = tool_call.get("function") {
+        if let Some(fname) = func.get("name").and_then(|n| n.as_str())
+            && !fname.is_empty()
+        {
+            call_state.name.get_or_insert_with(|| fname.to_string());
+        }
+        if let Some(arguments) = func.get("arguments").and_then(|a| a.as_str()) {
+            call_state.arguments.push_str(arguments);
         }
     }
 }

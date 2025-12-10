@@ -826,9 +826,6 @@ async fn test_tail_skips_trailing_non_responses() -> Result<()> {
     Ok(())
 }
 
-    Ok(())
-}
-
 #[tokio::test]
 async fn test_stable_ordering_same_second_pagination() {
     let temp = TempDir::new().unwrap();

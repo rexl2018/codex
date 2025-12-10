@@ -10,7 +10,7 @@ pub(crate) fn build_conversation_headers(conversation_id: Option<String>) -> Hea
         insert_header(
             &mut headers,
             "extra",
-            &format!(r#"{{"session_id":"{}"}}"#, id),
+            &format!(r#"{{"session_id":"{id}"}}"#),
         );
     }
     headers

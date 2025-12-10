@@ -436,16 +436,13 @@ async fn read_head_and_tail(
         // For simplicity: store all valid lines in tail buffer? No, usually just messages.
         // HEAD rollout/tests.rs checked for "type": "message" (ResponseItem) in tail.
 
-        match rollout_line.item {
-            RolloutItem::ResponseItem(ref item) => {
-                if let Ok(val) = serde_json::to_value(item) {
-                    if summary.tail.len() >= tail_limit {
-                        summary.tail.remove(0);
-                    }
-                    summary.tail.push(val);
+        if let RolloutItem::ResponseItem(ref item) = rollout_line.item {
+            if let Ok(val) = serde_json::to_value(item) {
+                if summary.tail.len() >= tail_limit {
+                    summary.tail.remove(0);
                 }
+                summary.tail.push(val);
             }
-            _ => {}
         }
     }
 

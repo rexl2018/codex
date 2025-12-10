@@ -261,6 +261,11 @@ pub fn find_family_for_model(slug: &str) -> ModelFamily {
             support_verbosity: true,
             truncation_policy: TruncationPolicy::Bytes(10_000),
         )
+    } else if slug.to_ascii_lowercase().contains("gemini") {
+        model_family!(
+            slug, slug,
+            shell_type: ConfigShellToolType::ShellCommand,
+        )
     } else {
         derive_default_model_family(slug)
     }

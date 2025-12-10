@@ -232,6 +232,7 @@ mod tests {
                 retry_transport: true,
             },
             stream_idle_timeout: Duration::from_secs(5),
+            base_url_suffix: None,
         }
     }
 

@@ -797,30 +797,47 @@ impl App {
 
                         // Update effective sandbox policy if write access is enabled
                         match &mut self.config.sandbox_policy {
-                            codex_core::protocol::SandboxPolicy::WorkspaceWrite { writable_roots, .. } => {
+                            codex_core::protocol::SandboxPolicy::WorkspaceWrite {
+                                writable_roots,
+                                ..
+                            } => {
                                 if !writable_roots.contains(&path) {
                                     writable_roots.push(path.clone());
                                 }
                                 // Propagate to logic/UI
-                                self.chat_widget.set_sandbox_policy(self.config.sandbox_policy.clone());
-                                self.chat_widget.add_info_message(format!("Added {} to session.", path_lossy), None);
+                                self.chat_widget
+                                    .set_sandbox_policy(self.config.sandbox_policy.clone());
+                                self.chat_widget.add_info_message(
+                                    format!("Added {} to session.", path_lossy),
+                                    None,
+                                );
                             }
                             codex_core::protocol::SandboxPolicy::ReadOnly => {
                                 self.chat_widget.add_info_message(
-                                    format!("Added {} to search paths (Sandbox is ReadOnly).", path_lossy),
-                                    None
+                                    format!(
+                                        "Added {} to search paths (Sandbox is ReadOnly).",
+                                        path_lossy
+                                    ),
+                                    None,
                                 );
                             }
                             codex_core::protocol::SandboxPolicy::DangerFullAccess => {
                                 self.chat_widget.add_info_message(
-                                    format!("Added {} to search paths (FullAccess is enabled).", path_lossy),
-                                    None
+                                    format!(
+                                        "Added {} to search paths (FullAccess is enabled).",
+                                        path_lossy
+                                    ),
+                                    None,
                                 );
                             }
                         }
                     }
                     Err(e) => {
-                        self.chat_widget.add_error_message(format!("Could not access {}: {}", path.display(), e));
+                        self.chat_widget.add_error_message(format!(
+                            "Could not access {}: {}",
+                            path.display(),
+                            e
+                        ));
                     }
                 }
             }

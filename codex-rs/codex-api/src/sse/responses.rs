@@ -232,8 +232,8 @@ pub async fn process_sse(
                 }
             }
             "response.created" => {
-                if let Some(resp_val) = event.response {
-                    if let Some(id_val) = resp_val.get("id")
+                if let Some(resp_val) = event.response
+                    && let Some(id_val) = resp_val.get("id")
                         && let Some(id) = id_val.as_str()
                     {
                         let _ = tx_event
@@ -242,7 +242,6 @@ pub async fn process_sse(
                             }))
                             .await;
                     }
-                }
             }
             "response.failed" => {
                 if let Some(resp_val) = event.response {
@@ -597,7 +596,7 @@ mod tests {
         let cases = vec![
             TestCase {
                 name: "created",
-                event: json!({"type": "response.created", "response": {}}),
+                event: json!({"type": "response.created", "response": {"id": "r1"}}),
                 expect_first: is_created,
                 expected_len: 2,
             },

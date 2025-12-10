@@ -140,6 +140,7 @@ fn provider(name: &str, wire: WireApi) -> Provider {
             retry_transport: true,
         },
         stream_idle_timeout: Duration::from_millis(10),
+        base_url_suffix: None,
     }
 }
 

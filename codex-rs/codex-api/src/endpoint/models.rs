@@ -132,7 +132,15 @@ mod tests {
                 retry_5xx: true,
                 retry_transport: true,
             },
+            stream_retry: RetryConfig {
+                max_attempts: 1,
+                base_delay: Duration::from_millis(1),
+                retry_429: false,
+                retry_5xx: true,
+                retry_transport: true,
+            },
             stream_idle_timeout: Duration::from_secs(1),
+            base_url_suffix: None,
         }
     }
 
