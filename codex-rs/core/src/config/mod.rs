@@ -1171,7 +1171,7 @@ impl Config {
             model_provider_id,
             model_provider,
             cwd: resolved_cwd,
-            additional_writable_roots,
+            additional_writable_roots: additional_writable_roots.into_iter().map(|p| p.into()).collect(),
             approval_policy,
             sandbox_policy,
             did_user_set_custom_approval_policy_or_sandbox_mode,

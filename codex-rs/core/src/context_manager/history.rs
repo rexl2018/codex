@@ -531,7 +531,7 @@ fn format_item_summary(item: &ResponseItem) -> String {
         ResponseItem::CustomToolCallOutput { call_id, .. } => {
             format!("[ToolOutput] (id: {call_id})")
         }
-        ResponseItem::CompactionSummary { .. } => "[CompactionSummary]".to_string(),
+        ResponseItem::Compaction { .. } => "[CompactionSummary]".to_string(),
         ResponseItem::GhostSnapshot { .. } => "[GhostSnapshot]".to_string(),
         ResponseItem::Other => "[Other]".to_string(),
     }

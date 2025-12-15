@@ -2485,7 +2485,7 @@ async fn run_turn(
         input,
         tools: router.specs(),
         parallel_tool_calls: model_supports_parallel && sess.enabled(Feature::ParallelToolCalls),
-        base_instructions_override: turn_context.base_instructions.clone(),
+        base_instructions_override: base_instructions,
         output_schema: turn_context.final_output_json_schema.clone(),
         last_response_id,
     };
