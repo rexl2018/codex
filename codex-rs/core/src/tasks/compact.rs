@@ -27,17 +27,12 @@ impl SessionTask for CompactTask {
         _cancellation_token: CancellationToken,
     ) -> Option<String> {
         let session = session.clone_session();
-        if crate::compact::should_use_remote_compact_task(&session) {
-            // Remote compaction does not support range yet, fallback or ignore range?
-            // For now, let's assume remote compaction is full history only.
-            // If range is set, we might want to force local compaction or error.
-            // But the user request implies reusing logic.
-            // Let's just use remote if configured (ignoring range) OR force local if range is present.
-            // Given the complexity, let's force local if range is present.
-            if self.range.is_some() {
-                if let Some((start, end)) = self.range {
-                    crate::compact::run_compact_task_on_range(session, ctx, input, start, end).await
-                }
+        if crate::compact::should_use_remote_compact_task(
+            session.as_ref(),
+            &ctx.client.get_provider(),
+        ) {
+            if let Some((start, end)) = self.range {
+                crate::compact::run_compact_task_on_range(session, ctx, input, start, end).await
             } else {
                 crate::compact_remote::run_remote_compact_task(session, ctx).await
             }

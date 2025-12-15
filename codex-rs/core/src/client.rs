@@ -18,7 +18,7 @@ use codex_api::common::Reasoning;
 use codex_api::create_text_param_for_request;
 use codex_api::error::ApiError;
 use codex_app_server_protocol::AuthMode;
-use codex_otel::otel_event_manager::OtelEventManager;
+use codex_otel::otel_manager::OtelManager;
 use codex_protocol::ConversationId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::ResponseItem;
@@ -50,7 +50,6 @@ use crate::error::Result;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
-use crate::openai_model_info::get_model_info;
 use crate::openai_models::model_family::ModelFamily;
 use crate::tools::spec::create_tools_json_for_chat_completions_api;
 use crate::tools::spec::create_tools_json_for_responses_api;
@@ -60,7 +59,7 @@ pub struct ModelClient {
     config: Arc<Config>,
     auth_manager: Option<Arc<AuthManager>>,
     model_family: ModelFamily,
-    otel_event_manager: OtelEventManager,
+    otel_manager: OtelManager,
     provider: ModelProviderInfo,
     conversation_id: ConversationId,
     effort: Option<ReasoningEffortConfig>,
@@ -74,7 +73,7 @@ impl ModelClient {
         config: Arc<Config>,
         auth_manager: Option<Arc<AuthManager>>,
         model_family: ModelFamily,
-        otel_event_manager: OtelEventManager,
+        otel_manager: OtelManager,
         provider: ModelProviderInfo,
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
@@ -85,7 +84,7 @@ impl ModelClient {
             config,
             auth_manager,
             model_family,
-            otel_event_manager,
+            otel_manager,
             provider,
             conversation_id,
             effort,
@@ -97,17 +96,9 @@ impl ModelClient {
     pub fn get_model_context_window(&self) -> Option<i64> {
         let model_family = self.get_model_family();
         let effective_context_window_percent = model_family.effective_context_window_percent;
-        self.config
-            .model_context_window
-            .or_else(|| get_model_info(&model_family).map(|info| info.context_window))
+        model_family
+            .context_window
             .map(|w| w.saturating_mul(effective_context_window_percent) / 100)
-    }
-
-    pub fn get_auto_compact_token_limit(&self) -> Option<i64> {
-        let model_family = self.get_model_family();
-        self.config.model_auto_compact_token_limit.or_else(|| {
-            get_model_info(&model_family).and_then(|info| info.auto_compact_token_limit)
-        })
     }
 
     pub fn config(&self) -> Arc<Config> {
@@ -132,12 +123,12 @@ impl ModelClient {
                 if self.config.show_raw_agent_reasoning {
                     Ok(map_response_stream(
                         api_stream.streaming_mode(),
-                        self.otel_event_manager.clone(),
+                        self.otel_manager.clone(),
                     ))
                 } else {
                     Ok(map_response_stream(
                         api_stream.aggregate(),
-                        self.otel_event_manager.clone(),
+                        self.otel_manager.clone(),
                     ))
                 }
             }
@@ -178,7 +169,7 @@ impl ModelClient {
 
             let stream_result = client
                 .stream_prompt(
-                    &self.config.model,
+                    &self.get_model(),
                     &api_prompt,
                     Some(conversation_id.clone()),
                     Some(session_source.clone()),
@@ -207,7 +198,7 @@ impl ModelClient {
             warn!(path, "Streaming from fixture");
             let stream = codex_api::stream_from_fixture(path, self.provider.stream_idle_timeout())
                 .map_err(map_api_error)?;
-            return Ok(map_response_stream(stream, self.otel_event_manager.clone()));
+            return Ok(map_response_stream(stream, self.otel_manager.clone()));
         }
 
         let auth_manager = self.auth_manager.clone();
@@ -219,7 +210,11 @@ impl ModelClient {
         let reasoning = if model_family.supports_reasoning_summaries {
             Some(Reasoning {
                 effort: self.effort.or(model_family.default_reasoning_effort),
-                summary: Some(self.summary),
+                summary: if self.summary == ReasoningSummaryConfig::None {
+                    None
+                } else {
+                    Some(self.summary)
+                },
             })
         } else {
             None
@@ -299,12 +294,12 @@ impl ModelClient {
             };
 
             let stream_result = client
-                .stream_prompt(&self.config.model, &api_prompt, options)
+                .stream_prompt(&self.get_model(), &api_prompt, options)
                 .await;
 
             match stream_result {
                 Ok(stream) => {
-                    return Ok(map_response_stream(stream, self.otel_event_manager.clone()));
+                    return Ok(map_response_stream(stream, self.otel_manager.clone()));
                 }
                 Err(ApiError::Transport(TransportError::Http { status, .. }))
                     if status == StatusCode::UNAUTHORIZED =>
@@ -321,8 +316,8 @@ impl ModelClient {
         self.provider.clone()
     }
 
-    pub fn get_otel_event_manager(&self) -> OtelEventManager {
-        self.otel_event_manager.clone()
+    pub fn get_otel_manager(&self) -> OtelManager {
+        self.otel_manager.clone()
     }
 
     pub fn get_session_source(&self) -> SessionSource {
@@ -331,7 +326,7 @@ impl ModelClient {
 
     /// Returns the currently configured model slug.
     pub fn get_model(&self) -> String {
-        self.config.model.clone()
+        self.get_model_family().get_model_slug().to_string()
     }
 
     /// Returns the currently configured model family.
@@ -376,7 +371,7 @@ impl ModelClient {
             .get_full_instructions(&self.get_model_family())
             .into_owned();
         let payload = ApiCompactionInput {
-            model: &self.config.model,
+            model: &self.get_model(),
             input: &prompt.input,
             instructions: &instructions,
         };
@@ -406,7 +401,7 @@ impl ModelClient {
 impl ModelClient {
     /// Builds request and SSE telemetry for streaming API calls (Chat/Responses).
     fn build_streaming_telemetry(&self) -> (Arc<dyn RequestTelemetry>, Arc<dyn SseTelemetry>) {
-        let telemetry = Arc::new(ApiTelemetry::new(self.otel_event_manager.clone()));
+        let telemetry = Arc::new(ApiTelemetry::new(self.otel_manager.clone()));
         let request_telemetry: Arc<dyn RequestTelemetry> = telemetry.clone();
         let sse_telemetry: Arc<dyn SseTelemetry> = telemetry;
         (request_telemetry, sse_telemetry)
@@ -414,7 +409,7 @@ impl ModelClient {
 
     /// Builds request telemetry for unary API calls (e.g., Compact endpoint).
     fn build_request_telemetry(&self) -> Arc<dyn RequestTelemetry> {
-        let telemetry = Arc::new(ApiTelemetry::new(self.otel_event_manager.clone()));
+        let telemetry = Arc::new(ApiTelemetry::new(self.otel_manager.clone()));
         let request_telemetry: Arc<dyn RequestTelemetry> = telemetry;
         request_telemetry
     }
@@ -438,7 +433,7 @@ fn build_api_prompt(
     }
 }
 
-fn map_response_stream<S>(api_stream: S, otel_event_manager: OtelEventManager) -> ResponseStream
+fn map_response_stream<S>(api_stream: S, otel_manager: OtelManager) -> ResponseStream
 where
     S: futures::Stream<Item = std::result::Result<ResponseEvent, ApiError>>
         + Unpin
@@ -446,7 +441,6 @@ where
         + 'static,
 {
     let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent>>(1600);
-    let manager = otel_event_manager;
 
     tokio::spawn(async move {
         let mut logged_error = false;
@@ -458,7 +452,7 @@ where
                     token_usage,
                 }) => {
                     if let Some(usage) = &token_usage {
-                        manager.sse_event_completed(
+                        otel_manager.sse_event_completed(
                             usage.input_tokens,
                             usage.output_tokens,
                             Some(usage.cached_input_tokens),
@@ -485,7 +479,7 @@ where
                 Err(err) => {
                     let mapped = map_api_error(err);
                     if !logged_error {
-                        manager.see_event_completed_failed(&mapped);
+                        otel_manager.see_event_completed_failed(&mapped);
                         logged_error = true;
                     }
                     if tx_event.send(Err(mapped)).await.is_err() {
@@ -539,12 +533,12 @@ fn map_unauthorized_status(status: StatusCode) -> CodexErr {
 }
 
 struct ApiTelemetry {
-    otel_event_manager: OtelEventManager,
+    otel_manager: OtelManager,
 }
 
 impl ApiTelemetry {
-    fn new(otel_event_manager: OtelEventManager) -> Self {
-        Self { otel_event_manager }
+    fn new(otel_manager: OtelManager) -> Self {
+        Self { otel_manager }
     }
 }
 
@@ -557,7 +551,7 @@ impl RequestTelemetry for ApiTelemetry {
         duration: Duration,
     ) {
         let error_message = error.map(std::string::ToString::to_string);
-        self.otel_event_manager.record_api_request(
+        self.otel_manager.record_api_request(
             attempt,
             status.map(|s| s.as_u16()),
             error_message.as_deref(),
@@ -575,6 +569,6 @@ impl SseTelemetry for ApiTelemetry {
         >,
         duration: Duration,
     ) {
-        self.otel_event_manager.log_sse_event(result, duration);
+        self.otel_manager.log_sse_event(result, duration);
     }
 }

@@ -1,7 +1,9 @@
 use crate::config::Config;
+use crate::git_info::resolve_root_git_project_for_trust;
 use crate::skills::model::SkillError;
 use crate::skills::model::SkillLoadOutcome;
 use crate::skills::model::SkillMetadata;
+use codex_protocol::protocol::SkillScope;
 use dunce::canonicalize as normalize_path;
 use serde::Deserialize;
 use std::collections::VecDeque;
@@ -20,8 +22,9 @@ struct SkillFrontmatter {
 
 const SKILLS_FILENAME: &str = "SKILL.md";
 const SKILLS_DIR_NAME: &str = "skills";
-const MAX_NAME_LEN: usize = 100;
-const MAX_DESCRIPTION_LEN: usize = 500;
+const REPO_ROOT_CONFIG_DIR_NAME: &str = ".codex";
+const MAX_NAME_LEN: usize = 64;
+const MAX_DESCRIPTION_LEN: usize = 1024;
 
 #[derive(Debug)]
 enum SkillParseError {
@@ -51,10 +54,21 @@ impl fmt::Display for SkillParseError {
 impl Error for SkillParseError {}
 
 pub fn load_skills(config: &Config) -> SkillLoadOutcome {
+    load_skills_from_roots(skill_roots(config))
+}
+
+pub(crate) struct SkillRoot {
+    pub(crate) path: PathBuf,
+    pub(crate) scope: SkillScope,
+}
+
+pub(crate) fn load_skills_from_roots<I>(roots: I) -> SkillLoadOutcome
+where
+    I: IntoIterator<Item = SkillRoot>,
+{
     let mut outcome = SkillLoadOutcome::default();
-    let roots = skill_roots(config);
     for root in roots {
-        discover_skills_under_root(&root, &mut outcome);
+        discover_skills_under_root(&root.path, root.scope, &mut outcome);
     }
 
     outcome
@@ -64,11 +78,33 @@ pub fn load_skills(config: &Config) -> SkillLoadOutcome {
     outcome
 }
 
-fn skill_roots(config: &Config) -> Vec<PathBuf> {
-    vec![config.codex_home.join(SKILLS_DIR_NAME)]
+pub(crate) fn user_skills_root(codex_home: &Path) -> SkillRoot {
+    SkillRoot {
+        path: codex_home.join(SKILLS_DIR_NAME),
+        scope: SkillScope::User,
+    }
 }
 
-fn discover_skills_under_root(root: &Path, outcome: &mut SkillLoadOutcome) {
+pub(crate) fn repo_skills_root(cwd: &Path) -> Option<SkillRoot> {
+    resolve_root_git_project_for_trust(cwd).map(|repo_root| SkillRoot {
+        path: repo_root
+            .join(REPO_ROOT_CONFIG_DIR_NAME)
+            .join(SKILLS_DIR_NAME),
+        scope: SkillScope::Repo,
+    })
+}
+
+fn skill_roots(config: &Config) -> Vec<SkillRoot> {
+    let mut roots = vec![user_skills_root(&config.codex_home)];
+
+    if let Some(repo_root) = repo_skills_root(&config.cwd) {
+        roots.push(repo_root);
+    }
+
+    roots
+}
+
+fn discover_skills_under_root(root: &Path, scope: SkillScope, outcome: &mut SkillLoadOutcome) {
     let Ok(root) = normalize_path(root) else {
         return;
     };
@@ -112,7 +148,7 @@ fn discover_skills_under_root(root: &Path, outcome: &mut SkillLoadOutcome) {
             }
 
             if file_type.is_file() && file_name == SKILLS_FILENAME {
-                match parse_skill_file(&path) {
+                match parse_skill_file(&path, scope) {
                     Ok(skill) => outcome.skills.push(skill),
                     Err(err) => outcome.errors.push(SkillError {
                         path,
@@ -124,7 +160,7 @@ fn discover_skills_under_root(root: &Path, outcome: &mut SkillLoadOutcome) {
     }
 }
 
-fn parse_skill_file(path: &Path) -> Result<SkillMetadata, SkillParseError> {
+fn parse_skill_file(path: &Path, scope: SkillScope) -> Result<SkillMetadata, SkillParseError> {
     let contents = fs::read_to_string(path).map_err(SkillParseError::Read)?;
 
     let frontmatter = extract_frontmatter(&contents).ok_or(SkillParseError::MissingFrontmatter)?;
@@ -144,6 +180,7 @@ fn parse_skill_file(path: &Path) -> Result<SkillMetadata, SkillParseError> {
         name,
         description,
         path: resolved_path,
+        scope,
     })
 }
 
@@ -159,7 +196,7 @@ fn validate_field(
     if value.is_empty() {
         return Err(SkillParseError::MissingField(field_name));
     }
-    if value.len() > max_len {
+    if value.chars().count() > max_len {
         return Err(SkillParseError::InvalidField {
             field: field_name,
             reason: format!("exceeds maximum length of {max_len} characters"),
@@ -196,6 +233,9 @@ mod tests {
     use super::*;
     use crate::config::ConfigOverrides;
     use crate::config::ConfigToml;
+    use pretty_assertions::assert_eq;
+    use std::path::Path;
+    use std::process::Command;
     use tempfile::TempDir;
 
     fn make_config(codex_home: &TempDir) -> Config {
@@ -211,7 +251,11 @@ mod tests {
     }
 
     fn write_skill(codex_home: &TempDir, dir: &str, name: &str, description: &str) -> PathBuf {
-        let skill_dir = codex_home.path().join(format!("skills/{dir}"));
+        write_skill_at(codex_home.path(), dir, name, description)
+    }
+
+    fn write_skill_at(root: &Path, dir: &str, name: &str, description: &str) -> PathBuf {
+        let skill_dir = root.join(format!("skills/{dir}"));
         fs::create_dir_all(&skill_dir).unwrap();
         let indented_description = description.replace('\n', "\n  ");
         let content = format!(
@@ -276,16 +320,59 @@ mod tests {
     #[test]
     fn enforces_length_limits() {
         let codex_home = tempfile::tempdir().expect("tempdir");
-        let long_desc = "a".repeat(MAX_DESCRIPTION_LEN + 1);
-        write_skill(&codex_home, "too-long", "toolong", &long_desc);
+        let max_desc = "\u{1F4A1}".repeat(MAX_DESCRIPTION_LEN);
+        write_skill(&codex_home, "max-len", "max-len", &max_desc);
         let cfg = make_config(&codex_home);
 
         let outcome = load_skills(&cfg);
-        assert_eq!(outcome.skills.len(), 0);
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+
+        let too_long_desc = "\u{1F4A1}".repeat(MAX_DESCRIPTION_LEN + 1);
+        write_skill(&codex_home, "too-long", "too-long", &too_long_desc);
+        let outcome = load_skills(&cfg);
+        assert_eq!(outcome.skills.len(), 1);
         assert_eq!(outcome.errors.len(), 1);
         assert!(
             outcome.errors[0].message.contains("invalid description"),
             "expected length error"
         );
+    }
+
+    #[test]
+    fn loads_skills_from_repo_root() {
+        let codex_home = tempfile::tempdir().expect("tempdir");
+        let repo_dir = tempfile::tempdir().expect("tempdir");
+
+        let status = Command::new("git")
+            .arg("init")
+            .current_dir(repo_dir.path())
+            .status()
+            .expect("git init");
+        assert!(status.success(), "git init failed");
+
+        let skills_root = repo_dir
+            .path()
+            .join(REPO_ROOT_CONFIG_DIR_NAME)
+            .join(SKILLS_DIR_NAME);
+        write_skill_at(&skills_root, "repo", "repo-skill", "from repo");
+        let mut cfg = make_config(&codex_home);
+        cfg.cwd = repo_dir.path().to_path_buf();
+        let repo_root = normalize_path(&skills_root).unwrap_or_else(|_| skills_root.clone());
+
+        let outcome = load_skills(&cfg);
+        assert!(
+            outcome.errors.is_empty(),
+            "unexpected errors: {:?}",
+            outcome.errors
+        );
+        assert_eq!(outcome.skills.len(), 1);
+        let skill = &outcome.skills[0];
+        assert_eq!(skill.name, "repo-skill");
+        assert!(skill.path.starts_with(&repo_root));
     }
 }

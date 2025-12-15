@@ -9,6 +9,8 @@ use codex_core::AuthManager;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
 use codex_core::config::ConfigToml;
+use codex_core::openai_models::model_family::ModelFamily;
+use codex_core::openai_models::models_manager::ModelsManager;
 use codex_core::protocol::CreditsSnapshot;
 use codex_core::protocol::RateLimitSnapshot;
 use codex_core::protocol::RateLimitWindow;
@@ -36,6 +38,10 @@ fn test_auth_manager(config: &Config) -> AuthManager {
         false,
         config.cli_auth_credentials_store_mode,
     )
+}
+
+fn test_model_family(model_slug: &str, config: &Config) -> ModelFamily {
+    ModelsManager::construct_model_family_offline(model_slug, config)
 }
 
 fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
@@ -92,7 +98,7 @@ fn reset_at_from(captured_at: &chrono::DateTime<chrono::Local>, seconds: i64) ->
 fn status_snapshot_includes_reasoning_details() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home);
-    config.model = "gpt-5.1-codex-max".to_string();
+    config.model = Some("gpt-5.1-codex-max".to_string());
     config.model_provider_id = "openai".to_string();
     config.model_reasoning_effort = Some(ReasoningEffort::High);
     config.model_reasoning_summary = ReasoningSummary::Detailed;
@@ -134,15 +140,20 @@ fn status_snapshot_includes_reasoning_details() {
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
 
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
+
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &usage,
         Some(&usage),
         &None,
         Some(&rate_display),
         None,
         captured_at,
+        &model_slug,
     );
     let mut rendered_lines = render_lines(&composite.display_lines(80));
     if cfg!(windows) {
@@ -158,7 +169,7 @@ fn status_snapshot_includes_reasoning_details() {
 fn status_snapshot_includes_monthly_limit() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home);
-    config.model = "gpt-5.1-codex-max".to_string();
+    config.model = Some("gpt-5.1-codex-max".to_string());
     config.model_provider_id = "openai".to_string();
     config.cwd = PathBuf::from("/workspace/tests");
 
@@ -187,15 +198,19 @@ fn status_snapshot_includes_monthly_limit() {
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
 
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &usage,
         Some(&usage),
         &None,
         Some(&rate_display),
         None,
         captured_at,
+        &model_slug,
     );
     let mut rendered_lines = render_lines(&composite.display_lines(80));
     if cfg!(windows) {
@@ -228,15 +243,19 @@ fn status_snapshot_shows_unlimited_credits() {
         plan_type: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &usage,
         Some(&usage),
         &None,
         Some(&rate_display),
         None,
         captured_at,
+        &model_slug,
     );
     let rendered = render_lines(&composite.display_lines(120));
     assert!(
@@ -268,15 +287,19 @@ fn status_snapshot_shows_positive_credits() {
         plan_type: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &usage,
         Some(&usage),
         &None,
         Some(&rate_display),
         None,
         captured_at,
+        &model_slug,
     );
     let rendered = render_lines(&composite.display_lines(120));
     assert!(
@@ -308,15 +331,19 @@ fn status_snapshot_hides_zero_credits() {
         plan_type: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &usage,
         Some(&usage),
         &None,
         Some(&rate_display),
         None,
         captured_at,
+        &model_slug,
     );
     let rendered = render_lines(&composite.display_lines(120));
     assert!(
@@ -346,15 +373,19 @@ fn status_snapshot_hides_when_has_no_credits_flag() {
         plan_type: None,
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &usage,
         Some(&usage),
         &None,
         Some(&rate_display),
         None,
         captured_at,
+        &model_slug,
     );
     let rendered = render_lines(&composite.display_lines(120));
     assert!(
@@ -367,7 +398,7 @@ fn status_snapshot_hides_when_has_no_credits_flag() {
 fn status_card_token_usage_excludes_cached_tokens() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home);
-    config.model = "gpt-5.1-codex-max".to_string();
+    config.model = Some("gpt-5.1-codex-max".to_string());
     config.cwd = PathBuf::from("/workspace/tests");
 
     let auth_manager = test_auth_manager(&config);
@@ -384,15 +415,19 @@ fn status_card_token_usage_excludes_cached_tokens() {
         .single()
         .expect("timestamp");
 
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &usage,
         Some(&usage),
         &None,
         None,
         None,
         now,
+        &model_slug,
     );
     let rendered = render_lines(&composite.display_lines(120));
 
@@ -406,7 +441,7 @@ fn status_card_token_usage_excludes_cached_tokens() {
 fn status_snapshot_truncates_in_narrow_terminal() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home);
-    config.model = "gpt-5.1-codex-max".to_string();
+    config.model = Some("gpt-5.1-codex-max".to_string());
     config.model_provider_id = "openai".to_string();
     config.model_reasoning_effort = Some(ReasoningEffort::High);
     config.model_reasoning_summary = ReasoningSummary::Detailed;
@@ -437,15 +472,19 @@ fn status_snapshot_truncates_in_narrow_terminal() {
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
 
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &usage,
         Some(&usage),
         &None,
         Some(&rate_display),
         None,
         captured_at,
+        &model_slug,
     );
     let mut rendered_lines = render_lines(&composite.display_lines(70));
     if cfg!(windows) {
@@ -462,7 +501,7 @@ fn status_snapshot_truncates_in_narrow_terminal() {
 fn status_snapshot_shows_missing_limits_message() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home);
-    config.model = "gpt-5.1-codex-max".to_string();
+    config.model = Some("gpt-5.1-codex-max".to_string());
     config.cwd = PathBuf::from("/workspace/tests");
 
     let auth_manager = test_auth_manager(&config);
@@ -479,15 +518,19 @@ fn status_snapshot_shows_missing_limits_message() {
         .single()
         .expect("timestamp");
 
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &usage,
         Some(&usage),
         &None,
         None,
         None,
         now,
+        &model_slug,
     );
     let mut rendered_lines = render_lines(&composite.display_lines(80));
     if cfg!(windows) {
@@ -503,7 +546,7 @@ fn status_snapshot_shows_missing_limits_message() {
 fn status_snapshot_includes_credits_and_limits() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home);
-    config.model = "gpt-5.1-codex".to_string();
+    config.model = Some("gpt-5.1-codex".to_string());
     config.cwd = PathBuf::from("/workspace/tests");
 
     let auth_manager = test_auth_manager(&config);
@@ -539,15 +582,19 @@ fn status_snapshot_includes_credits_and_limits() {
     };
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
 
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &usage,
         Some(&usage),
         &None,
         Some(&rate_display),
         None,
         captured_at,
+        &model_slug,
     );
     let mut rendered_lines = render_lines(&composite.display_lines(80));
     if cfg!(windows) {
@@ -563,7 +610,7 @@ fn status_snapshot_includes_credits_and_limits() {
 fn status_snapshot_shows_empty_limits_message() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home);
-    config.model = "gpt-5.1-codex-max".to_string();
+    config.model = Some("gpt-5.1-codex-max".to_string());
     config.cwd = PathBuf::from("/workspace/tests");
 
     let auth_manager = test_auth_manager(&config);
@@ -587,15 +634,19 @@ fn status_snapshot_shows_empty_limits_message() {
         .expect("timestamp");
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
 
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &usage,
         Some(&usage),
         &None,
         Some(&rate_display),
         None,
         captured_at,
+        &model_slug,
     );
     let mut rendered_lines = render_lines(&composite.display_lines(80));
     if cfg!(windows) {
@@ -611,7 +662,7 @@ fn status_snapshot_shows_empty_limits_message() {
 fn status_snapshot_shows_stale_limits_message() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home);
-    config.model = "gpt-5.1-codex-max".to_string();
+    config.model = Some("gpt-5.1-codex-max".to_string());
     config.cwd = PathBuf::from("/workspace/tests");
 
     let auth_manager = test_auth_manager(&config);
@@ -644,15 +695,19 @@ fn status_snapshot_shows_stale_limits_message() {
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
     let now = captured_at + ChronoDuration::minutes(20);
 
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &usage,
         Some(&usage),
         &None,
         Some(&rate_display),
         None,
         now,
+        &model_slug,
     );
     let mut rendered_lines = render_lines(&composite.display_lines(80));
     if cfg!(windows) {
@@ -668,7 +723,7 @@ fn status_snapshot_shows_stale_limits_message() {
 fn status_snapshot_cached_limits_hide_credits_without_flag() {
     let temp_home = TempDir::new().expect("temp home");
     let mut config = test_config(&temp_home);
-    config.model = "gpt-5.1-codex".to_string();
+    config.model = Some("gpt-5.1-codex".to_string());
     config.cwd = PathBuf::from("/workspace/tests");
 
     let auth_manager = test_auth_manager(&config);
@@ -705,15 +760,19 @@ fn status_snapshot_cached_limits_hide_credits_without_flag() {
     let rate_display = rate_limit_snapshot_display(&snapshot, captured_at);
     let now = captured_at + ChronoDuration::minutes(20);
 
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &usage,
         Some(&usage),
         &None,
         Some(&rate_display),
         None,
         now,
+        &model_slug,
     );
     let mut rendered_lines = render_lines(&composite.display_lines(80));
     if cfg!(windows) {
@@ -752,15 +811,19 @@ fn status_context_window_uses_last_usage() {
         .single()
         .expect("timestamp");
 
+    let model_slug = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = test_model_family(&model_slug, &config);
     let composite = new_status_output(
         &config,
         &auth_manager,
+        &model_family,
         &total_usage,
         Some(&last_usage),
         &None,
         None,
         None,
         now,
+        &model_slug,
     );
     let rendered_lines = render_lines(&composite.display_lines(80));
     let context_line = rendered_lines

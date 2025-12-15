@@ -1,8 +1,8 @@
+#![allow(clippy::expect_used)]
+
 use std::sync::Arc;
 
 use codex_app_server_protocol::AuthMode;
-use codex_core::AuthManager;
-use codex_core::CodexAuth;
 use codex_core::ContentItem;
 use codex_core::LocalShellAction;
 use codex_core::LocalShellExecAction;
@@ -13,9 +13,10 @@ use codex_core::Prompt;
 use codex_core::ResponseItem;
 use codex_core::WireApi;
 use codex_core::openai_models::models_manager::ModelsManager;
-use codex_otel::otel_event_manager::OtelEventManager;
+use codex_otel::otel_manager::OtelManager;
 use codex_protocol::ConversationId;
 use codex_protocol::models::ReasoningItemContent;
+use codex_protocol::protocol::SessionSource;
 use core_test_support::load_default_config_for_test;
 use core_test_support::skip_if_no_network;
 use futures::StreamExt;
@@ -73,30 +74,30 @@ async fn run_request(input: Vec<ResponseItem>) -> Value {
     let config = Arc::new(config);
 
     let conversation_id = ConversationId::new();
-    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
-    let models_manager = Arc::new(ModelsManager::new(auth_manager));
-    let model_family = models_manager.construct_model_family(&config.model, &config);
-    let otel_event_manager = OtelEventManager::new(
+    let model = ModelsManager::get_model_offline(config.model.as_deref());
+    let model_family = ModelsManager::construct_model_family_offline(model.as_str(), &config);
+    let otel_manager = OtelManager::new(
         conversation_id,
-        config.model.as_str(),
+        model.as_str(),
         model_family.slug.as_str(),
         None,
         Some("test@test.com".to_string()),
         Some(AuthMode::ApiKey),
         false,
         "test".to_string(),
+        SessionSource::Exec,
     );
 
     let client = ModelClient::new(
         Arc::clone(&config),
         None,
         model_family,
-        otel_event_manager,
+        otel_manager,
         provider,
         effort,
         summary,
         conversation_id,
-        codex_protocol::protocol::SessionSource::Exec,
+        SessionSource::Exec,
     );
 
     let mut prompt = Prompt::default();
@@ -112,11 +113,15 @@ async fn run_request(input: Vec<ResponseItem>) -> Value {
         }
     }
 
-    let requests = match server.received_requests().await {
-        Some(reqs) => reqs,
-        None => panic!("request not made"),
-    };
-    match requests[0].body_json() {
+    let all_requests = server.received_requests().await.expect("received requests");
+    let requests: Vec<_> = all_requests
+        .iter()
+        .filter(|req| req.method == "POST" && req.url.path().ends_with("/chat/completions"))
+        .collect();
+    let request = requests
+        .first()
+        .unwrap_or_else(|| panic!("expected POST request to /chat/completions"));
+    match request.body_json() {
         Ok(v) => v,
         Err(e) => panic!("invalid json body: {e}"),
     }

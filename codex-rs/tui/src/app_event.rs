@@ -77,6 +77,11 @@ pub(crate) enum AppEvent {
         model: ModelPreset,
     },
 
+    /// Open the full model picker (non-auto models).
+    OpenAllModelsPopup {
+        models: Vec<ModelPreset>,
+    },
+
     /// Open the confirmation prompt before enabling full access mode.
     OpenFullAccessConfirmation {
         preset: ApprovalPreset,
@@ -137,7 +142,8 @@ pub(crate) enum AppEvent {
 
     /// Persist the acknowledgement flag for the model migration prompt.
     PersistModelMigrationPromptAcknowledged {
-        migration_config: String,
+        from_model: String,
+        to_model: String,
     },
 
     /// Skip the next world-writable scan (one-shot) after a user-confirmed continue.
