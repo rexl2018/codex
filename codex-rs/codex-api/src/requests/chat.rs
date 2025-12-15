@@ -501,8 +501,7 @@ fn coalesce_messages(messages: Vec<Value>) -> Vec<Value> {
 }
 
 fn is_assistant(msg: &Value) -> bool {
-    msg.get("role")
-        .and_then(|r| r.as_str()) == Some("assistant")
+    msg.get("role").and_then(|r| r.as_str()) == Some("assistant")
 }
 
 fn merge_json_objects(target: &mut Value, source: Value) {
@@ -510,12 +509,13 @@ fn merge_json_objects(target: &mut Value, source: Value) {
         // Merge content
         if let Some(source_content) = source_obj.get("content")
             && !source_content.is_null()
-                && (!target_obj.contains_key("content") || target_obj["content"].is_null()) {
-                    target_obj.insert("content".to_string(), source_content.clone());
-                }
-                // If both have content, we keep target's (first) content, similar to the strategy in responses.rs
-                // to avoid overwriting preamble with potentially conflicting content or duplicating.
-                // For "Preamble" + "ToolCall", target has content, source (ToolCall) usually has null content.
+            && (!target_obj.contains_key("content") || target_obj["content"].is_null())
+        {
+            target_obj.insert("content".to_string(), source_content.clone());
+        }
+        // If both have content, we keep target's (first) content, similar to the strategy in responses.rs
+        // to avoid overwriting preamble with potentially conflicting content or duplicating.
+        // For "Preamble" + "ToolCall", target has content, source (ToolCall) usually has null content.
 
         // Merge tool_calls
         if let Some(source_tools) = source_obj.get("tool_calls").and_then(|v| v.as_array()) {
@@ -532,9 +532,10 @@ fn merge_json_objects(target: &mut Value, source: Value) {
         // Merge reasoning?
         // If target has reasoning, keep it. If not, take source.
         if !target_obj.contains_key("reasoning")
-            && let Some(reasoning) = source_obj.get("reasoning") {
-                target_obj.insert("reasoning".to_string(), reasoning.clone());
-            }
+            && let Some(reasoning) = source_obj.get("reasoning")
+        {
+            target_obj.insert("reasoning".to_string(), reasoning.clone());
+        }
     }
 }
 

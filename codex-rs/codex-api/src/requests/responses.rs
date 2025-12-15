@@ -233,11 +233,13 @@ fn coalesce_input(items: &[ResponseItem], store: bool, is_azure: bool) -> Vec<Va
         };
 
         // Attach ID before merging if needed
-        if store && is_azure
+        if store
+            && is_azure
             && let Some(id) = get_response_item_id(item)
-                && let Some(obj) = item_value.as_object_mut() {
-                    obj.insert("id".to_string(), Value::String(id.to_string()));
-                }
+            && let Some(obj) = item_value.as_object_mut()
+        {
+            obj.insert("id".to_string(), Value::String(id.to_string()));
+        }
 
         if is_mergeable_assistant_item(item) {
             if let Some(mut existing) = current_merge.take() {
@@ -283,10 +285,11 @@ fn merge_assistant_objects(target: &mut serde_json::Map<String, Value>, source: 
     // Merge content
     if let Some(source_content) = source_obj.remove("content")
         && !source_content.is_null()
-            && (!target.contains_key("content") || target["content"].is_null()) {
-                target.insert("content".to_string(), source_content);
-            }
-            // Else: target has content, source has content. We assume target (first) is valid preamble.
+        && (!target.contains_key("content") || target["content"].is_null())
+    {
+        target.insert("content".to_string(), source_content);
+    }
+    // Else: target has content, source has content. We assume target (first) is valid preamble.
 
     // Merge tool_calls
     if let Some(Value::Array(source_tools)) = source_obj.remove("tool_calls") {

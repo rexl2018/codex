@@ -38,6 +38,33 @@ struct ToolCallState {
     thought_signature: Option<String>,
 }
 
+fn extract_thought_signature(tool_call: &serde_json::Value) -> Option<String> {
+    if let Some(sig) = tool_call
+        .get("extra_content")
+        .and_then(|extra| extra.get("google"))
+        .and_then(|google| google.get("thought_signature"))
+        .and_then(|sig| sig.as_str())
+    {
+        return Some(sig.to_string());
+    }
+
+    if let Some(sig) = tool_call.get("signature").and_then(|sig| sig.as_str()) {
+        return Some(sig.to_string());
+    }
+
+    if let Some(func) = tool_call.get("function") {
+        if let Some(sig) = func
+            .get("thought_signature")
+            .or_else(|| func.get("signature"))
+            .and_then(|sig| sig.as_str())
+        {
+            return Some(sig.to_string());
+        }
+    }
+
+    None
+}
+
 pub async fn process_chat_sse<S>(
     stream: S,
     tx_event: mpsc::Sender<Result<ResponseEvent, ApiError>>,
@@ -204,13 +231,10 @@ pub async fn process_chat_sse<S>(
                             }
                         }
 
-                        if let Some(extra) = tool_call.get("extra_content")
-                            && let Some(google) = extra.get("google")
-                            && let Some(sig) = google.get("thought_signature").and_then(|s| s.as_str())
+                        if call_state.thought_signature.is_none()
+                            && let Some(sig) = extract_thought_signature(tool_call)
                         {
-                            call_state
-                                .thought_signature
-                                .get_or_insert_with(|| sig.to_string());
+                            call_state.thought_signature = Some(sig);
                         }
 
                         last_tool_call_index = Some(index);
@@ -254,13 +278,10 @@ pub async fn process_chat_sse<S>(
                             call_state.arguments.push_str(arguments);
                         }
                     }
-                    if let Some(extra) = tool_call.get("extra_content")
-                        && let Some(google) = extra.get("google")
-                        && let Some(sig) = google.get("thought_signature").and_then(|s| s.as_str())
+                    if call_state.thought_signature.is_none()
+                        && let Some(sig) = extract_thought_signature(tool_call)
                     {
-                        call_state
-                            .thought_signature
-                            .get_or_insert_with(|| sig.to_string());
+                        call_state.thought_signature = Some(sig);
                     }
                 }
             }
@@ -519,6 +540,37 @@ mod tests {
                 ResponseEvent::OutputItemDone(ResponseItem::FunctionCall { call_id: call_b, name: name_b, arguments: args_b, .. }),
                 ResponseEvent::Completed { .. }
             ] if call_a == "call_a" && name_a == "do_a" && args_a == "{\"foo\":1}" && call_b == "call_b" && name_b == "do_b" && args_b == "{\"bar\":2}"
+        );
+    }
+
+    #[tokio::test]
+    async fn captures_signature_field_when_extra_content_missing() {
+        let delta = json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "id": "call_sig",
+                        "function": { "name": "do_sig", "arguments": "{}" },
+                        "signature": "sig-123"
+                    }]
+                }
+            }]
+        });
+
+        let finish = json!({
+            "choices": [{
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        let body = build_body(&[delta, finish]);
+        let events = collect_events(&body).await;
+        assert_matches!(
+            &events[..],
+            [
+                ResponseEvent::OutputItemDone(ResponseItem::FunctionCall { call_id, thought_signature, .. }),
+                ResponseEvent::Completed { .. }
+            ] if call_id == "call_sig" && thought_signature.as_deref() == Some("sig-123")
         );
     }
 

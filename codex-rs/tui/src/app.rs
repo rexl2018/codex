@@ -790,7 +790,11 @@ impl App {
                         format!("Failed to resume session from {}", path.display())
                     })?;
 
-                let model_family = self.server.get_models_manager().construct_model_family(&resumed.session_configured.model, &self.config).await;
+                let model_family = self
+                    .server
+                    .get_models_manager()
+                    .construct_model_family(&resumed.session_configured.model, &self.config)
+                    .await;
 
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: self.config.clone(),
@@ -888,7 +892,11 @@ impl App {
                                 writable_roots,
                                 ..
                             } => {
-                                if let Ok(abs_path) = codex_utils_absolute_path::AbsolutePathBuf::try_from(path.clone()) {
+                                if let Ok(abs_path) =
+                                    codex_utils_absolute_path::AbsolutePathBuf::try_from(
+                                        path.clone(),
+                                    )
+                                {
                                     if !writable_roots.contains(&abs_path) {
                                         writable_roots.push(abs_path);
                                     }
