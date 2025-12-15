@@ -790,6 +790,8 @@ impl App {
                         format!("Failed to resume session from {}", path.display())
                     })?;
 
+                let model_family = self.server.get_models_manager().construct_model_family(&resumed.session_configured.model, &self.config).await;
+
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: self.config.clone(),
                     frame_requester: tui.frame_requester(),
@@ -800,8 +802,8 @@ impl App {
                     auth_manager: self.auth_manager.clone(),
                     models_manager: self.server.get_models_manager(),
                     feedback: self.feedback.clone(),
-                    skills: self.skills.clone(),
                     is_first_run: false,
+                    model_family,
                 };
                 self.chat_widget = ChatWidget::new_from_existing(
                     init,
@@ -886,8 +888,10 @@ impl App {
                                 writable_roots,
                                 ..
                             } => {
-                                if !writable_roots.contains(&path) {
-                                    writable_roots.push(path.clone());
+                                if let Ok(abs_path) = codex_utils_absolute_path::AbsolutePathBuf::try_from(path.clone()) {
+                                    if !writable_roots.contains(&abs_path) {
+                                        writable_roots.push(abs_path);
+                                    }
                                 }
                                 // Propagate to logic/UI
                                 self.chat_widget

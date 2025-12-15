@@ -168,7 +168,7 @@ impl FileSearchManager {
                 &query,
                 MAX_FILE_SEARCH_RESULTS,
                 &search_dir,
-                Vec::new(),
+                Vec::new(), Vec::new(),
                 NUM_FILE_SEARCH_THREADS,
                 cancellation_token.clone(),
                 compute_indices,
