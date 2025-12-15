@@ -89,7 +89,7 @@ use crate::exec::StreamOutput;
 use crate::exec_policy::ExecPolicyUpdateError;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp_connection_manager::McpConnectionManager;
-use crate::model_provider_info::CHAT_WIRE_API_DEPRECATION_SUMMARY;
+// use crate::model_provider_info::CHAT_WIRE_API_DEPRECATION_SUMMARY;
 use crate::project_doc::get_user_instructions;
 use crate::protocol::AgentMessageContentDeltaEvent;
 use crate::protocol::AgentReasoningSectionBreakEvent;
@@ -183,7 +183,7 @@ static CHAT_WIRE_API_DEPRECATION_EMITTED: AtomicBool = AtomicBool::new(false);
 
 fn maybe_push_chat_wire_api_deprecation(
     config: &Config,
-    post_session_configured_events: &mut Vec<Event>,
+    _post_session_configured_events: &mut Vec<Event>,
 ) {
     if config.model_provider.wire_api != WireApi::Chat {
         return;
@@ -196,13 +196,13 @@ fn maybe_push_chat_wire_api_deprecation(
         return;
     }
 
-    post_session_configured_events.push(Event {
-        id: INITIAL_SUBMIT_ID.to_owned(),
-        msg: EventMsg::DeprecationNotice(DeprecationNoticeEvent {
-            summary: CHAT_WIRE_API_DEPRECATION_SUMMARY.to_string(),
-            details: None,
-        }),
-    });
+    // post_session_configured_events.push(Event {
+    //     id: INITIAL_SUBMIT_ID.to_owned(),
+    //     msg: EventMsg::DeprecationNotice(DeprecationNoticeEvent {
+    //         summary: CHAT_WIRE_API_DEPRECATION_SUMMARY.to_string(),
+    //         details: None,
+    //     }),
+    // });
 }
 
 impl Codex {
