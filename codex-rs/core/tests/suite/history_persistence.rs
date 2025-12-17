@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::CodexConversation;
 use codex_core::ConversationManager;
@@ -10,6 +11,7 @@ use codex_core::built_in_model_providers;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::HistoryAction;
 use codex_core::protocol::Op;
+use codex_core::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use core_test_support::load_default_config_for_test;
 use core_test_support::responses::ev_assistant_message;
@@ -44,7 +46,8 @@ async fn deleting_history_persists_across_resume() {
     };
     config.model_provider = model_provider;
 
-    let manager = ConversationManager::with_auth(CodexAuth::from_api_key("dummy"));
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+    let manager = ConversationManager::new(auth_manager, SessionSource::Exec);
     let conversation = manager
         .new_conversation(config.clone())
         .await
@@ -68,9 +71,8 @@ async fn deleting_history_persists_across_resume() {
 
     shutdown_conversation(&conversation).await;
 
-    let resume_auth =
-        codex_core::AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
-    let resumed_manager = ConversationManager::with_auth(CodexAuth::from_api_key("dummy"));
+    let resume_auth = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+    let resumed_manager = ConversationManager::new(resume_auth.clone(), SessionSource::Exec);
     let resumed = resumed_manager
         .resume_conversation_from_rollout(config.clone(), rollout_path, resume_auth)
         .await
@@ -113,7 +115,8 @@ async fn undo_history_range_persists_across_resume() {
     };
     config.model_provider = model_provider;
 
-    let manager = ConversationManager::with_auth(CodexAuth::from_api_key("dummy"));
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+    let manager = ConversationManager::new(auth_manager, SessionSource::Exec);
     let conversation = manager
         .new_conversation(config.clone())
         .await
@@ -141,9 +144,8 @@ async fn undo_history_range_persists_across_resume() {
 
     shutdown_conversation(&conversation).await;
 
-    let resume_auth =
-        codex_core::AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
-    let resumed_manager = ConversationManager::with_auth(CodexAuth::from_api_key("dummy"));
+    let resume_auth = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+    let resumed_manager = ConversationManager::new(resume_auth.clone(), SessionSource::Exec);
     let resumed = resumed_manager
         .resume_conversation_from_rollout(config.clone(), rollout_path, resume_auth)
         .await

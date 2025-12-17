@@ -7,7 +7,6 @@ use crate::tools::handlers::PLAN_TOOL;
 use crate::tools::handlers::apply_patch::create_apply_patch_freeform_tool;
 use crate::tools::handlers::apply_patch::create_apply_patch_json_tool;
 use crate::tools::registry::ToolRegistryBuilder;
-use crate::openai_models::model_family::find_family_for_model;
 use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use serde::Deserialize;
@@ -1131,6 +1130,7 @@ pub(crate) fn build_specs(
 mod tests {
     use crate::client_common::tools::FreeformTool;
     use crate::config::test_config;
+    use crate::openai_models::model_family::find_family_for_model;
     use crate::openai_models::models_manager::ModelsManager;
     use crate::tools::registry::ConfiguredToolSpec;
     use mcp_types::ToolInputSchema;
@@ -1552,8 +1552,7 @@ mod tests {
 
     #[test]
     fn test_freeform_as_function_conversion() {
-        let model_family =
-            find_family_for_model("gpt-5.1").expect("gpt-5.1 should be a valid model family");
+        let model_family = find_family_for_model("gpt-5.1");
         let mut features = Features::with_defaults();
         features.enable(Feature::ApplyPatchFreeform);
         features.enable(Feature::FreeformAsFunction);
@@ -1580,8 +1579,7 @@ mod tests {
 
     #[test]
     fn test_freeform_without_conversion() {
-        let model_family =
-            find_family_for_model("gpt-5.1").expect("gpt-5.1 should be a valid model family");
+        let model_family = find_family_for_model("gpt-5.1");
         let mut features = Features::with_defaults();
         features.enable(Feature::ApplyPatchFreeform);
         // Do NOT enable FreeformAsFunction

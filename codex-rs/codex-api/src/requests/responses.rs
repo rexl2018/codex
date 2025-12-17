@@ -269,10 +269,6 @@ fn coalesce_input(items: &[ResponseItem], store: bool, is_azure: bool) -> Vec<Va
 fn is_mergeable_assistant_item(item: &ResponseItem) -> bool {
     match item {
         ResponseItem::Message { role, .. } => role == "assistant",
-        ResponseItem::FunctionCall { .. }
-        | ResponseItem::LocalShellCall { .. }
-        | ResponseItem::CustomToolCall { .. }
-        | ResponseItem::WebSearchCall { .. } => true,
         _ => false,
     }
 }

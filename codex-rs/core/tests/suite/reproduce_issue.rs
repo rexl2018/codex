@@ -30,7 +30,7 @@ async fn interrupt_reasoning_records_history() {
             let body = sse(vec![
                 ev_response_created("resp-reasoning"),
                 ev_reasoning_item_added("reasoning-1", &[]),
-                ev_reasoning_text_delta("I am thinking about the problem..."),
+                ev_reasoning_text_delta(reasoning_text),
             ]);
 
             ResponseTemplate::new(200)

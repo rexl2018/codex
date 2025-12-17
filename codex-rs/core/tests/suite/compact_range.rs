@@ -1,14 +1,15 @@
 #![allow(clippy::expect_used)]
 use codex_core::CodexAuth;
+use codex_core::AuthManager;
 use codex_core::ConversationManager;
 use codex_core::ModelProviderInfo;
 use codex_core::NewConversation;
 use codex_core::built_in_model_providers;
 use codex_core::compact::SUMMARIZATION_PROMPT;
-use codex_core::compact::SUMMARY_PREFIX;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::HistoryAction;
 use codex_core::protocol::Op;
+use codex_core::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use core_test_support::load_default_config_for_test;
 use core_test_support::responses::ev_assistant_message;
@@ -20,10 +21,6 @@ use core_test_support::skip_if_no_network;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
-
-fn summary_with_prefix(summary: &str) -> String {
-    format!("{SUMMARY_PREFIX}\n{summary}")
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compact_range_middle() {
@@ -69,7 +66,8 @@ async fn compact_range_middle() {
     config.model_provider = model_provider;
     config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
 
-    let conversation_manager = ConversationManager::with_auth(CodexAuth::from_api_key("dummy"));
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
+    let conversation_manager = ConversationManager::new(auth_manager, SessionSource::Exec);
     let NewConversation {
         conversation: codex,
         ..

@@ -21,6 +21,7 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
+use core_test_support::wait_for_event_with_timeout;
 use std::collections::VecDeque;
 use tempfile::TempDir;
 
@@ -1333,7 +1334,12 @@ async fn auto_compact_persists_rollout_entries() {
         })
         .await
         .unwrap();
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
+    wait_for_event_with_timeout(
+        &codex,
+        |ev| matches!(ev, EventMsg::TaskComplete(_)),
+        std::time::Duration::from_secs(30),
+    )
+    .await;
 
     codex.submit(Op::Shutdown).await.unwrap();
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use chrono::SecondsFormat;
 use time::OffsetDateTime;
 use time::PrimitiveDateTime;
 use time::format_description::FormatItem;
@@ -378,6 +379,13 @@ async fn read_head_and_tail(
     let reader = tokio::io::BufReader::new(file);
     let mut lines = reader.lines();
     let mut summary = HeadTailSummary::default();
+
+    if let Ok(meta) = tokio::fs::metadata(path).await
+        && let Ok(modified) = meta.modified()
+    {
+        let dt: chrono::DateTime<chrono::Utc> = modified.into();
+        summary.updated_at = Some(dt.to_rfc3339_opts(SecondsFormat::Secs, true));
+    }
 
     // Loop through all lines to find head AND tail.
     // For tail, we keep a rolling buffer.

@@ -109,6 +109,7 @@ async fn process_sse_emits_failed_event_on_parse_error() {
     let server = start_mock_server().await;
 
     mount_sse_once(&server, "data: not-json\n\n".to_string()).await;
+    mount_sse_once(&server, sse(vec![ev_completed("done")])).await;
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(move |config| {
@@ -148,6 +149,7 @@ async fn process_sse_records_failed_event_when_stream_closes_without_completed()
     let server = start_mock_server().await;
 
     mount_sse_once(&server, sse(vec![ev_assistant_message("id", "hi")])).await;
+    mount_sse_once(&server, sse(vec![ev_completed("done")])).await;
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(move |config| {
@@ -306,6 +308,14 @@ async fn process_sse_failed_event_logs_missing_error() {
             "type": "response.failed",
             "response": {}
         })]),
+    )
+    .await;
+    mount_sse_once(
+        &server,
+        sse(vec![
+            ev_assistant_message("msg-1", "local shell done"),
+            ev_completed("done"),
+        ]),
     )
     .await;
 
@@ -532,14 +542,15 @@ async fn record_responses_sets_span_fields_for_response_events() {
         ev_output_text_delta("delta"),
         ev_reasoning_summary_text_delta("summary-delta"),
         ev_reasoning_text_delta("raw-delta"),
-        ev_function_call("call-1", "fn", "{\"key\":\"value\"}"),
-        ev_custom_tool_call("custom-1", "custom_tool", "{\"key\":\"value\"}"),
+        ev_function_call("call-2", "fn", "{\"key\":\"value\"}"),
+        ev_custom_tool_call("custom-2", "custom_tool", "{\"key\":\"value\"}"),
         ev_assistant_message("msg-1", "agent"),
         ev_reasoning_item("reasoning-1", &["summary"], &[]),
         ev_completed("resp-1"),
     ]);
 
-    mount_response_once(&server, sse_response(sse_body)).await;
+    mount_sse_once(&server, sse_body.clone()).await;
+    mount_sse_once(&server, sse(vec![ev_completed("resp-2")])).await;
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {

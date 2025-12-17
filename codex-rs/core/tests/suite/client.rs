@@ -21,6 +21,7 @@ use codex_core::openai_models::models_manager::ModelsManager;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::Op;
 use codex_core::protocol::SessionSource;
+use codex_app_server_protocol::AuthMode;
 use codex_otel::otel_manager::OtelManager;
 use codex_protocol::ConversationId;
 use codex_protocol::config_types::ReasoningSummary;
@@ -1225,6 +1226,8 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         .body_json()
         .expect("request body to be valid JSON");
 
+    println!("Request body: {}", serde_json::to_string_pretty(&body).unwrap());
+
     assert_eq!(body["store"], serde_json::Value::Bool(true));
     assert_eq!(body["stream"], serde_json::Value::Bool(true));
     assert_eq!(body["input"].as_array().map(Vec::len), Some(6));
@@ -1921,29 +1924,34 @@ async fn request_includes_previous_response_id_when_configured() {
     config.conversation_build_strategy = ConversationBuildStrategy::PreviousResponseId;
     let effort = config.model_reasoning_effort;
     let summary = config.model_reasoning_summary;
+    let model = ModelsManager::get_model_offline(config.model.as_deref());
+    config.model = Some(model.clone());
     let config = Arc::new(config);
+    let model_family = ModelsManager::construct_model_family_offline(model.as_str(), &config);
 
     let conversation_id = ConversationId::new();
-    let otel_event_manager = OtelEventManager::new(
+    let otel_manager = OtelManager::new(
         conversation_id,
-        config.model.as_str(),
-        config.model_family.slug.as_str(),
+        model.as_str(),
+        model_family.slug.as_str(),
         None,
         Some("test@test.com".to_string()),
         Some(AuthMode::ChatGPT),
         false,
         "test".to_string(),
+        SessionSource::Exec,
     );
 
     let client = ModelClient::new(
         Arc::clone(&config),
         None,
-        otel_event_manager,
+        model_family,
+        otel_manager,
         provider,
         effort,
         summary,
         conversation_id,
-        codex_protocol::protocol::SessionSource::Exec,
+        SessionSource::Exec,
     );
 
     let mut prompt = Prompt::default();
@@ -2010,11 +2018,6 @@ async fn previous_response_id_is_sent_in_subsequent_turn() {
         .insert_header("content-type", "text/event-stream")
         .set_body_raw(sse_body_1, "text/event-stream");
 
-    let sse_body_2 = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_456\"}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_456\"}}\n\n";
-    let template_2 = ResponseTemplate::new(200)
-        .insert_header("content-type", "text/event-stream")
-        .set_body_raw(sse_body_2, "text/event-stream");
-
     Mock::given(method("POST"))
         .and(path("/v1/responses"))
         .respond_with(ResponseTemplate::new(200).set_body_raw("", "text/event-stream")) // Placeholder
@@ -2045,7 +2048,8 @@ async fn previous_response_id_is_sent_in_subsequent_turn() {
     config.model_provider = provider;
     config.conversation_build_strategy = ConversationBuildStrategy::PreviousResponseId;
 
-    let conversation_manager = ConversationManager::with_auth(CodexAuth::from_api_key("test"));
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
+    let conversation_manager = ConversationManager::new(auth_manager, SessionSource::Exec);
     let codex = conversation_manager
         .new_conversation(config)
         .await
