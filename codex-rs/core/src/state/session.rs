@@ -10,6 +10,10 @@ use crate::protocol::TokenUsageInfo;
 use crate::truncate::TruncationPolicy;
 
 /// Persistent, session-scoped state previously stored directly on `Session`.
+///
+/// `last_response_id` tracks the most recent response that has successfully
+/// completed. Callers should only update it after observing a
+/// `ResponseEvent::Completed` for that response.
 pub(crate) struct SessionState {
     pub(crate) session_configuration: SessionConfiguration,
     pub(crate) history: ContextManager,

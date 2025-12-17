@@ -2757,9 +2757,12 @@ async fn try_run_turn(
                 sess.update_rate_limits(&turn_context, snapshot).await;
             }
             ResponseEvent::Completed {
-                response_id: _,
+                response_id,
                 token_usage,
             } => {
+                // Only record last_response_id once the response has fully completed.
+                sess.set_last_response_id(&turn_context, response_id).await;
+
                 sess.update_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;
                 let unified_diff = {
@@ -3176,6 +3179,83 @@ mod tests {
                 credits: initial.credits,
                 plan_type: update.plan_type,
             })
+        );
+    }
+
+    #[test]
+    fn last_response_id_is_none_by_default_and_updates_on_set() {
+        let codex_home = tempfile::tempdir().expect("create temp dir");
+        let config = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )
+        .expect("load default test config");
+        let config = Arc::new(config);
+        let model = ModelsManager::get_model_offline(config.model.as_deref());
+        let session_configuration = SessionConfiguration {
+            provider: config.model_provider.clone(),
+            model,
+            model_reasoning_effort: config.model_reasoning_effort,
+            model_reasoning_summary: config.model_reasoning_summary,
+            developer_instructions: config.developer_instructions.clone(),
+            user_instructions: config.user_instructions.clone(),
+            base_instructions: config.base_instructions.clone(),
+            compact_prompt: config.compact_prompt.clone(),
+            approval_policy: config.approval_policy,
+            sandbox_policy: config.sandbox_policy.clone(),
+            cwd: config.cwd.clone(),
+            original_config_do_not_use: Arc::clone(&config),
+            exec_policy: Arc::new(RwLock::new(ExecPolicy::empty())),
+            session_source: SessionSource::Exec,
+        };
+
+        let mut state = SessionState::new(session_configuration);
+
+        assert_eq!(state.get_last_response_id(), None);
+
+        state.set_last_response_id("resp_1".to_string());
+
+        assert_eq!(state.get_last_response_id(), Some("resp_1".to_string()));
+    }
+
+    #[test]
+    fn last_response_id_is_not_cleared_by_interrupted_turn() {
+        let codex_home = tempfile::tempdir().expect("create temp dir");
+        let config = Config::load_from_base_config_with_overrides(
+            ConfigToml::default(),
+            ConfigOverrides::default(),
+            codex_home.path().to_path_buf(),
+        )
+        .expect("load default test config");
+        let config = Arc::new(config);
+        let model = ModelsManager::get_model_offline(config.model.as_deref());
+        let session_configuration = SessionConfiguration {
+            provider: config.model_provider.clone(),
+            model,
+            model_reasoning_effort: config.model_reasoning_effort,
+            model_reasoning_summary: config.model_reasoning_summary,
+            developer_instructions: config.developer_instructions.clone(),
+            user_instructions: config.user_instructions.clone(),
+            base_instructions: config.base_instructions.clone(),
+            compact_prompt: config.compact_prompt.clone(),
+            approval_policy: config.approval_policy,
+            sandbox_policy: config.sandbox_policy.clone(),
+            cwd: config.cwd.clone(),
+            original_config_do_not_use: Arc::clone(&config),
+            exec_policy: Arc::new(RwLock::new(ExecPolicy::empty())),
+            session_source: SessionSource::Exec,
+        };
+
+        let mut state = SessionState::new(session_configuration);
+
+        state.set_last_response_id("resp_completed".to_string());
+
+        // 模拟一次被中断的 turn：不调用 set_last_response_id，因此
+        // last_response_id 应保持为上一次成功完成的响应 ID。
+        assert_eq!(
+            state.get_last_response_id(),
+            Some("resp_completed".to_string())
         );
     }
 
