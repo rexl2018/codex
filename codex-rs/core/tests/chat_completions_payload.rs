@@ -59,6 +59,7 @@ async fn run_request(input: Vec<ResponseItem>) -> Value {
         stream_max_retries: Some(0),
         stream_idle_timeout_ms: Some(5_000),
         requires_openai_auth: false,
+        base_url_suffix: None,
     };
 
     let codex_home = match TempDir::new() {
@@ -164,6 +165,7 @@ fn function_call() -> ResponseItem {
         name: "f".to_string(),
         arguments: "{}".to_string(),
         call_id: "c1".to_string(),
+        thought_signature: None,
     }
 }
 

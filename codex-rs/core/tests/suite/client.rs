@@ -1116,6 +1116,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         request_max_retries: Some(0),
         stream_max_retries: Some(0),
         stream_idle_timeout_ms: Some(5_000),
+        base_url_suffix: None,
         requires_openai_auth: false,
     };
 
@@ -1185,6 +1186,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         name: "do_thing".into(),
         arguments: "{}".into(),
         call_id: "function-call-id".into(),
+        thought_signature: None,
     });
     prompt.input.push(ResponseItem::LocalShellCall {
         id: Some("local-shell-id".into()),
@@ -1612,6 +1614,7 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        base_url_suffix: None,
         requires_openai_auth: false,
     };
 
@@ -1694,6 +1697,7 @@ async fn env_var_overrides_loaded_auth() {
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
+        base_url_suffix: None,
         requires_openai_auth: false,
     };
 
@@ -1906,6 +1910,7 @@ async fn request_includes_previous_response_id_when_configured() {
         request_max_retries: Some(0),
         stream_max_retries: Some(0),
         stream_idle_timeout_ms: Some(5_000),
+        base_url_suffix: None,
         requires_openai_auth: false,
     };
 

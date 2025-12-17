@@ -361,6 +361,7 @@ base_url = "http://localhost:11434/v1"
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            base_url_suffix: None,
             requires_openai_auth: false,
         };
 
@@ -391,6 +392,7 @@ query_params = { api-version = "2025-04-01-preview" }
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            base_url_suffix: None,
             requires_openai_auth: false,
         };
 
@@ -424,6 +426,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            base_url_suffix: None,
             requires_openai_auth: false,
         };
 
@@ -455,6 +458,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 request_max_retries: None,
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
+                base_url_suffix: None,
                 requires_openai_auth: false,
             };
             let api = provider.to_api_provider(None).expect("api provider");
@@ -477,6 +481,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
+            base_url_suffix: None,
             requires_openai_auth: false,
         };
         let named_api = named_provider.to_api_provider(None).expect("api provider");
@@ -501,6 +506,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
                 request_max_retries: None,
                 stream_max_retries: None,
                 stream_idle_timeout_ms: None,
+                base_url_suffix: None,
                 requires_openai_auth: false,
             };
             let api = provider.to_api_provider(None).expect("api provider");
