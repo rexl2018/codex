@@ -2,7 +2,7 @@ use crate::client_common::tools::ResponsesApiTool;
 use crate::client_common::tools::ToolSpec;
 use crate::features::Feature;
 use crate::features::Features;
-use crate::openai_models::model_family::ModelFamily;
+use crate::models_manager::model_family::ModelFamily;
 use crate::tools::handlers::PLAN_TOOL;
 use crate::tools::handlers::apply_patch::create_apply_patch_freeform_tool;
 use crate::tools::handlers::apply_patch::create_apply_patch_json_tool;
@@ -45,7 +45,12 @@ impl ToolsConfig {
         let shell_type = if !features.enabled(Feature::ShellTool) {
             ConfigShellToolType::Disabled
         } else if features.enabled(Feature::UnifiedExec) {
-            ConfigShellToolType::UnifiedExec
+            // If ConPTY not supported (for old Windows versions), fallback on ShellCommand.
+            if codex_utils_pty::conpty_supported() {
+                ConfigShellToolType::UnifiedExec
+            } else {
+                ConfigShellToolType::ShellCommand
+            }
         } else {
             model_family.shell_type
         };
@@ -156,8 +161,7 @@ fn create_exec_command_tool() -> ToolSpec {
         "login".to_string(),
         JsonSchema::Boolean {
             description: Some(
-                "Whether to run the shell with -l/-i semantics. Defaults to false unless a shell snapshot is available."
-                    .to_string(),
+                "Whether to run the shell with -l/-i semantics. Defaults to true.".to_string(),
             ),
         },
     );
@@ -339,7 +343,7 @@ fn create_shell_command_tool() -> ToolSpec {
         "login".to_string(),
         JsonSchema::Boolean {
             description: Some(
-                "Whether to run the shell with login shell semantics. Defaults to false unless a shell snapshot is available."
+                "Whether to run the shell with login shell semantics. Defaults to true."
                     .to_string(),
             ),
         },
@@ -1130,8 +1134,8 @@ pub(crate) fn build_specs(
 mod tests {
     use crate::client_common::tools::FreeformTool;
     use crate::config::test_config;
-    use crate::openai_models::model_family::find_family_for_model;
-    use crate::openai_models::models_manager::ModelsManager;
+    use crate::models_manager::manager::ModelsManager;
+    use crate::models_manager::model_family::find_family_for_model;
     use crate::tools::registry::ConfiguredToolSpec;
     use mcp_types::ToolInputSchema;
     use pretty_assertions::assert_eq;

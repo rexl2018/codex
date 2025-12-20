@@ -47,10 +47,11 @@ use crate::conversation_build::ConversationBuildPlan;
 use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
 use crate::error::Result;
+use crate::features::FEATURES;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
-use crate::openai_models::model_family::ModelFamily;
+use crate::models_manager::model_family::ModelFamily;
 use crate::tools::spec::create_tools_json_for_chat_completions_api;
 use crate::tools::spec::create_tools_json_for_responses_api;
 
@@ -291,6 +292,7 @@ impl ModelClient {
                 session_source: Some(session_source.clone()),
                 previous_response_id: previous_response_id.clone(),
                 caching: caching.clone(),
+                extra_headers: beta_feature_headers(&self.config),
             };
 
             let stream_result = client
@@ -431,6 +433,27 @@ fn build_api_prompt(
         output_schema: prompt.output_schema.clone(),
         include_instructions: include_instructions_field,
     }
+}
+
+fn beta_feature_headers(config: &Config) -> ApiHeaderMap {
+    let enabled = FEATURES
+        .iter()
+        .filter_map(|spec| {
+            if spec.stage.beta_menu_description().is_some() && config.features.enabled(spec.id) {
+                Some(spec.key)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let value = enabled.join(",");
+    let mut headers = ApiHeaderMap::new();
+    if !value.is_empty()
+        && let Ok(header_value) = HeaderValue::from_str(value.as_str())
+    {
+        headers.insert("x-codex-beta-features", header_value);
+    }
+    headers
 }
 
 fn map_response_stream<S>(api_stream: S, otel_manager: OtelManager) -> ResponseStream

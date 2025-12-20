@@ -1,5 +1,5 @@
+use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
-use std::path::PathBuf;
 
 use crate::conversation_build::ConversationBuildStrategy;
 use crate::protocol::AskForApproval;
@@ -23,8 +23,8 @@ pub struct ConfigProfile {
     pub model_verbosity: Option<Verbosity>,
     pub model_max_output_tokens: Option<i64>,
     pub chatgpt_base_url: Option<String>,
-    pub experimental_instructions_file: Option<PathBuf>,
-    pub experimental_compact_prompt_file: Option<PathBuf>,
+    pub experimental_instructions_file: Option<AbsolutePathBuf>,
+    pub experimental_compact_prompt_file: Option<AbsolutePathBuf>,
     pub include_apply_patch_tool: Option<bool>,
     pub experimental_use_unified_exec_tool: Option<bool>,
     pub experimental_use_rmcp_client: Option<bool>,

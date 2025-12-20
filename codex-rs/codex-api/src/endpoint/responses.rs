@@ -35,6 +35,7 @@ pub struct ResponsesOptions {
     pub session_source: Option<SessionSource>,
     pub previous_response_id: Option<String>,
     pub caching: Option<crate::common::Caching>,
+    pub extra_headers: HeaderMap,
 }
 
 impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
@@ -61,7 +62,7 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
         self.stream(request.body, request.headers).await
     }
 
-    #[instrument(skip_all, err)]
+    #[instrument(level = "trace", skip_all, err)]
     pub async fn stream_prompt(
         &self,
         model: &str,
@@ -79,6 +80,7 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
             session_source,
             previous_response_id,
             caching,
+            extra_headers,
         } = options;
 
         let instructions = if prompt.include_instructions {
@@ -100,6 +102,7 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
             .store_override(store_override)
             .previous_response_id(previous_response_id)
             .caching(caching)
+            .extra_headers(extra_headers)
             .build(self.streaming.provider())?;
 
         self.stream_request(request).await

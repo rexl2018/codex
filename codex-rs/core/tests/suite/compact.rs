@@ -138,7 +138,7 @@ async fn summarize_context_three_requests_and_instructions() {
     // Build config pointing to the mock server and spawn Codex.
     let model_provider = non_openai_model_provider(&server);
     let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
+    let mut config = load_default_config_for_test(&home).await;
     config.model_provider = model_provider;
     set_test_compact_prompt(&mut config);
     config.model_auto_compact_token_limit = Some(200_000);
@@ -332,7 +332,7 @@ async fn manual_compact_uses_custom_prompt() {
 
     let model_provider = non_openai_model_provider(&server);
     let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
+    let mut config = load_default_config_for_test(&home).await;
     config.model_provider = model_provider;
     config.compact_prompt = Some(custom_prompt.to_string());
 
@@ -412,7 +412,7 @@ async fn manual_compact_emits_api_and_local_token_usage_events() {
 
     let model_provider = non_openai_model_provider(&server);
     let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
+    let mut config = load_default_config_for_test(&home).await;
     config.model_provider = model_provider;
     set_test_compact_prompt(&mut config);
 
@@ -590,7 +590,36 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
         .body_json::<serde_json::Value>()
         .unwrap();
     let input = body.get("input").and_then(|v| v.as_array()).unwrap();
-    let environment_message = input[0]["content"][0]["text"].as_str().unwrap();
+
+    fn normalize_inputs(values: &[serde_json::Value]) -> Vec<serde_json::Value> {
+        values
+            .iter()
+            .filter(|value| {
+                if value
+                    .get("type")
+                    .and_then(|ty| ty.as_str())
+                    .is_some_and(|ty| ty == "function_call_output")
+                {
+                    return false;
+                }
+
+                let text = value
+                    .get("content")
+                    .and_then(|content| content.as_array())
+                    .and_then(|content| content.first())
+                    .and_then(|item| item.get("text"))
+                    .and_then(|text| text.as_str());
+
+                // Ignore the cached UI prefix (project docs + skills) since it is not relevant to
+                // compaction behavior and can change as bundled skills evolve.
+                !text.is_some_and(|text| text.starts_with("# AGENTS.md instructions for "))
+            })
+            .cloned()
+            .collect()
+    }
+
+    let initial_input = normalize_inputs(input);
+    let environment_message = initial_input[0]["content"][0]["text"].as_str().unwrap();
 
     // test 1: after compaction, we should have one environment message, one user message, and one user message with summary prefix
     let compaction_indices = [2, 4, 6];
@@ -604,6 +633,7 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
             .body_json::<serde_json::Value>()
             .unwrap();
         let input = body.get("input").and_then(|v| v.as_array()).unwrap();
+        let input = normalize_inputs(input);
         assert_eq!(input.len(), 3);
         let environment_message = input[0]["content"][0]["text"].as_str().unwrap();
         let user_message_received = input[1]["content"][0]["text"].as_str().unwrap();
@@ -963,20 +993,6 @@ async fn multiple_auto_compact_per_task_runs_after_token_limit_hit() {
     ]
     ]);
 
-    // ignore local shell calls output because it differs from OS to another and it's out of the scope of this test.
-    fn normalize_inputs(values: &[serde_json::Value]) -> Vec<serde_json::Value> {
-        values
-            .iter()
-            .filter(|value| {
-                value
-                    .get("type")
-                    .and_then(|ty| ty.as_str())
-                    .is_none_or(|ty| ty != "function_call_output")
-            })
-            .cloned()
-            .collect()
-    }
-
     for (i, request) in requests_payloads.iter().enumerate() {
         let body = request.body_json::<serde_json::Value>().unwrap();
         let input = body.get("input").and_then(|v| v.as_array()).unwrap();
@@ -1010,7 +1026,6 @@ async fn auto_compact_runs_after_token_limit_hit() {
         ev_assistant_message("m3", AUTO_SUMMARY_TEXT),
         ev_completed_with_tokens("r3", 200),
     ]);
-    let sse_resume = sse(vec![ev_completed("r3-resume")]);
     let sse4 = sse(vec![
         ev_assistant_message("m4", FINAL_REPLY),
         ev_completed_with_tokens("r4", 120),
@@ -1039,15 +1054,6 @@ async fn auto_compact_runs_after_token_limit_hit() {
     };
     mount_sse_once_match(&server, third_matcher, sse3).await;
 
-    let resume_marker = prefixed_auto_summary;
-    let resume_matcher = move |req: &wiremock::Request| {
-        let body = std::str::from_utf8(&req.body).unwrap_or("");
-        body.contains(resume_marker)
-            && !body_contains_text(body, SUMMARIZATION_PROMPT)
-            && !body.contains(POST_AUTO_USER_MSG)
-    };
-    mount_sse_once_match(&server, resume_matcher, sse_resume).await;
-
     let fourth_matcher = |req: &wiremock::Request| {
         let body = std::str::from_utf8(&req.body).unwrap_or("");
         body.contains(POST_AUTO_USER_MSG) && !body_contains_text(body, SUMMARIZATION_PROMPT)
@@ -1057,7 +1063,7 @@ async fn auto_compact_runs_after_token_limit_hit() {
     let model_provider = non_openai_model_provider(&server);
 
     let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
+    let mut config = load_default_config_for_test(&home).await;
     config.model_provider = model_provider;
     set_test_compact_prompt(&mut config);
     config.model_auto_compact_token_limit = Some(200_000);
@@ -1107,8 +1113,8 @@ async fn auto_compact_runs_after_token_limit_hit() {
     let requests = get_responses_requests(&server).await;
     assert_eq!(
         requests.len(),
-        5,
-        "expected user turns, a compaction request, a resumed turn, and the follow-up turn; got {}",
+        4,
+        "expected user turns, a compaction request, and the follow-up turn; got {}",
         requests.len()
     );
     let is_auto_compact = |req: &wiremock::Request| {
@@ -1132,19 +1138,6 @@ async fn auto_compact_runs_after_token_limit_hit() {
         "auto compact should add a third request"
     );
 
-    let resume_summary_marker = prefixed_auto_summary;
-    let resume_index = requests
-        .iter()
-        .enumerate()
-        .find_map(|(idx, req)| {
-            let body = std::str::from_utf8(&req.body).unwrap_or("");
-            (body.contains(resume_summary_marker)
-                && !body_contains_text(body, SUMMARIZATION_PROMPT)
-                && !body.contains(POST_AUTO_USER_MSG))
-            .then_some(idx)
-        })
-        .expect("resume request missing after compaction");
-
     let follow_up_index = requests
         .iter()
         .enumerate()
@@ -1155,13 +1148,10 @@ async fn auto_compact_runs_after_token_limit_hit() {
                 .then_some(idx)
         })
         .expect("follow-up request missing");
-    assert_eq!(follow_up_index, 4, "follow-up request should be last");
+    assert_eq!(follow_up_index, 3, "follow-up request should be last");
 
     let body_first = requests[0].body_json::<serde_json::Value>().unwrap();
     let body_auto = requests[auto_compact_index]
-        .body_json::<serde_json::Value>()
-        .unwrap();
-    let body_resume = requests[resume_index]
         .body_json::<serde_json::Value>()
         .unwrap();
     let body_follow_up = requests[follow_up_index]
@@ -1200,23 +1190,6 @@ async fn auto_compact_runs_after_token_limit_hit() {
     assert_eq!(
         last_text, SUMMARIZATION_PROMPT,
         "auto compact should send the summarization prompt as a user message",
-    );
-
-    let input_resume = body_resume.get("input").and_then(|v| v.as_array()).unwrap();
-    assert!(
-        input_resume.iter().any(|item| {
-            item.get("type").and_then(|v| v.as_str()) == Some("message")
-                && item.get("role").and_then(|v| v.as_str()) == Some("user")
-                && item
-                    .get("content")
-                    .and_then(|v| v.as_array())
-                    .and_then(|arr| arr.first())
-                    .and_then(|entry| entry.get("text"))
-                    .and_then(|v| v.as_str())
-                    .map(|text| text.contains(prefixed_auto_summary))
-                    .unwrap_or(false)
-        }),
-        "resume request should include compacted history"
     );
 
     let input_follow_up = body_follow_up
@@ -1277,6 +1250,10 @@ async fn auto_compact_persists_rollout_entries() {
         ev_assistant_message("m3", &auto_summary_payload),
         ev_completed_with_tokens("r3", 200),
     ]);
+    let sse4 = sse(vec![
+        ev_assistant_message("m4", FINAL_REPLY),
+        ev_completed_with_tokens("r4", 120),
+    ]);
 
     let first_matcher = |req: &wiremock::Request| {
         let body = std::str::from_utf8(&req.body).unwrap_or("");
@@ -1300,12 +1277,19 @@ async fn auto_compact_persists_rollout_entries() {
     };
     mount_sse_once_match(&server, third_matcher, sse3).await;
 
+    let fourth_matcher = |req: &wiremock::Request| {
+        let body = std::str::from_utf8(&req.body).unwrap_or("");
+        body.contains(POST_AUTO_USER_MSG) && !body_contains_text(body, SUMMARIZATION_PROMPT)
+    };
+    mount_sse_once_match(&server, fourth_matcher, sse4).await;
+
     let model_provider = non_openai_model_provider(&server);
 
     let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
+    let mut config = load_default_config_for_test(&home).await;
     config.model_provider = model_provider;
     set_test_compact_prompt(&mut config);
+    config.model_auto_compact_token_limit = Some(200_000);
     let conversation_manager = ConversationManager::with_models_provider(
         CodexAuth::from_api_key("dummy"),
         config.model_provider.clone(),
@@ -1340,6 +1324,16 @@ async fn auto_compact_persists_rollout_entries() {
         std::time::Duration::from_secs(30),
     )
     .await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: POST_AUTO_USER_MSG.into(),
+            }],
+        })
+        .await
+        .unwrap();
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
 
     codex.submit(Op::Shutdown).await.unwrap();
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
@@ -1409,7 +1403,7 @@ async fn manual_compact_retries_after_context_window_error() {
     let model_provider = non_openai_model_provider(&server);
 
     let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
+    let mut config = load_default_config_for_test(&home).await;
     config.model_provider = model_provider;
     set_test_compact_prompt(&mut config);
     config.model_auto_compact_token_limit = Some(200_000);
@@ -1542,7 +1536,7 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
     let model_provider = non_openai_model_provider(&server);
 
     let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
+    let mut config = load_default_config_for_test(&home).await;
     config.model_provider = model_provider;
     set_test_compact_prompt(&mut config);
     let codex = ConversationManager::with_models_provider(
@@ -1737,13 +1731,15 @@ async fn auto_compact_allows_multiple_attempts_when_interleaved_with_other_turn_
         ev_assistant_message("m6", FINAL_REPLY),
         ev_completed_with_tokens("r6", 120),
     ]);
+    let follow_up_user = "FOLLOW_UP_AUTO_COMPACT";
+    let final_user = "FINAL_AUTO_COMPACT";
 
     mount_sse_sequence(&server, vec![sse1, sse2, sse3, sse4, sse5, sse6]).await;
 
     let model_provider = non_openai_model_provider(&server);
 
     let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
+    let mut config = load_default_config_for_test(&home).await;
     config.model_provider = model_provider;
     set_test_compact_prompt(&mut config);
     config.model_auto_compact_token_limit = Some(200);
@@ -1757,31 +1753,31 @@ async fn auto_compact_allows_multiple_attempts_when_interleaved_with_other_turn_
         .unwrap()
         .conversation;
 
-    codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: MULTI_AUTO_MSG.into(),
-            }],
-        })
-        .await
-        .unwrap();
-
     let mut auto_compact_lifecycle_events = Vec::new();
-    loop {
-        let event = codex.next_event().await.unwrap();
-        if event.id.starts_with("auto-compact-")
-            && matches!(
-                event.msg,
-                EventMsg::TaskStarted(_) | EventMsg::TaskComplete(_)
-            )
-        {
-            auto_compact_lifecycle_events.push(event);
-            continue;
-        }
-        if let EventMsg::TaskComplete(_) = &event.msg
-            && !event.id.starts_with("auto-compact-")
-        {
-            break;
+    for user in [MULTI_AUTO_MSG, follow_up_user, final_user] {
+        codex
+            .submit(Op::UserInput {
+                items: vec![UserInput::Text { text: user.into() }],
+            })
+            .await
+            .unwrap();
+
+        loop {
+            let event = codex.next_event().await.unwrap();
+            if event.id.starts_with("auto-compact-")
+                && matches!(
+                    event.msg,
+                    EventMsg::TaskStarted(_) | EventMsg::TaskComplete(_)
+                )
+            {
+                auto_compact_lifecycle_events.push(event);
+                continue;
+            }
+            if let EventMsg::TaskComplete(_) = &event.msg
+                && !event.id.starts_with("auto-compact-")
+            {
+                break;
+            }
         }
     }
 
@@ -1827,6 +1823,7 @@ async fn auto_compact_triggers_after_function_call_over_95_percent_usage() {
     let context_window = 100;
     let limit = context_window * 90 / 100;
     let over_limit_tokens = context_window * 95 / 100 + 1;
+    let follow_up_user = "FOLLOW_UP_AFTER_LIMIT";
 
     let first_turn = sse(vec![
         ev_function_call(DUMMY_CALL_ID, DUMMY_FUNCTION_NAME, "{}"),
@@ -1853,7 +1850,7 @@ async fn auto_compact_triggers_after_function_call_over_95_percent_usage() {
     let model_provider = non_openai_model_provider(&server);
 
     let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
+    let mut config = load_default_config_for_test(&home).await;
     config.model_provider = model_provider;
     set_test_compact_prompt(&mut config);
     config.model_context_window = Some(context_window);
@@ -1872,6 +1869,17 @@ async fn auto_compact_triggers_after_function_call_over_95_percent_usage() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: FUNCTION_CALL_LIMIT_MSG.into(),
+            }],
+        })
+        .await
+        .unwrap();
+
+    wait_for_event(&codex, |msg| matches!(msg, EventMsg::TaskComplete(_))).await;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: follow_up_user.into(),
             }],
         })
         .await
@@ -1922,6 +1930,7 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
 
     let first_user = "COUNT_PRE_LAST_REASONING";
     let second_user = "TRIGGER_COMPACT_AT_LIMIT";
+    let third_user = "AFTER_REMOTE_COMPACT";
 
     let pre_last_reasoning_content = "a".repeat(2_400);
     let post_last_reasoning_content = "b".repeat(4_000);
@@ -1934,7 +1943,7 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
         ev_reasoning_item("post-reasoning", &["post"], &[&post_last_reasoning_content]),
         ev_completed_with_tokens("r2", 80),
     ]);
-    let resume_turn = sse(vec![
+    let third_turn = sse(vec![
         ev_assistant_message("m4", FINAL_REPLY),
         ev_completed_with_tokens("r4", 1),
     ]);
@@ -1946,8 +1955,8 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
             first_turn,
             // Turn 2: reasoning after last user (should be ignored for compaction).
             second_turn,
-            // Turn 3: resume after remote compaction.
-            resume_turn,
+            // Turn 3: next user turn after remote compaction.
+            third_turn,
         ],
     )
     .await;
@@ -1979,7 +1988,10 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
         .expect("build codex")
         .codex;
 
-    for (idx, user) in [first_user, second_user].into_iter().enumerate() {
+    for (idx, user) in [first_user, second_user, third_user]
+        .into_iter()
+        .enumerate()
+    {
         codex
             .submit(Op::UserInput {
                 items: vec![UserInput::Text { text: user.into() }],
@@ -1988,10 +2000,10 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
             .unwrap();
         wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
 
-        if idx == 0 {
+        if idx < 2 {
             assert!(
                 compact_mock.requests().is_empty(),
-                "remote compaction should not run after the first turn"
+                "remote compaction should not run before the next user turn"
             );
         }
     }
@@ -2012,20 +2024,21 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
     assert_eq!(
         requests.len(),
         3,
-        "conversation should include two user turns and a post-compaction resume"
+        "conversation should include three user turns"
     );
     let second_request_body = requests[1].body_json().to_string();
     assert!(
         !second_request_body.contains("REMOTE_COMPACT_SUMMARY"),
         "second turn should not include compacted history"
     );
-    let resume_body = requests[2].body_json().to_string();
+    let third_request_body = requests[2].body_json().to_string();
     assert!(
-        resume_body.contains("REMOTE_COMPACT_SUMMARY") || resume_body.contains(FINAL_REPLY),
-        "resume request should follow remote compact and use compacted history"
+        third_request_body.contains("REMOTE_COMPACT_SUMMARY")
+            || third_request_body.contains(FINAL_REPLY),
+        "third turn should include compacted history"
     );
     assert!(
-        resume_body.contains("ENCRYPTED_COMPACTION_SUMMARY"),
-        "resume request should include compaction summary item"
+        third_request_body.contains("ENCRYPTED_COMPACTION_SUMMARY"),
+        "third turn should include compaction summary item"
     );
 }
