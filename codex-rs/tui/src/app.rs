@@ -931,15 +931,14 @@ impl App {
                                 }
 
                                 self.chat_widget.add_info_message(
-                                    format!("Added {} to session.", path_lossy),
+                                    format!("Added {path_lossy} to session."),
                                     None,
                                 );
                             }
                             codex_core::protocol::SandboxPolicy::ReadOnly => {
                                 self.chat_widget.add_info_message(
                                     format!(
-                                        "Added {} to search paths (Sandbox is ReadOnly).",
-                                        path_lossy
+                                        "Added {path_lossy} to search paths (Sandbox is ReadOnly)."
                                     ),
                                     None,
                                 );
@@ -947,8 +946,7 @@ impl App {
                             codex_core::protocol::SandboxPolicy::DangerFullAccess => {
                                 self.chat_widget.add_info_message(
                                     format!(
-                                        "Added {} to search paths (FullAccess is enabled).",
-                                        path_lossy
+                                        "Added {path_lossy} to search paths (FullAccess is enabled)."
                                     ),
                                     None,
                                 );
@@ -956,8 +954,7 @@ impl App {
                             codex_core::protocol::SandboxPolicy::ExternalSandbox { .. } => {
                                 self.chat_widget.add_info_message(
                                     format!(
-                                        "Added {} to search paths (External sandbox).",
-                                        path_lossy
+                                        "Added {path_lossy} to search paths (External sandbox)."
                                     ),
                                     None,
                                 );

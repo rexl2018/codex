@@ -3269,9 +3269,9 @@ async fn stream_error_updates_status_indicator() {
     assert_eq!(status.header(), "Reconnecting... 2/5 – Unknown error");
 }
 
-#[test]
-fn stream_error_shows_http_status_code() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual();
+#[tokio::test]
+async fn stream_error_shows_http_status_code() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
     chat.bottom_pane.set_task_running(true);
     chat.handle_codex_event(Event {
         id: "sub-1".into(),
