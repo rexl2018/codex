@@ -2,13 +2,17 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use anyhow::anyhow;
+use bytes::Bytes;
 use futures::FutureExt;
+use futures::Stream;
+use futures::StreamExt;
 use futures::future::BoxFuture;
 use mcp_types::CallToolRequestParams;
 use mcp_types::CallToolResult;
@@ -40,15 +44,21 @@ use rmcp::service::RoleClient;
 use rmcp::service::RunningService;
 use rmcp::service::{self};
 use rmcp::transport::StreamableHttpClientTransport;
+use rmcp::transport::Transport;
+use rmcp::transport::async_rw::AsyncRwTransport;
 use rmcp::transport::auth::AuthClient;
 use rmcp::transport::auth::OAuthState;
-use rmcp::transport::child_process::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::BufReader;
+use tokio::process::Child;
+use tokio::process::ChildStdin;
+use tokio::process::ChildStdout;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time;
+use tokio_util::codec::LinesCodec;
+use tokio_util::io::StreamReader;
 use tracing::info;
 use tracing::warn;
 
@@ -66,8 +76,89 @@ use crate::utils::convert_to_rmcp;
 use crate::utils::create_env_for_mcp_server;
 use crate::utils::run_with_timeout;
 
+type FilteredStdoutStream = Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>>;
+type FilteredStdoutReader = StreamReader<FilteredStdoutStream, Bytes>;
+
+struct FilteredChildTransport {
+    transport: AsyncRwTransport<RoleClient, FilteredStdoutReader, ChildStdin>,
+    child: Option<Child>,
+}
+
+impl FilteredChildTransport {
+    fn new(
+        transport: AsyncRwTransport<RoleClient, FilteredStdoutReader, ChildStdin>,
+        child: Child,
+    ) -> Self {
+        Self {
+            transport,
+            child: Some(child),
+        }
+    }
+}
+
+impl Transport<RoleClient> for FilteredChildTransport {
+    type Error = io::Error;
+
+    fn send(
+        &mut self,
+        item: rmcp::service::TxJsonRpcMessage<RoleClient>,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.transport.send(item)
+    }
+
+    fn receive(
+        &mut self,
+    ) -> impl std::future::Future<Output = Option<rmcp::service::RxJsonRpcMessage<RoleClient>>> + Send
+    {
+        self.transport.receive()
+    }
+
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        self.transport.close().await?;
+        if let Some(mut child) = self.child.take() {
+            if let Err(error) = child.start_kill() {
+                warn!("Failed to start killing MCP server process: {error}");
+            }
+            let _ = child.wait().await;
+        }
+        Ok(())
+    }
+}
+
+fn filtered_stdout_reader(stdout: ChildStdout, program_name: &str) -> FilteredStdoutReader {
+    let program_label = program_name.to_owned();
+    let stream = tokio_util::codec::FramedRead::new(stdout, LinesCodec::new()).filter_map(
+        move |line| {
+            let program_label = program_label.clone();
+            async move {
+                match line {
+                    Ok(mut line) => {
+                        if serde_json::from_str::<serde_json::Value>(&line).is_ok() {
+                            line.push('\n');
+                            Some(Ok::<_, io::Error>(Bytes::from(line)))
+                        } else {
+                            tracing::debug!(
+                                "Skipping non-JSON line from MCP server stdout ({program_label}): {line}"
+                            );
+                            None
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            "Failed to read MCP server stdout ({program_label}): {error}"
+                        );
+                        None
+                    }
+                }
+            }
+        },
+    );
+
+    StreamReader::new(Box::pin(stream) as FilteredStdoutStream)
+}
+
 enum PendingTransport {
-    ChildProcess(TokioChildProcess),
+    ChildProcess(Box<FilteredChildTransport>),
     StreamableHttp {
         transport: StreamableHttpClientTransport<reqwest::Client>,
     },
@@ -79,7 +170,7 @@ enum PendingTransport {
 
 enum ClientState {
     Connecting {
-        transport: Option<PendingTransport>,
+        transport: Option<Box<PendingTransport>>,
     },
     Ready {
         service: Arc<RunningService<RoleClient, LoggingClientHandler>>,
@@ -129,9 +220,19 @@ impl RmcpClient {
             command.current_dir(cwd);
         }
 
-        let (transport, stderr) = TokioChildProcess::builder(command)
-            .stderr(Stdio::piped())
-            .spawn()?;
+        let mut child = command.spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("child stdout was not piped"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("child stdin was not piped"))?;
+        let stderr = child.stderr.take();
+
+        let reader = filtered_stdout_reader(stdout, &program_name);
+        let transport = FilteredChildTransport::new(AsyncRwTransport::new(reader, stdin), child);
 
         if let Some(stderr) = stderr {
             tokio::spawn(async move {
@@ -153,7 +254,9 @@ impl RmcpClient {
 
         Ok(Self {
             state: Mutex::new(ClientState::Connecting {
-                transport: Some(PendingTransport::ChildProcess(transport)),
+                transport: Some(Box::new(PendingTransport::ChildProcess(Box::new(
+                    transport,
+                )))),
             }),
         })
     }
@@ -207,7 +310,7 @@ impl RmcpClient {
         };
         Ok(Self {
             state: Mutex::new(ClientState::Connecting {
-                transport: Some(transport),
+                transport: Some(Box::new(transport)),
             }),
         })
     }
@@ -226,9 +329,10 @@ impl RmcpClient {
         let (transport, oauth_persistor) = {
             let mut guard = self.state.lock().await;
             match &mut *guard {
-                ClientState::Connecting { transport } => match transport.take() {
+                ClientState::Connecting { transport } => match transport.take().map(|boxed| *boxed)
+                {
                     Some(PendingTransport::ChildProcess(transport)) => (
-                        service::serve_client(client_handler.clone(), transport).boxed(),
+                        service::serve_client(client_handler.clone(), *transport).boxed(),
                         None,
                     ),
                     Some(PendingTransport::StreamableHttp { transport }) => (
