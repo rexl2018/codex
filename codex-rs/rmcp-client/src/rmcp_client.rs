@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io;
+use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
@@ -59,7 +61,6 @@ use tokio::sync::Mutex;
 use tokio::time;
 use tokio_util::codec::LinesCodec;
 use tokio_util::io::StreamReader;
-use tracing::info;
 use tracing::warn;
 
 use crate::load_oauth_tokens;
@@ -78,6 +79,28 @@ use crate::utils::run_with_timeout;
 
 type FilteredStdoutStream = Pin<Box<dyn Stream<Item = Result<Bytes, io::Error>> + Send>>;
 type FilteredStdoutReader = StreamReader<FilteredStdoutStream, Bytes>;
+
+fn mcp_log_path() -> Option<PathBuf> {
+    let path = dirs::home_dir()?
+        .join(".codex")
+        .join("log")
+        .join("mcp-proxy.log");
+    if let Some(parent) = path.parent() {
+        // Silence errors to avoid surfacing to the UI; if we can't create the dir, disable file logging.
+        if std::fs::create_dir_all(parent).is_err() {
+            return None;
+        }
+    }
+    Some(path)
+}
+
+fn append_to_log(path: &Path, line: &str) -> io::Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{line}")
+}
 
 struct FilteredChildTransport {
     transport: AsyncRwTransport<RoleClient, FilteredStdoutReader, ChildStdin>,
@@ -127,9 +150,11 @@ impl Transport<RoleClient> for FilteredChildTransport {
 
 fn filtered_stdout_reader(stdout: ChildStdout, program_name: &str) -> FilteredStdoutReader {
     let program_label = program_name.to_owned();
+    let log_path = mcp_log_path();
     let stream =
         tokio_util::codec::FramedRead::new(stdout, LinesCodec::new()).filter_map(move |line| {
             let program_label = program_label.clone();
+            let log_path = log_path.clone();
             async move {
                 match line {
                     Ok(mut line) => {
@@ -137,16 +162,29 @@ fn filtered_stdout_reader(stdout: ChildStdout, program_name: &str) -> FilteredSt
                             line.push('\n');
                             Some(Ok::<_, io::Error>(Bytes::from(line)))
                         } else {
-                            tracing::warn!(
-                                "Non-JSON line from MCP server stdout ({program_label}): {line}"
-                            );
+                            if let Some(path) = &log_path {
+                                if let Err(error) = append_to_log(path, &line) {
+                                    tracing::debug!(
+                                        "Failed to write MCP stdout log ({program_label}) to {path:?}: {error}"
+                                    );
+                                }
+                            }
                             None
                         }
                     }
                     Err(error) => {
-                        tracing::warn!(
-                            "Failed to read MCP server stdout ({program_label}): {error}"
-                        );
+                        if let Some(path) = &log_path {
+                            if let Err(error) = append_to_log(
+                                path,
+                                &format!(
+                                    "Failed to read MCP server stdout ({program_label}): {error}"
+                                ),
+                            ) {
+                                tracing::debug!(
+                                    "Failed to write MCP stdout error log ({program_label}) to {path:?}: {error}"
+                                );
+                            }
+                        }
                         None
                     }
                 }
@@ -212,6 +250,7 @@ impl RmcpClient {
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .env_clear()
             .envs(envs)
             .args(&args);
@@ -234,16 +273,34 @@ impl RmcpClient {
         let transport = FilteredChildTransport::new(AsyncRwTransport::new(reader, stdin), child);
 
         if let Some(stderr) = stderr {
+            let stderr_log_path = mcp_log_path();
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stderr).lines();
                 loop {
                     match reader.next_line().await {
                         Ok(Some(line)) => {
-                            info!("MCP server stderr ({program_name}): {line}");
+                            if let Some(path) = &stderr_log_path {
+                                if let Err(error) = append_to_log(path, &line) {
+                                    tracing::debug!(
+                                        "Failed to write MCP stderr log ({program_name}) to {path:?}: {error}"
+                                    );
+                                }
+                            }
                         }
                         Ok(None) => break,
                         Err(error) => {
-                            warn!("Failed to read MCP server stderr ({program_name}): {error}");
+                            if let Some(path) = &stderr_log_path {
+                                if let Err(error) = append_to_log(
+                                    path,
+                                    &format!(
+                                        "Failed to read MCP server stderr ({program_name}): {error}"
+                                    ),
+                                ) {
+                                    tracing::debug!(
+                                        "Failed to write MCP stderr error log ({program_name}) to {path:?}: {error}"
+                                    );
+                                }
+                            }
                             break;
                         }
                     }
