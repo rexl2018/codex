@@ -328,6 +328,10 @@ pub(crate) struct ChatWidget {
     suppressed_exec_calls: HashSet<String>,
     last_unified_wait: Option<UnifiedExecWaitState>,
     task_complete_pending: bool,
+    // Last complete agent response (plain text, unwrapped).
+    last_agent_message: Option<String>,
+    // Accumulates the current agent stream as plain text.
+    current_agent_message: String,
     unified_exec_sessions: Vec<UnifiedExecSessionSummary>,
     mcp_startup_status: Option<HashMap<String, McpStartupStatus>>,
     // Queue of interruptive UI events deferred during an active write cycle
@@ -398,10 +402,14 @@ fn create_initial_user_message(text: String, image_paths: Vec<PathBuf>) -> Optio
 
 impl ChatWidget {
     fn flush_answer_stream_with_separator(&mut self) {
-        if let Some(mut controller) = self.stream_controller.take()
-            && let Some(cell) = controller.finalize()
-        {
-            self.add_boxed_history(cell);
+        if let Some(mut controller) = self.stream_controller.take() {
+            if let Some(cell) = controller.finalize() {
+                self.add_boxed_history(cell);
+            }
+            if !self.current_agent_message.is_empty() {
+                self.last_agent_message = Some(self.current_agent_message.clone());
+            }
+            self.current_agent_message.clear();
         }
     }
 
@@ -569,6 +577,11 @@ impl ChatWidget {
         self.suppressed_exec_calls.clear();
         self.last_unified_wait = None;
         self.request_redraw();
+
+        if let Some(ref message) = last_agent_message {
+            self.last_agent_message = Some(message.clone());
+            self.current_agent_message.clear();
+        }
 
         // If there is a queued user message, send exactly one now to begin the next turn.
         self.maybe_send_next_queued_input();
@@ -1206,7 +1219,9 @@ impl ChatWidget {
             self.stream_controller = Some(StreamController::new(
                 self.last_rendered_width.get().map(|w| w.saturating_sub(2)),
             ));
+            self.current_agent_message.clear();
         }
+        self.current_agent_message.push_str(&delta);
         if let Some(controller) = self.stream_controller.as_mut()
             && controller.push(&delta)
         {
@@ -1501,6 +1516,8 @@ impl ChatWidget {
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
             task_complete_pending: false,
+            last_agent_message: None,
+            current_agent_message: String::new(),
             unified_exec_sessions: Vec::new(),
             mcp_startup_status: None,
             interrupts: InterruptManager::new(),
@@ -1587,6 +1604,8 @@ impl ChatWidget {
             suppressed_exec_calls: HashSet::new(),
             last_unified_wait: None,
             task_complete_pending: false,
+            last_agent_message: None,
+            current_agent_message: String::new(),
             unified_exec_sessions: Vec::new(),
             mcp_startup_status: None,
             interrupts: InterruptManager::new(),
@@ -2519,6 +2538,8 @@ impl ChatWidget {
                     let mut rendered: Vec<ratatui::text::Line<'static>> = vec!["".into()];
                     append_markdown(&explanation, None, &mut rendered);
                     let body_cell = AgentMessageCell::new(rendered, false);
+                    self.last_agent_message = Some(explanation);
+                    self.current_agent_message.clear();
                     self.app_event_tx
                         .send(AppEvent::InsertHistoryCell(Box::new(body_cell)));
                 }
@@ -3883,6 +3904,15 @@ impl ChatWidget {
 
     pub(crate) fn rollout_path(&self) -> Option<PathBuf> {
         self.current_rollout_path.clone()
+    }
+
+    pub(crate) fn last_agent_message(&self) -> Option<&str> {
+        self.last_agent_message.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_last_agent_message_for_test(&mut self, message: Option<String>) {
+        self.last_agent_message = message;
     }
 
     /// Return a reference to the widget's current config (includes any

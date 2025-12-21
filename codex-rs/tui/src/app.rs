@@ -506,32 +506,39 @@ impl App {
     }
 
     pub(crate) fn handle_copy_last_agent_message(&mut self, filename: Option<String>) {
-        // Find the last AgentMessageCell(s) in the transcript.
-        // We scan backwards. Once we find an AgentMessageCell, we keep collecting them
-        // until we hit a non-AgentMessageCell. This handles split messages.
-        let mut parts = Vec::new();
-        let mut found_any = false;
+        let text = if let Some(raw) = self.chat_widget.last_agent_message() {
+            Some(raw.to_string())
+        } else {
+            // Find the last AgentMessageCell(s) in the transcript.
+            // We scan backwards. Once we find an AgentMessageCell, we keep collecting them
+            // until we hit a non-AgentMessageCell. This handles split messages.
+            let mut parts = Vec::new();
+            let mut found_any = false;
 
-        for cell in self.transcript_cells.iter().rev() {
-            if let Some(agent_cell) = cell
-                .as_any()
-                .downcast_ref::<crate::history_cell::AgentMessageCell>()
-            {
-                parts.push(agent_cell.text());
-                found_any = true;
-            } else if found_any {
-                // We found the block of agent messages, and now we hit something else (e.g. user message).
-                // Stop collecting.
-                break;
+            for cell in self.transcript_cells.iter().rev() {
+                if let Some(agent_cell) = cell
+                    .as_any()
+                    .downcast_ref::<crate::history_cell::AgentMessageCell>()
+                {
+                    parts.push(agent_cell.text());
+                    found_any = true;
+                } else if found_any {
+                    // We found the block of agent messages, and now we hit something else (e.g. user message).
+                    // Stop collecting.
+                    break;
+                }
+                // If !found_any, we keep skipping non-agent cells (e.g. separators, errors) until we find the message.
             }
-            // If !found_any, we keep skipping non-agent cells (e.g. separators, errors) until we find the message.
-        }
 
-        if !parts.is_empty() {
-            // We collected them backwards, so reverse to get chronological order.
-            parts.reverse();
-            let text = parts.join("\n");
+            if parts.is_empty() {
+                None
+            } else {
+                parts.reverse();
+                Some(parts.join("\n"))
+            }
+        };
 
+        if let Some(text) = text {
             if let Some(filename) = filename {
                 // Save to file
                 let path = self.config.cwd.join(&filename);
@@ -1569,6 +1576,28 @@ mod tests {
         let saved =
             std::fs::read_to_string(workdir.path().join("docs/result.md")).expect("saved file");
         assert_eq!(saved, "first chunk\nsecond chunk");
+    }
+
+    #[tokio::test]
+    async fn copy_last_agent_message_prefers_unwrapped_latest_output() {
+        let mut app = make_test_app().await;
+        let workdir = tempdir().expect("tempdir");
+        app.config.cwd = workdir.path().to_path_buf();
+
+        let wrapped_cell: Arc<dyn HistoryCell> = Arc::new(AgentMessageCell::new(
+            vec![Line::from("wrapped line")],
+            true,
+        ));
+        app.transcript_cells = vec![wrapped_cell];
+
+        let expected = "this is a very long line that should stay intact when copied".to_string();
+        app.chat_widget
+            .set_last_agent_message_for_test(Some(expected.clone()));
+
+        app.handle_copy_last_agent_message(Some("out.txt".to_string()));
+
+        let saved = std::fs::read_to_string(workdir.path().join("out.txt")).expect("saved file");
+        assert_eq!(saved, expected);
     }
 
     #[tokio::test]

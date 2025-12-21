@@ -403,6 +403,8 @@ async fn make_chatwidget_manual(
         suppressed_exec_calls: HashSet::new(),
         last_unified_wait: None,
         task_complete_pending: false,
+        last_agent_message: None,
+        current_agent_message: String::new(),
         unified_exec_sessions: Vec::new(),
         mcp_startup_status: None,
         interrupts: InterruptManager::new(),
