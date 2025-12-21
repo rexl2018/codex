@@ -127,8 +127,8 @@ impl Transport<RoleClient> for FilteredChildTransport {
 
 fn filtered_stdout_reader(stdout: ChildStdout, program_name: &str) -> FilteredStdoutReader {
     let program_label = program_name.to_owned();
-    let stream = tokio_util::codec::FramedRead::new(stdout, LinesCodec::new()).filter_map(
-        move |line| {
+    let stream =
+        tokio_util::codec::FramedRead::new(stdout, LinesCodec::new()).filter_map(move |line| {
             let program_label = program_label.clone();
             async move {
                 match line {
@@ -137,8 +137,8 @@ fn filtered_stdout_reader(stdout: ChildStdout, program_name: &str) -> FilteredSt
                             line.push('\n');
                             Some(Ok::<_, io::Error>(Bytes::from(line)))
                         } else {
-                            tracing::debug!(
-                                "Skipping non-JSON line from MCP server stdout ({program_label}): {line}"
+                            tracing::warn!(
+                                "Non-JSON line from MCP server stdout ({program_label}): {line}"
                             );
                             None
                         }
@@ -151,8 +151,7 @@ fn filtered_stdout_reader(stdout: ChildStdout, program_name: &str) -> FilteredSt
                     }
                 }
             }
-        },
-    );
+        });
 
     StreamReader::new(Box::pin(stream) as FilteredStdoutStream)
 }
