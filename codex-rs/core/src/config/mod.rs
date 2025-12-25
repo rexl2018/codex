@@ -8,10 +8,12 @@ use crate::config::types::OtelConfig;
 use crate::config::types::OtelConfigToml;
 use crate::config::types::OtelExporterKind;
 use crate::config::types::SandboxWorkspaceWrite;
+use crate::config::types::ScrollInputMode;
 use crate::config::types::ShellEnvironmentPolicy;
 use crate::config::types::ShellEnvironmentPolicyToml;
 use crate::config::types::Tui;
 use crate::config::types::UriBasedFileOpener;
+use crate::config_loader::ConfigLayerStack;
 use crate::config_loader::ConfigRequirements;
 use crate::config_loader::LoaderOverrides;
 use crate::config_loader::load_config_layers_state;
@@ -37,12 +39,12 @@ use codex_protocol::config_types::SandboxMode;
 use codex_protocol::config_types::TrustLevel;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::openai_models::ReasoningEffort;
-use codex_protocol::openai_models::ReasoningSummaryFormat;
 use codex_rmcp_client::OAuthCredentialsStoreMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_absolute_path::AbsolutePathBufGuard;
 use dirs::home_dir;
 use serde::Deserialize;
+use serde::Serialize;
 use similar::DiffableStr;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -93,6 +95,10 @@ pub(crate) fn test_config() -> Config {
 /// Application configuration loaded from disk and merged with overrides.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
+    /// Provenance for how this [`Config`] was derived (merged layers + enforced
+    /// requirements).
+    pub config_layer_stack: ConfigLayerStack,
+
     /// Optional override of model selection.
     pub model: Option<String>,
 
@@ -179,6 +185,58 @@ pub struct Config {
     /// Show startup tooltips in the TUI welcome screen.
     pub show_tooltips: bool,
 
+    /// Override the events-per-wheel-tick factor for TUI2 scroll normalization.
+    ///
+    /// This is the same `tui.scroll_events_per_tick` value from `config.toml`, plumbed through the
+    /// merged [`Config`] object (see [`Tui`]) so TUI2 can normalize scroll event density per
+    /// terminal.
+    pub tui_scroll_events_per_tick: Option<u16>,
+
+    /// Override the number of lines applied per wheel tick in TUI2.
+    ///
+    /// This is the same `tui.scroll_wheel_lines` value from `config.toml` (see [`Tui`]). TUI2
+    /// applies it to wheel-like scroll streams. Trackpad-like scrolling uses a separate
+    /// `tui.scroll_trackpad_lines` setting.
+    pub tui_scroll_wheel_lines: Option<u16>,
+
+    /// Override the number of lines per tick-equivalent used for trackpad scrolling in TUI2.
+    ///
+    /// This is the same `tui.scroll_trackpad_lines` value from `config.toml` (see [`Tui`]).
+    pub tui_scroll_trackpad_lines: Option<u16>,
+
+    /// Trackpad acceleration: approximate number of events required to gain +1x speed in TUI2.
+    ///
+    /// This is the same `tui.scroll_trackpad_accel_events` value from `config.toml` (see [`Tui`]).
+    pub tui_scroll_trackpad_accel_events: Option<u16>,
+
+    /// Trackpad acceleration: maximum multiplier applied to trackpad-like streams in TUI2.
+    ///
+    /// This is the same `tui.scroll_trackpad_accel_max` value from `config.toml` (see [`Tui`]).
+    pub tui_scroll_trackpad_accel_max: Option<u16>,
+
+    /// Control how TUI2 interprets mouse scroll input (wheel vs trackpad).
+    ///
+    /// This is the same `tui.scroll_mode` value from `config.toml` (see [`Tui`]).
+    pub tui_scroll_mode: ScrollInputMode,
+
+    /// Override the wheel tick detection threshold (ms) for TUI2 auto scroll mode.
+    ///
+    /// This is the same `tui.scroll_wheel_tick_detect_max_ms` value from `config.toml` (see
+    /// [`Tui`]).
+    pub tui_scroll_wheel_tick_detect_max_ms: Option<u64>,
+
+    /// Override the wheel-like end-of-stream threshold (ms) for TUI2 auto scroll mode.
+    ///
+    /// This is the same `tui.scroll_wheel_like_max_duration_ms` value from `config.toml` (see
+    /// [`Tui`]).
+    pub tui_scroll_wheel_like_max_duration_ms: Option<u64>,
+
+    /// Invert mouse scroll direction for TUI2.
+    ///
+    /// This is the same `tui.scroll_invert` value from `config.toml` (see [`Tui`]) and is applied
+    /// consistently to both mouse wheels and trackpads.
+    pub tui_scroll_invert: bool,
+
     /// The directory that should be treated as the current working directory
     /// for the session. All relative paths inside the business-logic layer are
     /// resolved against this path.
@@ -248,9 +306,6 @@ pub struct Config {
     /// Optional override to force-enable reasoning summaries for the configured model.
     pub model_supports_reasoning_summaries: Option<bool>,
 
-    /// Optional override to force reasoning summary format for the configured model.
-    pub model_reasoning_summary_format: Option<ReasoningSummaryFormat>,
-
     /// Optional verbosity control for GPT-5 models (Responses API `text.verbosity`).
     pub model_verbosity: Option<Verbosity>,
 
@@ -278,10 +333,6 @@ pub struct Config {
 
     /// If set to `true`, used only the experimental unified exec tool.
     pub use_experimental_unified_exec_tool: bool,
-
-    /// If set to `true`, use the experimental official Rust MCP client.
-    /// https://github.com/modelcontextprotocol/rust-sdk
-    pub use_experimental_use_rmcp_client: bool,
 
     /// Settings for ghost snapshots (used for undo).
     pub ghost_snapshot: GhostSnapshotConfig,
@@ -372,11 +423,11 @@ impl ConfigBuilder {
         let config_toml: ConfigToml = merged_toml
             .try_into()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        Config::load_config_with_requirements(
+        Config::load_config_with_layer_stack(
             config_toml,
             harness_overrides,
             codex_home,
-            config_layer_stack.requirements().clone(),
+            config_layer_stack,
         )
     }
 }
@@ -625,7 +676,7 @@ pub fn set_default_oss_provider(codex_home: &Path, provider: &str) -> std::io::R
 }
 
 /// Base config deserialized from ~/.codex/config.toml.
-#[derive(Deserialize, Debug, Clone, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct ConfigToml {
     /// Optional override of model selection.
     pub model: Option<String>,
@@ -746,9 +797,6 @@ pub struct ConfigToml {
     /// Override to force-enable reasoning summaries for the configured model.
     pub model_supports_reasoning_summaries: Option<bool>,
 
-    /// Override to force reasoning summary format for the configured model.
-    pub model_reasoning_summary_format: Option<ReasoningSummaryFormat>,
-
     /// Base URL for requests to ChatGPT (as opposed to the OpenAI API).
     pub chatgpt_base_url: Option<String>,
 
@@ -764,6 +812,11 @@ pub struct ConfigToml {
     /// Settings for ghost snapshots (used for undo).
     #[serde(default)]
     pub ghost_snapshot: Option<GhostSnapshotToml>,
+
+    /// Markers used to detect the project root when searching parent
+    /// directories for `.codex` folders. Defaults to [".git"] when unset.
+    #[serde(default)]
+    pub project_root_markers: Option<Vec<String>>,
 
     /// When `true`, checks for Codex updates on startup and surfaces update prompts.
     /// Set to `false` only if your Codex updates are centrally managed.
@@ -789,7 +842,6 @@ pub struct ConfigToml {
     pub experimental_instructions_file: Option<AbsolutePathBuf>,
     pub experimental_compact_prompt_file: Option<AbsolutePathBuf>,
     pub experimental_use_unified_exec_tool: Option<bool>,
-    pub experimental_use_rmcp_client: Option<bool>,
     pub experimental_use_freeform_apply_patch: Option<bool>,
     /// Preferred OSS provider for local models, e.g. "lmstudio" or "ollama".
     pub oss_provider: Option<String>,
@@ -820,7 +872,7 @@ impl From<ConfigToml> for UserSavedConfig {
     }
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ProjectConfig {
     pub trust_level: Option<TrustLevel>,
 }
@@ -835,7 +887,7 @@ impl ProjectConfig {
     }
 }
 
-#[derive(Deserialize, Debug, Clone, Default, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
 pub struct ToolsToml {
     #[serde(default, alias = "web_search_request")]
     pub web_search: Option<bool>,
@@ -854,7 +906,7 @@ impl From<ToolsToml> for Tools {
     }
 }
 
-#[derive(Deserialize, Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq)]
 pub struct GhostSnapshotToml {
     /// Exclude untracked files larger than this many bytes from ghost snapshots.
     #[serde(alias = "ignore_untracked_files_over_bytes")]
@@ -1029,16 +1081,17 @@ impl Config {
         codex_home: PathBuf,
     ) -> std::io::Result<Self> {
         // Note this ignores requirements.toml enforcement for tests.
-        let requirements = ConfigRequirements::default();
-        Self::load_config_with_requirements(cfg, overrides, codex_home, requirements)
+        let config_layer_stack = ConfigLayerStack::default();
+        Self::load_config_with_layer_stack(cfg, overrides, codex_home, config_layer_stack)
     }
 
-    fn load_config_with_requirements(
+    fn load_config_with_layer_stack(
         cfg: ConfigToml,
         overrides: ConfigOverrides,
         codex_home: PathBuf,
-        requirements: ConfigRequirements,
+        config_layer_stack: ConfigLayerStack,
     ) -> std::io::Result<Self> {
+        let requirements = config_layer_stack.requirements().clone();
         let user_instructions = Self::load_instructions(Some(&codex_home));
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
@@ -1205,7 +1258,6 @@ impl Config {
         let include_apply_patch_tool_flag = features.enabled(Feature::ApplyPatchFreeform);
         let tools_web_search_request = features.enabled(Feature::WebSearchRequest);
         let use_experimental_unified_exec_tool = features.enabled(Feature::UnifiedExec);
-        let use_experimental_use_rmcp_client = features.enabled(Feature::RmcpClient);
 
         let forced_chatgpt_workspace_id =
             cfg.forced_chatgpt_workspace_id.as_ref().and_then(|value| {
@@ -1321,6 +1373,7 @@ impl Config {
                 .collect(),
             tool_output_token_limit: cfg.tool_output_token_limit,
             codex_home,
+            config_layer_stack,
             history,
             file_opener: cfg.file_opener.unwrap_or(UriBasedFileOpener::VsCode),
             codex_linux_sandbox_exe,
@@ -1338,7 +1391,6 @@ impl Config {
                 .or(cfg.model_reasoning_summary)
                 .unwrap_or_default(),
             model_supports_reasoning_summaries: cfg.model_supports_reasoning_summaries,
-            model_reasoning_summary_format: cfg.model_reasoning_summary_format.clone(),
             model_verbosity: config_profile.model_verbosity.or(cfg.model_verbosity),
             model_max_output_tokens: config_profile
                 .model_max_output_tokens
@@ -1356,7 +1408,6 @@ impl Config {
             include_apply_patch_tool: include_apply_patch_tool_flag,
             tools_web_search_request,
             use_experimental_unified_exec_tool,
-            use_experimental_use_rmcp_client,
             ghost_snapshot,
             features,
             active_profile: active_profile_name,
@@ -1372,6 +1423,27 @@ impl Config {
                 .unwrap_or_default(),
             animations: cfg.tui.as_ref().map(|t| t.animations).unwrap_or(true),
             show_tooltips: cfg.tui.as_ref().map(|t| t.show_tooltips).unwrap_or(true),
+            tui_scroll_events_per_tick: cfg.tui.as_ref().and_then(|t| t.scroll_events_per_tick),
+            tui_scroll_wheel_lines: cfg.tui.as_ref().and_then(|t| t.scroll_wheel_lines),
+            tui_scroll_trackpad_lines: cfg.tui.as_ref().and_then(|t| t.scroll_trackpad_lines),
+            tui_scroll_trackpad_accel_events: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.scroll_trackpad_accel_events),
+            tui_scroll_trackpad_accel_max: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.scroll_trackpad_accel_max),
+            tui_scroll_mode: cfg.tui.as_ref().map(|t| t.scroll_mode).unwrap_or_default(),
+            tui_scroll_wheel_tick_detect_max_ms: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.scroll_wheel_tick_detect_max_ms),
+            tui_scroll_wheel_like_max_duration_ms: cfg
+                .tui
+                .as_ref()
+                .and_then(|t| t.scroll_wheel_like_max_duration_ms),
+            tui_scroll_invert: cfg.tui.as_ref().map(|t| t.scroll_invert).unwrap_or(false),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
                 let log_user_prompt = t.log_user_prompt.unwrap_or(false);
@@ -1544,8 +1616,23 @@ persistence = "none"
             .expect("TUI config without notifications should succeed");
         let tui = parsed.tui.expect("config should include tui section");
 
-        assert_eq!(tui.notifications, Notifications::Enabled(true));
-        assert!(tui.show_tooltips);
+        assert_eq!(
+            tui,
+            Tui {
+                notifications: Notifications::Enabled(true),
+                animations: true,
+                show_tooltips: true,
+                scroll_events_per_tick: None,
+                scroll_wheel_lines: None,
+                scroll_trackpad_lines: None,
+                scroll_trackpad_accel_events: None,
+                scroll_trackpad_accel_max: None,
+                scroll_mode: ScrollInputMode::Auto,
+                scroll_wheel_tick_detect_max_ms: None,
+                scroll_wheel_like_max_duration_ms: None,
+                scroll_invert: false,
+            }
+        );
     }
 
     #[test]
@@ -1934,7 +2021,6 @@ trust_level = "trusted"
         let codex_home = TempDir::new()?;
         let cfg = ConfigToml {
             experimental_use_unified_exec_tool: Some(true),
-            experimental_use_rmcp_client: Some(true),
             experimental_use_freeform_apply_patch: Some(true),
             ..Default::default()
         };
@@ -1947,12 +2033,10 @@ trust_level = "trusted"
 
         assert!(config.features.enabled(Feature::ApplyPatchFreeform));
         assert!(config.features.enabled(Feature::UnifiedExec));
-        assert!(config.features.enabled(Feature::RmcpClient));
 
         assert!(config.include_apply_patch_tool);
 
         assert!(config.use_experimental_unified_exec_tool);
-        assert!(config.use_experimental_use_rmcp_client);
 
         Ok(())
     }
@@ -3116,6 +3200,7 @@ model_verbosity = "high"
                 project_doc_fallback_filenames: Vec::new(),
                 tool_output_token_limit: None,
                 codex_home: fixture.codex_home(),
+                config_layer_stack: Default::default(),
                 history: History::default(),
                 file_opener: UriBasedFileOpener::VsCode,
                 codex_linux_sandbox_exe: None,
@@ -3124,7 +3209,6 @@ model_verbosity = "high"
                 model_reasoning_effort: Some(ReasoningEffort::High),
                 model_reasoning_summary: ReasoningSummary::Detailed,
                 model_supports_reasoning_summaries: None,
-                model_reasoning_summary_format: None,
                 model_verbosity: None,
                 model_max_output_tokens: None,
                 conversation_build_strategy: ConversationBuildStrategy::FullHistory,
@@ -3137,7 +3221,6 @@ model_verbosity = "high"
                 include_apply_patch_tool: false,
                 tools_web_search_request: false,
                 use_experimental_unified_exec_tool: false,
-                use_experimental_use_rmcp_client: false,
                 ghost_snapshot: GhostSnapshotConfig::default(),
                 features: Features::with_defaults(),
                 active_profile: Some("o3".to_string()),
@@ -3149,6 +3232,15 @@ model_verbosity = "high"
                 tui_notifications: Default::default(),
                 animations: true,
                 show_tooltips: true,
+                tui_scroll_events_per_tick: None,
+                tui_scroll_wheel_lines: None,
+                tui_scroll_trackpad_lines: None,
+                tui_scroll_trackpad_accel_events: None,
+                tui_scroll_trackpad_accel_max: None,
+                tui_scroll_mode: ScrollInputMode::Auto,
+                tui_scroll_wheel_tick_detect_max_ms: None,
+                tui_scroll_wheel_like_max_duration_ms: None,
+                tui_scroll_invert: false,
                 otel: OtelConfig::default(),
             },
             o3_profile_config
@@ -3194,6 +3286,7 @@ model_verbosity = "high"
             project_doc_fallback_filenames: Vec::new(),
             tool_output_token_limit: None,
             codex_home: fixture.codex_home(),
+            config_layer_stack: Default::default(),
             history: History::default(),
             file_opener: UriBasedFileOpener::VsCode,
             codex_linux_sandbox_exe: None,
@@ -3202,7 +3295,6 @@ model_verbosity = "high"
             model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
             model_supports_reasoning_summaries: None,
-            model_reasoning_summary_format: None,
             model_verbosity: None,
             model_max_output_tokens: None,
             conversation_build_strategy: ConversationBuildStrategy::FullHistory,
@@ -3215,7 +3307,6 @@ model_verbosity = "high"
             include_apply_patch_tool: false,
             tools_web_search_request: false,
             use_experimental_unified_exec_tool: false,
-            use_experimental_use_rmcp_client: false,
             ghost_snapshot: GhostSnapshotConfig::default(),
             features: Features::with_defaults(),
             active_profile: Some("gpt3".to_string()),
@@ -3227,6 +3318,15 @@ model_verbosity = "high"
             tui_notifications: Default::default(),
             animations: true,
             show_tooltips: true,
+            tui_scroll_events_per_tick: None,
+            tui_scroll_wheel_lines: None,
+            tui_scroll_trackpad_lines: None,
+            tui_scroll_trackpad_accel_events: None,
+            tui_scroll_trackpad_accel_max: None,
+            tui_scroll_mode: ScrollInputMode::Auto,
+            tui_scroll_wheel_tick_detect_max_ms: None,
+            tui_scroll_wheel_like_max_duration_ms: None,
+            tui_scroll_invert: false,
             otel: OtelConfig::default(),
         };
 
@@ -3287,6 +3387,7 @@ model_verbosity = "high"
             project_doc_fallback_filenames: Vec::new(),
             tool_output_token_limit: None,
             codex_home: fixture.codex_home(),
+            config_layer_stack: Default::default(),
             history: History::default(),
             file_opener: UriBasedFileOpener::VsCode,
             codex_linux_sandbox_exe: None,
@@ -3295,7 +3396,6 @@ model_verbosity = "high"
             model_reasoning_effort: None,
             model_reasoning_summary: ReasoningSummary::default(),
             model_supports_reasoning_summaries: None,
-            model_reasoning_summary_format: None,
             model_verbosity: None,
             model_max_output_tokens: None,
             conversation_build_strategy: ConversationBuildStrategy::FullHistory,
@@ -3308,7 +3408,6 @@ model_verbosity = "high"
             include_apply_patch_tool: false,
             tools_web_search_request: false,
             use_experimental_unified_exec_tool: false,
-            use_experimental_use_rmcp_client: false,
             ghost_snapshot: GhostSnapshotConfig::default(),
             features: Features::with_defaults(),
             active_profile: Some("zdr".to_string()),
@@ -3320,6 +3419,15 @@ model_verbosity = "high"
             tui_notifications: Default::default(),
             animations: true,
             show_tooltips: true,
+            tui_scroll_events_per_tick: None,
+            tui_scroll_wheel_lines: None,
+            tui_scroll_trackpad_lines: None,
+            tui_scroll_trackpad_accel_events: None,
+            tui_scroll_trackpad_accel_max: None,
+            tui_scroll_mode: ScrollInputMode::Auto,
+            tui_scroll_wheel_tick_detect_max_ms: None,
+            tui_scroll_wheel_like_max_duration_ms: None,
+            tui_scroll_invert: false,
             otel: OtelConfig::default(),
         };
 
@@ -3366,6 +3474,7 @@ model_verbosity = "high"
             project_doc_fallback_filenames: Vec::new(),
             tool_output_token_limit: None,
             codex_home: fixture.codex_home(),
+            config_layer_stack: Default::default(),
             history: History::default(),
             file_opener: UriBasedFileOpener::VsCode,
             codex_linux_sandbox_exe: None,
@@ -3374,7 +3483,6 @@ model_verbosity = "high"
             model_reasoning_effort: Some(ReasoningEffort::High),
             model_reasoning_summary: ReasoningSummary::Detailed,
             model_supports_reasoning_summaries: None,
-            model_reasoning_summary_format: None,
             model_verbosity: Some(Verbosity::High),
             model_max_output_tokens: None,
             conversation_build_strategy: ConversationBuildStrategy::FullHistory,
@@ -3387,7 +3495,6 @@ model_verbosity = "high"
             include_apply_patch_tool: false,
             tools_web_search_request: false,
             use_experimental_unified_exec_tool: false,
-            use_experimental_use_rmcp_client: false,
             ghost_snapshot: GhostSnapshotConfig::default(),
             features: Features::with_defaults(),
             active_profile: Some("gpt5".to_string()),
@@ -3399,6 +3506,15 @@ model_verbosity = "high"
             tui_notifications: Default::default(),
             animations: true,
             show_tooltips: true,
+            tui_scroll_events_per_tick: None,
+            tui_scroll_wheel_lines: None,
+            tui_scroll_trackpad_lines: None,
+            tui_scroll_trackpad_accel_events: None,
+            tui_scroll_trackpad_accel_max: None,
+            tui_scroll_mode: ScrollInputMode::Auto,
+            tui_scroll_wheel_tick_detect_max_ms: None,
+            tui_scroll_wheel_like_max_duration_ms: None,
+            tui_scroll_invert: false,
             otel: OtelConfig::default(),
         };
 

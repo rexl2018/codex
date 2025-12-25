@@ -190,6 +190,9 @@ pub(crate) enum AppEvent {
 
     /// Add a directory to the writable roots and file search.
     AddWritableDir(PathBuf),
+
+    /// Launch the external editor after a normal draw has completed.
+    LaunchExternalEditor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
