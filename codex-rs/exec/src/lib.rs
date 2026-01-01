@@ -199,6 +199,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
     let overrides = ConfigOverrides {
         model,
         review_model: None,
+        review_profile: None,
         config_profile,
         // Default to never ask for approvals in headless mode. Feature flags can override.
         approval_policy: Some(AskForApproval::Never),

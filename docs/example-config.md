@@ -24,6 +24,10 @@ model = "gpt-5.1-codex-max"
 # Model used by the /review feature (code reviews). Default: "gpt-5.1-codex-max".
 review_model = "gpt-5.1-codex-max"
 
+# Optional profile name to use for /review sessions.
+# When set, /review uses the configuration from that profile (model/provider/etc).
+# review_profile = "codex5"
+
 # Provider id selected from [model_providers]. Default: "openai".
 model_provider = "openai"
 

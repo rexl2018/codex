@@ -2225,17 +2225,43 @@ async fn spawn_review_thread(
     sub_id: String,
     resolved: crate::review_prompts::ResolvedReviewRequest,
 ) {
-    let model = config.review_model.clone();
-    let review_model_family = sess
-        .services
-        .models_manager
-        .construct_model_family(&model, &config)
-        .await;
-    // For reviews, disable web_search and view_image regardless of global settings.
-    let mut review_features = sess.features.clone();
+    let review_model = config.review_model.clone();
+
+    // Build per-turn config for review sessions. When `review_profile` is set,
+    // this uses the configuration derived from that profile; otherwise it falls
+    // back to legacy behavior (review model override + forced low effort).
+    let mut per_turn_config = (*config).clone();
+    per_turn_config.model = Some(review_model.clone());
+
+    if config.review_profile.is_some() {
+        per_turn_config.model_provider_id = config.review_model_provider_id.clone();
+        per_turn_config.model_provider = config.review_model_provider.clone();
+        per_turn_config.model_verbosity = config.review_model_verbosity;
+        per_turn_config.model_max_output_tokens = config.review_model_max_output_tokens;
+        per_turn_config.conversation_build_strategy = config.review_conversation_build_strategy;
+        per_turn_config.chatgpt_base_url = config.review_chatgpt_base_url.clone();
+        per_turn_config.model_reasoning_effort = config.review_model_reasoning_effort;
+        per_turn_config.model_reasoning_summary = config.review_model_reasoning_summary;
+        per_turn_config.features = config.review_features.clone();
+    } else {
+        // Legacy behavior: reviews run cheap by default.
+        per_turn_config.model_reasoning_effort = Some(ReasoningEffortConfig::Low);
+        per_turn_config.model_reasoning_summary = ReasoningSummaryConfig::Detailed;
+        per_turn_config.features = sess.features.clone();
+    }
+
+    // For reviews, disable web_search and view_image regardless of settings.
+    let mut review_features = per_turn_config.features.clone();
     review_features
         .disable(crate::features::Feature::WebSearchRequest)
         .disable(crate::features::Feature::ViewImageTool);
+    per_turn_config.features = review_features.clone();
+
+    let review_model_family = sess
+        .services
+        .models_manager
+        .construct_model_family(&review_model, &per_turn_config)
+        .await;
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_family: &review_model_family,
         features: &review_features,
@@ -2243,20 +2269,13 @@ async fn spawn_review_thread(
 
     let base_instructions = REVIEW_PROMPT.to_string();
     let review_prompt = resolved.prompt.clone();
-    let provider = parent_turn_context.client.get_provider();
     let auth_manager = parent_turn_context.client.get_auth_manager();
     let model_family = review_model_family.clone();
 
-    // Build per‑turn client with the requested model/family.
-    let mut per_turn_config = (*config).clone();
-    per_turn_config.model_reasoning_effort = Some(ReasoningEffortConfig::Low);
-    per_turn_config.model_reasoning_summary = ReasoningSummaryConfig::Detailed;
-    per_turn_config.features = review_features.clone();
-
-    let otel_manager = parent_turn_context.client.get_otel_manager().with_model(
-        config.review_model.as_str(),
-        review_model_family.slug.as_str(),
-    );
+    let otel_manager = parent_turn_context
+        .client
+        .get_otel_manager()
+        .with_model(review_model.as_str(), review_model_family.slug.as_str());
 
     let per_turn_config = Arc::new(per_turn_config);
     let client = ModelClient::new(
@@ -2264,12 +2283,28 @@ async fn spawn_review_thread(
         auth_manager,
         model_family.clone(),
         otel_manager,
-        provider,
+        if config.review_profile.is_some() {
+            per_turn_config.model_provider.clone()
+        } else {
+            parent_turn_context.client.get_provider()
+        },
         per_turn_config.model_reasoning_effort,
         per_turn_config.model_reasoning_summary,
         sess.conversation_id,
         parent_turn_context.client.get_session_source(),
     );
+
+    let (approval_policy, sandbox_policy) = if config.review_profile.is_some() {
+        (
+            config.review_approval_policy,
+            config.review_sandbox_policy.clone(),
+        )
+    } else {
+        (
+            parent_turn_context.approval_policy,
+            parent_turn_context.sandbox_policy.clone(),
+        )
+    };
 
     let review_turn_context = TurnContext {
         sub_id: sub_id.to_string(),
@@ -2280,8 +2315,8 @@ async fn spawn_review_thread(
         user_instructions: None,
         base_instructions: Some(base_instructions.clone()),
         compact_prompt: parent_turn_context.compact_prompt.clone(),
-        approval_policy: parent_turn_context.approval_policy,
-        sandbox_policy: parent_turn_context.sandbox_policy.clone(),
+        approval_policy,
+        sandbox_policy,
         shell_environment_policy: parent_turn_context.shell_environment_policy.clone(),
         cwd: parent_turn_context.cwd.clone(),
         final_output_json_schema: None,

@@ -105,6 +105,19 @@ pub struct Config {
     /// Model used specifically for review sessions. Defaults to "gpt-5.1-codex-max".
     pub review_model: String,
 
+    /// Optional profile name to derive configuration for review sessions.
+    ///
+    /// When set, review sessions use the configuration resolved from this
+    /// profile (model/provider/reasoning/token limits/etc) instead of the
+    /// primary session configuration.
+    pub review_profile: Option<String>,
+
+    /// Provider identifier used for review sessions.
+    pub review_model_provider_id: String,
+
+    /// Provider used for review sessions.
+    pub review_model_provider: ModelProviderInfo,
+
     /// Size of the context window for the model, in tokens.
     pub model_context_window: Option<i64>,
 
@@ -311,6 +324,33 @@ pub struct Config {
 
     /// Optional max output tokens limit for Responses API.
     pub model_max_output_tokens: Option<i64>,
+
+    /// Review session reasoning effort (Responses API `reasoning.effort`).
+    pub review_model_reasoning_effort: Option<ReasoningEffort>,
+
+    /// Review session reasoning summary (Responses API `reasoning.summary`).
+    pub review_model_reasoning_summary: ReasoningSummary,
+
+    /// Review session verbosity (Responses API `text.verbosity`).
+    pub review_model_verbosity: Option<Verbosity>,
+
+    /// Review session max output tokens (Responses API `max_output_tokens`).
+    pub review_model_max_output_tokens: Option<i64>,
+
+    /// Review session conversation build strategy.
+    pub review_conversation_build_strategy: ConversationBuildStrategy,
+
+    /// Review session ChatGPT base URL.
+    pub review_chatgpt_base_url: String,
+
+    /// Review session sandbox policy (resolved to a concrete policy).
+    pub review_sandbox_policy: SandboxPolicy,
+
+    /// Review session approval policy (resolved to a concrete policy).
+    pub review_approval_policy: AskForApproval,
+
+    /// Review session feature flags.
+    pub review_features: Features,
 
     /// Strategy for constructing the conversation payload sent to the provider.
     pub conversation_build_strategy: ConversationBuildStrategy,
@@ -682,6 +722,12 @@ pub struct ConfigToml {
     pub model: Option<String>,
     /// Review model override used by the `/review` feature.
     pub review_model: Option<String>,
+    /// Profile name to use for review sessions.
+    ///
+    /// When set, review sessions use the configuration resolved from this
+    /// profile (model/provider/reasoning/token limits/etc) instead of the
+    /// primary session configuration.
+    pub review_profile: Option<String>,
 
     /// Provider to use from the model_providers map.
     pub model_provider: Option<String>,
@@ -1029,6 +1075,7 @@ impl ConfigToml {
 pub struct ConfigOverrides {
     pub model: Option<String>,
     pub review_model: Option<String>,
+    pub review_profile: Option<String>,
     pub cwd: Option<PathBuf>,
     pub approval_policy: Option<AskForApproval>,
     pub sandbox_mode: Option<SandboxMode>,
@@ -1093,11 +1140,17 @@ impl Config {
     ) -> std::io::Result<Self> {
         let requirements = config_layer_stack.requirements().clone();
         let user_instructions = Self::load_instructions(Some(&codex_home));
+        // We consume fields out of `cfg` as we derive the primary session config.
+        // Keep a clone around so review-specific derivations can still borrow a
+        // full view of the user config without fighting partial-move borrow
+        // semantics.
+        let cfg_for_review = cfg.clone();
 
         // Destructure ConfigOverrides fully to ensure all overrides are applied.
         let ConfigOverrides {
             model,
             review_model: override_review_model,
+            review_profile: override_review_profile,
             cwd,
             approval_policy: approval_policy_override,
             sandbox_mode,
@@ -1136,7 +1189,7 @@ impl Config {
             web_search_request: override_tools_web_search_request,
         };
 
-        let features = Features::from_config(&cfg, &config_profile, feature_overrides);
+        let features = Features::from_config(&cfg, &config_profile, feature_overrides.clone());
         #[cfg(target_os = "windows")]
         {
             // Base flag controls sandbox on/off; elevated only applies when base is enabled.
@@ -1214,7 +1267,7 @@ impl Config {
 
         let model_provider_id = model_provider
             .or(config_profile.model_provider)
-            .or(cfg.model_provider)
+            .or(cfg.model_provider.clone())
             .unwrap_or_else(|| "openai".to_string());
         let model_provider = model_providers
             .get(&model_provider_id)
@@ -1226,9 +1279,9 @@ impl Config {
             })?
             .clone();
 
-        let shell_environment_policy = cfg.shell_environment_policy.into();
+        let shell_environment_policy = cfg.shell_environment_policy.clone().into();
 
-        let history = cfg.history.unwrap_or_default();
+        let history = cfg.history.clone().unwrap_or_default();
 
         let ghost_snapshot = {
             let mut config = GhostSnapshotConfig::default();
@@ -1258,6 +1311,32 @@ impl Config {
         let include_apply_patch_tool_flag = features.enabled(Feature::ApplyPatchFreeform);
         let tools_web_search_request = features.enabled(Feature::WebSearchRequest);
         let use_experimental_unified_exec_tool = features.enabled(Feature::UnifiedExec);
+
+        // Resolve optional review_profile and derive a separate config "view"
+        // for review sessions. If unset, fall back to primary session settings.
+        let review_profile_name = override_review_profile
+            .as_ref()
+            .or(cfg_for_review.review_profile.as_ref())
+            .cloned();
+        let review_profile = match review_profile_name.as_ref() {
+            Some(key) => cfg
+                .profiles
+                .get(key)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("review profile `{key}` not found"),
+                    )
+                })?
+                .clone(),
+            None => ConfigProfile::default(),
+        };
+
+        let review_features_base = if review_profile_name.is_some() {
+            Features::from_config(&cfg_for_review, &review_profile, feature_overrides)
+        } else {
+            features.clone()
+        };
 
         let forced_chatgpt_workspace_id =
             cfg.forced_chatgpt_workspace_id.as_ref().and_then(|value| {
@@ -1306,10 +1385,149 @@ impl Config {
         )?;
         let compact_prompt = compact_prompt.or(file_compact_prompt);
 
-        // Default review model when not set in config; allow CLI override to take precedence.
+        // Effective review model:
+        // - `-c review_model=...` wins (legacy escape hatch)
+        // - else, if `review_profile` is set and defines a model, use it
+        // - else fall back to the existing `review_model` config key (or default)
         let review_model = override_review_model
-            .or(cfg.review_model)
+            .or_else(|| review_profile.model.clone())
+            .or(cfg.review_model.clone())
             .unwrap_or_else(default_review_model);
+
+        // Derive review provider/model settings using the review profile when configured,
+        // otherwise fall back to the primary session settings.
+        let review_model_provider_id = if review_profile_name.is_some() {
+            review_profile
+                .model_provider
+                .clone()
+                .or(cfg.model_provider.clone())
+                .unwrap_or_else(|| model_provider_id.clone())
+        } else {
+            model_provider_id.clone()
+        };
+        let review_model_provider = if review_profile_name.is_some() {
+            model_providers
+                .get(&review_model_provider_id)
+                .ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("Model provider `{review_model_provider_id}` not found"),
+                    )
+                })?
+                .clone()
+        } else {
+            model_provider.clone()
+        };
+
+        let review_model_reasoning_effort = if review_profile_name.is_some() {
+            review_profile
+                .model_reasoning_effort
+                .or(cfg.model_reasoning_effort)
+        } else {
+            config_profile
+                .model_reasoning_effort
+                .or(cfg.model_reasoning_effort)
+        };
+        let review_model_reasoning_summary = if review_profile_name.is_some() {
+            review_profile
+                .model_reasoning_summary
+                .or(cfg.model_reasoning_summary)
+                .unwrap_or_default()
+        } else {
+            config_profile
+                .model_reasoning_summary
+                .or(cfg.model_reasoning_summary)
+                .unwrap_or_default()
+        };
+        let review_model_verbosity = if review_profile_name.is_some() {
+            review_profile.model_verbosity.or(cfg.model_verbosity)
+        } else {
+            config_profile.model_verbosity.or(cfg.model_verbosity)
+        };
+        let review_model_max_output_tokens = if review_profile_name.is_some() {
+            review_profile
+                .model_max_output_tokens
+                .or(cfg.model_max_output_tokens)
+        } else {
+            config_profile
+                .model_max_output_tokens
+                .or(cfg.model_max_output_tokens)
+        };
+        let review_conversation_build_strategy = if review_profile_name.is_some() {
+            review_profile
+                .conversation_build_strategy
+                .or(cfg.conversation_build_strategy)
+                .unwrap_or_default()
+        } else {
+            config_profile
+                .conversation_build_strategy
+                .or(cfg.conversation_build_strategy)
+                .unwrap_or_default()
+        };
+        let review_chatgpt_base_url = if review_profile_name.is_some() {
+            review_profile
+                .chatgpt_base_url
+                .or(cfg.chatgpt_base_url.clone())
+                .unwrap_or_else(|| "https://chatgpt.com/backend-api/".to_string())
+        } else {
+            config_profile
+                .chatgpt_base_url
+                .clone()
+                .or(cfg.chatgpt_base_url.clone())
+                .unwrap_or_else(|| "https://chatgpt.com/backend-api/".to_string())
+        };
+
+        let (review_sandbox_policy, review_approval_policy) = if review_profile_name.is_some() {
+            let review_sandbox_resolution = cfg_for_review.derive_sandbox_policy(
+                sandbox_mode,
+                review_profile.sandbox_mode,
+                &resolved_cwd,
+            );
+            let mut review_sandbox_policy = review_sandbox_resolution.policy;
+            if let SandboxPolicy::WorkspaceWrite { writable_roots, .. } = &mut review_sandbox_policy
+            {
+                for path in &additional_writable_roots {
+                    if !writable_roots.iter().any(|existing| existing == path) {
+                        writable_roots.push(path.clone());
+                    }
+                }
+            }
+            let review_approval = approval_policy_override
+                .or(review_profile.approval_policy)
+                .or(cfg.approval_policy)
+                .unwrap_or_else(|| {
+                    if active_project.is_trusted() {
+                        AskForApproval::OnRequest
+                    } else if active_project.is_untrusted() {
+                        AskForApproval::UnlessTrusted
+                    } else {
+                        AskForApproval::default()
+                    }
+                });
+
+            let ConfigRequirements {
+                approval_policy: mut constrained_review_approval,
+                sandbox_policy: mut constrained_review_sandbox,
+            } = config_layer_stack.requirements().clone();
+
+            constrained_review_approval
+                .set(review_approval)
+                .map_err(|e| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{e}"))
+                })?;
+            constrained_review_sandbox
+                .set(review_sandbox_policy.clone())
+                .map_err(|e| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{e}"))
+                })?;
+
+            (
+                constrained_review_sandbox.get().clone(),
+                *constrained_review_approval.get(),
+            )
+        } else {
+            (sandbox_policy.clone(), approval_policy)
+        };
 
         let check_for_update_on_startup = cfg.check_for_update_on_startup.unwrap_or(true);
 
@@ -1330,6 +1548,9 @@ impl Config {
         let config = Self {
             model,
             review_model,
+            review_profile: review_profile_name,
+            review_model_provider_id,
+            review_model_provider,
             model_context_window: cfg.model_context_window,
             model_auto_compact_token_limit: cfg.model_auto_compact_token_limit,
             model_provider_id,
@@ -1401,8 +1622,17 @@ impl Config {
                 .unwrap_or_default(),
             chatgpt_base_url: config_profile
                 .chatgpt_base_url
-                .or(cfg.chatgpt_base_url)
-                .unwrap_or("https://chatgpt.com/backend-api/".to_string()),
+                .clone()
+                .or(cfg.chatgpt_base_url.clone())
+                .unwrap_or_else(|| "https://chatgpt.com/backend-api/".to_string()),
+            review_model_reasoning_effort,
+            review_model_reasoning_summary,
+            review_model_verbosity,
+            review_model_max_output_tokens,
+            review_conversation_build_strategy,
+            review_chatgpt_base_url,
+            review_sandbox_policy,
+            review_approval_policy,
             forced_chatgpt_workspace_id,
             forced_login_method,
             include_apply_patch_tool: include_apply_patch_tool_flag,
@@ -1410,6 +1640,7 @@ impl Config {
             use_experimental_unified_exec_tool,
             ghost_snapshot,
             features,
+            review_features: review_features_base,
             active_profile: active_profile_name,
             active_project,
             windows_wsl_setup_acknowledged: cfg.windows_wsl_setup_acknowledged.unwrap_or(false),
@@ -3179,6 +3410,9 @@ model_verbosity = "high"
             Config {
                 model: Some("o3".to_string()),
                 review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
+                review_profile: None,
+                review_model_provider_id: "openai".to_string(),
+                review_model_provider: fixture.openai_provider.clone(),
                 model_context_window: None,
                 model_auto_compact_token_limit: None,
                 model_provider_id: "openai".to_string(),
@@ -3211,6 +3445,15 @@ model_verbosity = "high"
                 model_supports_reasoning_summaries: None,
                 model_verbosity: None,
                 model_max_output_tokens: None,
+                review_model_reasoning_effort: Some(ReasoningEffort::High),
+                review_model_reasoning_summary: ReasoningSummary::Detailed,
+                review_model_verbosity: None,
+                review_model_max_output_tokens: None,
+                review_conversation_build_strategy: ConversationBuildStrategy::FullHistory,
+                review_chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
+                review_sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                review_approval_policy: AskForApproval::Never,
+                review_features: Features::with_defaults(),
                 conversation_build_strategy: ConversationBuildStrategy::FullHistory,
                 chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
                 base_instructions: None,
@@ -3265,6 +3508,9 @@ model_verbosity = "high"
         let expected_gpt3_profile_config = Config {
             model: Some("gpt-3.5-turbo".to_string()),
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
+            review_profile: None,
+            review_model_provider_id: "openai-chat-completions".to_string(),
+            review_model_provider: fixture.openai_chat_completions_provider.clone(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
             model_provider_id: "openai-chat-completions".to_string(),
@@ -3297,6 +3543,15 @@ model_verbosity = "high"
             model_supports_reasoning_summaries: None,
             model_verbosity: None,
             model_max_output_tokens: None,
+            review_model_reasoning_effort: None,
+            review_model_reasoning_summary: ReasoningSummary::default(),
+            review_model_verbosity: None,
+            review_model_max_output_tokens: None,
+            review_conversation_build_strategy: ConversationBuildStrategy::FullHistory,
+            review_chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
+            review_sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            review_approval_policy: AskForApproval::UnlessTrusted,
+            review_features: Features::with_defaults(),
             conversation_build_strategy: ConversationBuildStrategy::FullHistory,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,
@@ -3366,6 +3621,9 @@ model_verbosity = "high"
         let expected_zdr_profile_config = Config {
             model: Some("o3".to_string()),
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
+            review_profile: None,
+            review_model_provider_id: "openai".to_string(),
+            review_model_provider: fixture.openai_provider.clone(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
             model_provider_id: "openai".to_string(),
@@ -3398,6 +3656,15 @@ model_verbosity = "high"
             model_supports_reasoning_summaries: None,
             model_verbosity: None,
             model_max_output_tokens: None,
+            review_model_reasoning_effort: None,
+            review_model_reasoning_summary: ReasoningSummary::default(),
+            review_model_verbosity: None,
+            review_model_max_output_tokens: None,
+            review_conversation_build_strategy: ConversationBuildStrategy::FullHistory,
+            review_chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
+            review_sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            review_approval_policy: AskForApproval::OnFailure,
+            review_features: Features::with_defaults(),
             conversation_build_strategy: ConversationBuildStrategy::FullHistory,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,
@@ -3453,6 +3720,9 @@ model_verbosity = "high"
         let expected_gpt5_profile_config = Config {
             model: Some("gpt-5.1".to_string()),
             review_model: OPENAI_DEFAULT_REVIEW_MODEL.to_string(),
+            review_profile: None,
+            review_model_provider_id: "openai".to_string(),
+            review_model_provider: fixture.openai_provider.clone(),
             model_context_window: None,
             model_auto_compact_token_limit: None,
             model_provider_id: "openai".to_string(),
@@ -3485,6 +3755,15 @@ model_verbosity = "high"
             model_supports_reasoning_summaries: None,
             model_verbosity: Some(Verbosity::High),
             model_max_output_tokens: None,
+            review_model_reasoning_effort: Some(ReasoningEffort::High),
+            review_model_reasoning_summary: ReasoningSummary::Detailed,
+            review_model_verbosity: Some(Verbosity::High),
+            review_model_max_output_tokens: None,
+            review_conversation_build_strategy: ConversationBuildStrategy::FullHistory,
+            review_chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
+            review_sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            review_approval_policy: AskForApproval::OnFailure,
+            review_features: Features::with_defaults(),
             conversation_build_strategy: ConversationBuildStrategy::FullHistory,
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             base_instructions: None,

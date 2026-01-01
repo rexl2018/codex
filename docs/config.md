@@ -65,6 +65,24 @@ The model that Codex should use.
 model = "gpt-5.1"  # overrides the default ("gpt-5.1-codex-max" across platforms)
 ```
 
+### review_profile
+
+Optional profile name to use for `/review` sessions.
+
+When set, code reviews will use the configuration from that profile (model/provider/reasoning/token limits/etc) instead of the primary session configuration.
+
+```toml
+review_profile = "codex5"
+```
+
+### review_model
+
+Model used by the `/review` feature when `review_profile` is not set.
+
+```toml
+review_model = "gpt-5.1-codex-max"
+```
+
 ### model_providers
 
 This option lets you add to the default set of model providers bundled with Codex. The map key becomes the value you use with `model_provider` to select the provider.
