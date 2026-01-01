@@ -1135,7 +1135,6 @@ mod tests {
     use crate::client_common::tools::FreeformTool;
     use crate::config::test_config;
     use crate::models_manager::manager::ModelsManager;
-    use crate::models_manager::model_family::find_family_for_model;
     use crate::tools::registry::ConfiguredToolSpec;
     use mcp_types::ToolInputSchema;
     use pretty_assertions::assert_eq;
@@ -1556,7 +1555,8 @@ mod tests {
 
     #[test]
     fn test_freeform_as_function_conversion() {
-        let model_family = find_family_for_model("gpt-5.1");
+        let config = test_config();
+        let model_family = ModelsManager::construct_model_family_offline("gpt-5.1", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::ApplyPatchFreeform);
         features.enable(Feature::FreeformAsFunction);
@@ -1583,7 +1583,8 @@ mod tests {
 
     #[test]
     fn test_freeform_without_conversion() {
-        let model_family = find_family_for_model("gpt-5.1");
+        let config = test_config();
+        let model_family = ModelsManager::construct_model_family_offline("gpt-5.1", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::ApplyPatchFreeform);
         // Do NOT enable FreeformAsFunction

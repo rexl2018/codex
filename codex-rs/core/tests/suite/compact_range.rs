@@ -62,7 +62,7 @@ async fn compact_range_middle() {
         ..built_in_model_providers()["openai"].clone()
     };
     let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
+    let mut config = load_default_config_for_test(&home).await;
     config.model_provider = model_provider;
     config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
 

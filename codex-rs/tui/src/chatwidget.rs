@@ -2185,7 +2185,6 @@ impl ChatWidget {
                         let current_path = current_path.clone();
                         let tx = self.app_event_tx.clone();
                         let config = self.config.clone();
-                        let tag = tag;
                         tokio::spawn(async move {
                             match get_checkpoint_path(&tag, &config) {
                                 Ok(target_path) => {
@@ -4216,9 +4215,7 @@ pub(crate) fn parse_copy_command(text: &str) -> Option<Option<String>> {
         return Some(None);
     }
 
-    let Some(rest) = trimmed.strip_prefix("/copy") else {
-        return None;
-    };
+    let rest = trimmed.strip_prefix("/copy")?;
 
     match rest.chars().next() {
         Some(ch) if ch.is_whitespace() => {

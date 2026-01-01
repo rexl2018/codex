@@ -1337,7 +1337,7 @@ impl Config {
             cwd: resolved_cwd,
             additional_writable_roots: additional_writable_roots
                 .into_iter()
-                .map(|p| p.into())
+                .map(std::convert::Into::into)
                 .collect(),
             approval_policy: constrained_approval_policy,
             sandbox_policy: constrained_sandbox_policy,

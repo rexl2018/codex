@@ -1083,6 +1083,7 @@ mod tests {
             head: head_with_ts_and_user_text(ts, &[preview]),
             created_at: Some(ts.to_string()),
             updated_at: Some(ts.to_string()),
+            tail: Vec::new(),
         }
     }
 
@@ -1149,12 +1150,14 @@ mod tests {
             head: head_with_ts_and_user_text("2025-01-01T00:00:00Z", &["A"]),
             created_at: Some("2025-01-01T00:00:00Z".into()),
             updated_at: Some("2025-01-01T00:00:00Z".into()),
+            tail: Vec::new(),
         };
         let b = ConversationItem {
             path: PathBuf::from("/tmp/b.jsonl"),
             head: head_with_ts_and_user_text("2025-01-02T00:00:00Z", &["B"]),
             created_at: Some("2025-01-02T00:00:00Z".into()),
             updated_at: Some("2025-01-02T00:00:00Z".into()),
+            tail: Vec::new(),
         };
         let rows = rows_from_items(vec![a, b]);
         assert_eq!(rows.len(), 2);
@@ -1171,6 +1174,7 @@ mod tests {
             head,
             created_at: Some("2025-01-01T00:00:00Z".into()),
             updated_at: Some("2025-01-01T01:00:00Z".into()),
+            tail: Vec::new(),
         };
 
         let row = head_to_row(&item);

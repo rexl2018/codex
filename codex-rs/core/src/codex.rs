@@ -187,15 +187,12 @@ fn maybe_push_chat_wire_api_deprecation(
     config: &Config,
     _post_session_configured_events: &mut Vec<Event>,
 ) {
-    if config.model_provider.wire_api != WireApi::Chat {
-        return;
-    }
-
-    if CHAT_WIRE_API_DEPRECATION_EMITTED
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
+    if config.model_provider.wire_api == WireApi::Chat
+        && CHAT_WIRE_API_DEPRECATION_EMITTED
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
     {
-        return;
+        // TODO: Re-enable once the deprecation notice is ready to ship.
     }
 
     // post_session_configured_events.push(Event {
@@ -2792,8 +2789,13 @@ async fn try_run_turn(
 
         match event {
             ResponseEvent::Created { response_id } => {
-                // Store the response_id for use in the next request
-                sess.set_last_response_id(&turn_context, response_id).await;
+                // Do not update `last_response_id` here.
+                //
+                // The Created event is emitted even for responses that later get cancelled
+                // (e.g. user presses Esc). `last_response_id` is used to anchor the next
+                // request's `previous_response_id`, so pointing it at an aborted response
+                // can cause follow-up requests to fail with "not found" errors.
+                let _ = response_id;
             }
             ResponseEvent::OutputItemDone(item) => {
                 let previously_active_item = active_item.take();
@@ -2966,7 +2968,10 @@ fn turn_item_to_response_item(turn_item: TurnItem) -> Option<ResponseItem> {
                 })
                 .collect();
             Some(ResponseItem::Message {
-                id: Some(msg.id),
+                // This helper is only used when persisting a *partial* in-progress item
+                // (e.g. on user interrupt). Do not retain the provider-assigned item id;
+                // after cancellation, the provider may reject unknown ids on the next request.
+                id: None,
                 role: "assistant".to_string(),
                 content,
             })
@@ -2989,7 +2994,8 @@ fn turn_item_to_response_item(turn_item: TurnItem) -> Option<ResponseItem> {
                 )
             };
             Some(ResponseItem::Reasoning {
-                id: reasoning.id,
+                // Same rationale as above: strip ids for partial persisted items.
+                id: String::new(),
                 summary,
                 content,
                 encrypted_content: None,
@@ -3247,14 +3253,7 @@ mod tests {
 
     #[test]
     fn last_response_id_is_none_by_default_and_updates_on_set() {
-        let codex_home = tempfile::tempdir().expect("create temp dir");
-        let config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
-            ConfigOverrides::default(),
-            codex_home.path().to_path_buf(),
-        )
-        .expect("load default test config");
-        let config = Arc::new(config);
+        let config = Arc::new(crate::config::test_config());
         let model = ModelsManager::get_model_offline(config.model.as_deref());
         let session_configuration = SessionConfiguration {
             provider: config.model_provider.clone(),
@@ -3265,11 +3264,10 @@ mod tests {
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
             compact_prompt: config.compact_prompt.clone(),
-            approval_policy: config.approval_policy,
+            approval_policy: config.approval_policy.clone(),
             sandbox_policy: config.sandbox_policy.clone(),
             cwd: config.cwd.clone(),
             original_config_do_not_use: Arc::clone(&config),
-            exec_policy: Arc::new(RwLock::new(ExecPolicy::empty())),
             session_source: SessionSource::Exec,
         };
 
@@ -3284,14 +3282,7 @@ mod tests {
 
     #[test]
     fn last_response_id_is_not_cleared_by_interrupted_turn() {
-        let codex_home = tempfile::tempdir().expect("create temp dir");
-        let config = Config::load_from_base_config_with_overrides(
-            ConfigToml::default(),
-            ConfigOverrides::default(),
-            codex_home.path().to_path_buf(),
-        )
-        .expect("load default test config");
-        let config = Arc::new(config);
+        let config = Arc::new(crate::config::test_config());
         let model = ModelsManager::get_model_offline(config.model.as_deref());
         let session_configuration = SessionConfiguration {
             provider: config.model_provider.clone(),
@@ -3302,11 +3293,10 @@ mod tests {
             user_instructions: config.user_instructions.clone(),
             base_instructions: config.base_instructions.clone(),
             compact_prompt: config.compact_prompt.clone(),
-            approval_policy: config.approval_policy,
+            approval_policy: config.approval_policy.clone(),
             sandbox_policy: config.sandbox_policy.clone(),
             cwd: config.cwd.clone(),
             original_config_do_not_use: Arc::clone(&config),
-            exec_policy: Arc::new(RwLock::new(ExecPolicy::empty())),
             session_source: SessionSource::Exec,
         };
 

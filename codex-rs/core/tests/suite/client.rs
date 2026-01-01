@@ -1921,7 +1921,7 @@ async fn request_includes_previous_response_id_when_configured() {
     };
 
     let codex_home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&codex_home);
+    let mut config = load_default_config_for_test(&codex_home).await;
     config.model_provider_id = provider.name.clone();
     config.model_provider = provider.clone();
     config.conversation_build_strategy = ConversationBuildStrategy::PreviousResponseId;
@@ -2047,7 +2047,7 @@ async fn previous_response_id_is_sent_in_subsequent_turn() {
     provider.wire_api = WireApi::Responses;
 
     let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
+    let mut config = load_default_config_for_test(&home).await;
     config.model_provider = provider;
     config.conversation_build_strategy = ConversationBuildStrategy::PreviousResponseId;
 

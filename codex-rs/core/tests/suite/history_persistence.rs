@@ -39,7 +39,7 @@ async fn deleting_history_persists_across_resume() {
     mount_sse_sequence(&server, vec![sse1, sse2]).await;
 
     let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
+    let mut config = load_default_config_for_test(&home).await;
     let model_provider = ModelProviderInfo {
         base_url: Some(format!("{}/v1", server.uri())),
         ..built_in_model_providers()["openai"].clone()
@@ -108,7 +108,7 @@ async fn undo_history_range_persists_across_resume() {
     mount_sse_sequence(&server, vec![sse1, sse2]).await;
 
     let home = TempDir::new().unwrap();
-    let mut config = load_default_config_for_test(&home);
+    let mut config = load_default_config_for_test(&home).await;
     let model_provider = ModelProviderInfo {
         base_url: Some(format!("{}/v1", server.uri())),
         ..built_in_model_providers()["openai"].clone()
