@@ -43,7 +43,6 @@ impl ToolsConfig {
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_web_search_request = features.enabled(Feature::WebSearchRequest);
         let include_web_search_cached = features.enabled(Feature::WebSearchCached);
-        let include_view_image_tool = features.enabled(Feature::ViewImageTool);
         let include_collab_tools = features.enabled(Feature::Collab);
         let freeform_as_function = features.enabled(Feature::FreeformAsFunction);
 
@@ -77,7 +76,6 @@ impl ToolsConfig {
             apply_patch_tool_type,
             web_search_request: include_web_search_request,
             web_search_cached: include_web_search_cached,
-            include_view_image_tool,
             collab_tools: include_collab_tools,
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
             freeform_as_function,

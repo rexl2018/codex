@@ -19,6 +19,7 @@ use crate::rollout::RolloutRecorder;
 use crate::rollout::truncation;
 use crate::skills::SkillsManager;
 use codex_protocol::ThreadId;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::protocol::InitialHistory;
 use codex_protocol::protocol::Op;
@@ -168,6 +169,7 @@ impl ThreadManager {
         initial_history: InitialHistory,
         auth_manager: Arc<AuthManager>,
     ) -> CodexResult<NewThread> {
+        let initial_history = sanitize_history(initial_history);
         self.state
             .spawn_thread(config, initial_history, auth_manager, self.agent_control())
             .await
@@ -192,6 +194,7 @@ impl ThreadManager {
     ) -> CodexResult<NewThread> {
         let history = RolloutRecorder::get_rollout_history(&path).await?;
         let history = truncate_before_nth_user_message(history, nth_user_message);
+        let history = sanitize_history(history);
         self.state
             .spawn_thread(
                 config,
@@ -204,6 +207,54 @@ impl ThreadManager {
 
     fn agent_control(&self) -> AgentControl {
         AgentControl::new(Arc::downgrade(&self.state))
+    }
+
+    #[deprecated(note = "use resume_thread_from_rollout")]
+    pub async fn resume_conversation_from_rollout(
+        &self,
+        config: Config,
+        rollout_path: PathBuf,
+        auth_manager: Arc<AuthManager>,
+    ) -> CodexResult<NewThread> {
+        self.resume_thread_from_rollout(config, rollout_path, auth_manager)
+            .await
+    }
+
+    #[deprecated(note = "use resume_thread_with_history")]
+    pub async fn resume_conversation_with_history(
+        &self,
+        config: Config,
+        initial_history: InitialHistory,
+        auth_manager: Arc<AuthManager>,
+    ) -> CodexResult<NewThread> {
+        self.resume_thread_with_history(config, initial_history, auth_manager)
+            .await
+    }
+
+    /// Removes the conversation from the manager's internal map, though the
+    /// conversation is stored as `Arc<CodexConversation>`, it is possible that
+    /// other references to it exist elsewhere. Returns the conversation if the
+    /// conversation was found and removed.
+    #[deprecated(note = "use remove_thread")]
+    pub async fn remove_conversation(
+        &self,
+        conversation_id: &ThreadId,
+    ) -> Option<Arc<CodexThread>> {
+        self.remove_thread(conversation_id).await
+    }
+
+    /// Fork an existing conversation by taking messages up to the given position
+    /// (not including the message at the given position) and starting a new
+    /// conversation with identical configuration (unless overridden by the
+    /// caller's `config`). The new conversation will have a fresh id.
+    #[deprecated(note = "use fork_thread")]
+    pub async fn fork_conversation(
+        &self,
+        nth_user_message: usize,
+        config: Config,
+        path: PathBuf,
+    ) -> CodexResult<NewThread> {
+        self.fork_thread(nth_user_message, config, path).await
     }
 }
 
@@ -295,54 +346,6 @@ impl ThreadManagerState {
             .get(&conversation_id)
             .cloned()
             .ok_or_else(|| CodexErr::ThreadNotFound(conversation_id))
-    }
-
-    #[deprecated(note = "use resume_thread_from_rollout")]
-    pub async fn resume_conversation_from_rollout(
-        &self,
-        config: Config,
-        rollout_path: PathBuf,
-        auth_manager: Arc<AuthManager>,
-    ) -> CodexResult<NewThread> {
-        self.resume_thread_from_rollout(config, rollout_path, auth_manager)
-            .await
-    }
-
-    #[deprecated(note = "use resume_thread_with_history")]
-    pub async fn resume_conversation_with_history(
-        &self,
-        config: Config,
-        initial_history: InitialHistory,
-        auth_manager: Arc<AuthManager>,
-    ) -> CodexResult<NewThread> {
-        self.resume_thread_with_history(config, initial_history, auth_manager)
-            .await
-    }
-
-    /// Removes the conversation from the manager's internal map, though the
-    /// conversation is stored as `Arc<CodexConversation>`, it is possible that
-    /// other references to it exist elsewhere. Returns the conversation if the
-    /// conversation was found and removed.
-    #[deprecated(note = "use remove_thread")]
-    pub async fn remove_conversation(
-        &self,
-        conversation_id: &ThreadId,
-    ) -> Option<Arc<CodexThread>> {
-        self.remove_thread(conversation_id).await
-    }
-
-    /// Fork an existing conversation by taking messages up to the given position
-    /// (not including the message at the given position) and starting a new
-    /// conversation with identical configuration (unless overridden by the
-    /// caller's `config`). The new conversation will have a fresh id.
-    #[deprecated(note = "use fork_thread")]
-    pub async fn fork_conversation(
-        &self,
-        nth_user_message: usize,
-        config: Config,
-        path: PathBuf,
-    ) -> CodexResult<NewThread> {
-        self.fork_thread(nth_user_message, config, path).await
     }
 
 }

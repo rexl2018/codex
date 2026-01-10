@@ -204,7 +204,8 @@ impl CodexErr {
             | CodexErr::ThreadNotFound(_)
             | CodexErr::Spawn
             | CodexErr::SessionConfiguredNotFirstEvent
-            | CodexErr::UsageLimitReached(_) => false,
+            | CodexErr::UsageLimitReached(_)
+            | CodexErr::Other(_) => false,
             CodexErr::Stream(..)
             | CodexErr::Timeout
             | CodexErr::UnexpectedStatus(_)

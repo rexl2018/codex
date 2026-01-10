@@ -1165,6 +1165,7 @@ impl ChatWidget {
                 Self::format_error_with_status("Response retries exhausted", http_status_code)
             }
             CodexErrorInfo::Other => "Unknown error".to_string(),
+            CodexErrorInfo::ThreadRollbackFailed => "Thread rollback failed".to_string(),
         }
     }
 

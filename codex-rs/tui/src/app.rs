@@ -797,12 +797,6 @@ impl App {
                         format!("Failed to resume session from {}", path.display())
                     })?;
 
-                let model_family = self
-                    .server
-                    .get_models_manager()
-                    .construct_model_family(&resumed.session_configured.model, &self.config)
-                    .await;
-
                 let init = crate::chatwidget::ChatWidgetInit {
                     config: self.config.clone(),
                     frame_requester: tui.frame_requester(),
@@ -814,11 +808,11 @@ impl App {
                     models_manager: self.server.get_models_manager(),
                     feedback: self.feedback.clone(),
                     is_first_run: false,
-                    model_family,
+                    model: resumed.session_configured.model.clone(),
                 };
                 self.chat_widget = ChatWidget::new_from_existing(
                     init,
-                    resumed.conversation,
+                    resumed.thread,
                     resumed.session_configured,
                 );
                 tui.frame_requester().schedule_frame();

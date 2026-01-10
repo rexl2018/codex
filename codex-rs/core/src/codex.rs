@@ -2245,7 +2245,7 @@ mod handlers {
                 let mut state = sess.state.lock().await;
                 let output = state.history.handle_history_action(other);
                 let replacement_history = if output.history_changed {
-                    Some(state.history.get_history())
+                    Some(state.history.raw_items().to_vec())
                 } else {
                     None
                 };
@@ -2273,7 +2273,7 @@ mod handlers {
         start: Option<usize>,
     ) -> (String, Option<Vec<ResponseItem>>) {
         let mut state = sess.state.lock().await;
-        let history = state.history.get_history();
+        let history = state.history.raw_items().to_vec();
         if history.is_empty() {
             return ("History is empty; nothing to undo.".to_string(), None);
         }
@@ -2321,7 +2321,7 @@ mod handlers {
         if !delete_output.history_changed {
             return (delete_output.content, None);
         }
-        let replacement_history = state.history.get_history();
+        let replacement_history = state.history.raw_items().to_vec();
 
         let mut content = if start_index == end_index {
             format!("Undid item #{start_index}.")
@@ -2378,8 +2378,7 @@ async fn spawn_review_thread(
     let mut review_features = per_turn_config.features.clone();
     review_features
         .disable(crate::features::Feature::WebSearchRequest)
-        .disable(crate::features::Feature::WebSearchCached)
-        .disable(crate::features::Feature::ViewImageTool);
+        .disable(crate::features::Feature::WebSearchCached);
     per_turn_config.features = review_features.clone();
 
     let review_model_info = sess
@@ -2697,7 +2696,7 @@ async fn run_model_turn(
     let mut base_instructions = turn_context.base_instructions.clone();
     if parallel_tool_calls {
         static INSTRUCTIONS: &str = include_str!("../templates/parallel/instructions.md");
-        let family = turn_context.client.get_model_family();
+        let family = turn_context.client.get_model_info();
         let mut new_instructions = base_instructions.unwrap_or(family.base_instructions);
         new_instructions.push_str(INSTRUCTIONS);
         base_instructions = Some(new_instructions);
@@ -2747,24 +2746,6 @@ async fn run_model_turn(
 
         if progress_made {
             retries = 0;
-        }
-
-        // Use the configured provider-specific stream retry budget.
-        let max_retries = turn_context.client.get_provider().stream_max_retries();
-        if retries < max_retries {
-            retries += 1;
-            let delay = match &err {
-                CodexErr::Stream(_, requested_delay) => {
-                    requested_delay.unwrap_or_else(|| backoff(retries))
-                }
-                _ => backoff(retries),
-            };
-            warn!(
-                "stream disconnected - retrying turn ({retries}/{max_retries} in {delay:?})...",
-            );
-
-        if !err.is_retryable() {
-            return Err(err);
         }
 
         // Use the configured provider-specific stream retry budget.

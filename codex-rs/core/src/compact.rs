@@ -70,7 +70,7 @@ pub(crate) async fn run_compact_task_on_range(
     start: usize,
     end: usize,
 ) {
-    let start_event = EventMsg::TaskStarted(TaskStartedEvent {
+    let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         model_context_window: turn_context.client.get_model_context_window(),
     });
     sess.send_event(&turn_context, start_event).await;
@@ -156,7 +156,7 @@ async fn run_compact_task_inner(
         // `history.get_history()` returns `Vec<ResponseItem>`.
 
         // We need to verify indices are valid.
-        let all_items = history_for_prompt.get_history();
+        let all_items = history_for_prompt.raw_items().to_vec();
         if start >= all_items.len() || end >= all_items.len() || start > end {
             let event = EventMsg::Error(
                 CodexErr::Other("Invalid history range".to_string()).to_error_event(None),
@@ -372,13 +372,13 @@ async fn run_compact_task_inner(
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
     // For user messages, we only want those in the range if range is specified.
     let items_to_collect = if let Some((start, end)) = range {
-        if end < history_snapshot.len() {
-            &history_snapshot[start..=end]
+        if end < history_snapshot.raw_items().len() {
+            &history_snapshot.raw_items()[start..=end]
         } else {
-            &history_snapshot
+            history_snapshot.raw_items()
         }
     } else {
-        &history_snapshot
+        history_snapshot.raw_items()
     };
 
     let user_messages = collect_user_messages(items_to_collect);
