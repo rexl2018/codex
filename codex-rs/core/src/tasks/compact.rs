@@ -31,15 +31,27 @@ impl SessionTask for CompactTask {
             session.as_ref(),
             &ctx.client.get_provider(),
         ) {
+            let _ = session.services.otel_manager.counter(
+                "codex.task.compact",
+                1,
+                &[("type", "remote")],
+            );
             if let Some((start, end)) = self.range {
                 crate::compact::run_compact_task_on_range(session, ctx, input, start, end).await
             } else {
                 crate::compact_remote::run_remote_compact_task(session, ctx).await
             }
-        } else if let Some((start, end)) = self.range {
-            crate::compact::run_compact_task_on_range(session, ctx, input, start, end).await
         } else {
-            crate::compact::run_compact_task(session, ctx, input).await
+            let _ = session.services.otel_manager.counter(
+                "codex.task.compact",
+                1,
+                &[("type", "local")],
+            );
+            if let Some((start, end)) = self.range {
+                crate::compact::run_compact_task_on_range(session, ctx, input, start, end).await
+            } else {
+                crate::compact::run_compact_task(session, ctx, input).await
+            }
         }
 
         None

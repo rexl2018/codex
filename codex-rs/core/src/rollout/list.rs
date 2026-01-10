@@ -20,11 +20,11 @@ use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionSource;
 
-/// Returned page of conversation summaries.
+/// Returned page of thread (thread) summaries.
 #[derive(Debug, Default, PartialEq)]
-pub struct ConversationsPage {
-    /// Conversation summaries ordered newest first.
-    pub items: Vec<ConversationItem>,
+pub struct ThreadsPage {
+    /// Thread summaries ordered newest first.
+    pub items: Vec<ThreadItem>,
     /// Opaque pagination token to resume after the last item, or `None` if end.
     pub next_cursor: Option<Cursor>,
     /// Total number of files touched while scanning this request.
@@ -33,9 +33,9 @@ pub struct ConversationsPage {
     pub reached_scan_cap: bool,
 }
 
-/// Summary information for a conversation rollout file.
+/// Summary information for a thread rollout file.
 #[derive(Debug, PartialEq)]
-pub struct ConversationItem {
+pub struct ThreadItem {
     /// Absolute path to the rollout file.
     pub path: PathBuf,
     /// First up to `HEAD_RECORD_LIMIT` JSONL records parsed as JSON (includes meta line).
@@ -47,6 +47,13 @@ pub struct ConversationItem {
     /// Last up to `TAIL_RECORD_LIMIT` JSONL records parsed as JSON.
     pub tail: Vec<serde_json::Value>,
 }
+
+#[allow(dead_code)]
+#[deprecated(note = "use ThreadItem")]
+pub type ConversationItem = ThreadItem;
+#[allow(dead_code)]
+#[deprecated(note = "use ThreadsPage")]
+pub type ConversationsPage = ThreadsPage;
 
 #[derive(Default)]
 struct HeadTailSummary {
@@ -103,25 +110,22 @@ impl<'de> serde::Deserialize<'de> for Cursor {
     }
 }
 
-/// Retrieve recorded conversation file paths with token pagination. The returned `next_cursor`
+/// Retrieve recorded thread file paths with token pagination. The returned `next_cursor`
 /// can be supplied on the next call to resume after the last returned item, resilient to
 /// concurrent new sessions being appended. Ordering is stable by timestamp desc, then UUID desc.
-/// Retrieve recorded conversation file paths with token pagination. The returned `next_cursor`
-/// can be supplied on the next call to resume after the last returned item, resilient to
-/// concurrent new sessions being appended. Ordering is stable by timestamp desc, then UUID desc.
-pub async fn get_conversations(
+pub async fn get_threads(
     codex_home: &Path,
     page_size: usize,
     cursor: Option<&Cursor>,
     allowed_sources: &[SessionSource],
     model_providers: Option<&[String]>,
     default_provider: &str,
-) -> io::Result<ConversationsPage> {
+) -> io::Result<ThreadsPage> {
     let mut root = codex_home.to_path_buf();
     root.push(SESSIONS_SUBDIR);
 
     if !root.exists() {
-        return Ok(ConversationsPage {
+        return Ok(ThreadsPage {
             items: Vec::new(),
             next_cursor: None,
             num_scanned_files: 0,
@@ -145,7 +149,27 @@ pub async fn get_conversations(
     Ok(result)
 }
 
-/// Load conversation file paths from disk using directory traversal.
+#[deprecated(note = "use get_threads")]
+pub async fn get_conversations(
+    codex_home: &Path,
+    page_size: usize,
+    cursor: Option<&Cursor>,
+    allowed_sources: &[SessionSource],
+    model_providers: Option<&[String]>,
+    default_provider: &str,
+) -> io::Result<ThreadsPage> {
+    get_threads(
+        codex_home,
+        page_size,
+        cursor,
+        allowed_sources,
+        model_providers,
+        default_provider,
+    )
+    .await
+}
+
+/// Load thread file paths from disk using directory traversal.
 ///
 /// Directory layout: `~/.codex/sessions/YYYY/MM/DD/rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl`
 /// Returned newest (latest) first.
@@ -155,8 +179,8 @@ async fn traverse_directories_for_paths(
     anchor: Option<Cursor>,
     allowed_sources: &[SessionSource],
     provider_matcher: Option<&ProviderMatcher<'_>>,
-) -> io::Result<ConversationsPage> {
-    let mut items: Vec<ConversationItem> = Vec::with_capacity(page_size);
+) -> io::Result<ThreadsPage> {
+    let mut items: Vec<ThreadItem> = Vec::with_capacity(page_size);
     let mut scanned_files = 0usize;
     let mut anchor_passed = anchor.is_none();
     let (anchor_ts, anchor_id) = match anchor {
@@ -165,73 +189,93 @@ async fn traverse_directories_for_paths(
     };
     let mut more_matches_available = false;
 
-    let date_dirs = collect_dirs_desc(&root, |s| s.parse::<u32>().ok()).await?;
-    'outer: for (_date, date_path) in date_dirs.iter() {
-        if scanned_files >= MAX_SCAN_FILES {
-            break;
-        }
-        let mut day_files = collect_files(date_path, |name_str, path| {
-            if !name_str.starts_with("rollout-") || !name_str.ends_with(".jsonl") {
-                return None;
-            }
-
-            parse_timestamp_uuid_from_filename(name_str)
-                .map(|(ts, id)| (ts, id, name_str.to_string(), path.to_path_buf()))
-        })
-        .await?;
-        // Stable ordering within the same second: (timestamp desc, uuid desc)
-        day_files.sort_by_key(|(ts, sid, _name_str, _path)| (Reverse(*ts), Reverse(*sid)));
-        for (ts, sid, _name_str, path) in day_files.into_iter() {
-            scanned_files += 1;
-            if scanned_files >= MAX_SCAN_FILES && items.len() >= page_size {
-                more_matches_available = true;
-                break 'outer;
-            }
-            if !anchor_passed {
-                if ts < anchor_ts || (ts == anchor_ts && sid < anchor_id) {
-                    anchor_passed = true;
-                } else {
-                    continue;
+    // Traverse Year -> Month -> Day
+    let year_dirs = collect_dirs_desc(&root, |s| s.parse::<u32>().ok()).await?;
+    'outer: for (_year, year_path) in year_dirs.iter() {
+        let month_dirs = collect_dirs_desc(year_path, |s| s.parse::<u32>().ok()).await?;
+        for (_month, month_path) in month_dirs.iter() {
+            let day_dirs = collect_dirs_desc(month_path, |s| s.parse::<u32>().ok()).await?;
+            for (_day, day_path) in day_dirs.iter() {
+                if scanned_files >= MAX_SCAN_FILES {
+                    break 'outer;
                 }
-            }
-            if items.len() == page_size {
-                more_matches_available = true;
-                break 'outer;
-            }
-            // Read head and simultaneously detect message events within the same
-            // first N JSONL records to avoid a second file read.
-            let summary = read_head_and_tail(&path, HEAD_RECORD_LIMIT, TAIL_RECORD_LIMIT)
-                .await
-                .unwrap_or_default();
-            if !allowed_sources.is_empty()
-                && !summary
-                    .source
-                    .is_some_and(|source| allowed_sources.iter().any(|s| s == &source))
-            {
-                continue;
-            }
-            if let Some(matcher) = provider_matcher
-                && !matcher.matches(summary.model_provider.as_deref())
-            {
-                continue;
-            }
-            // Apply filters: must have session meta and at least one user message event
-            if summary.saw_session_meta && summary.saw_user_event {
-                let HeadTailSummary {
-                    head,
-                    tail,
-                    created_at,
-                    mut updated_at,
-                    ..
-                } = summary;
-                updated_at = updated_at.or_else(|| created_at.clone());
-                items.push(ConversationItem {
-                    path,
-                    head,
-                    tail,
-                    created_at,
-                    updated_at,
-                });
+
+                let mut day_files = collect_files(day_path, |name_str, path| {
+                    if !name_str.starts_with("rollout-") || !name_str.ends_with(".jsonl") {
+                        return None;
+                    }
+
+                    parse_timestamp_uuid_from_filename(name_str)
+                        .map(|(ts, id)| (ts, id, name_str.to_string(), path.to_path_buf()))
+                })
+                .await?;
+
+                // Stable ordering within the same second: (timestamp desc, uuid desc)
+                day_files.sort_by_key(|(ts, sid, _name_str, _path)| (Reverse(*ts), Reverse(*sid)));
+
+                for (ts, sid, _name_str, path) in day_files.into_iter() {
+                    scanned_files += 1;
+                    if scanned_files >= MAX_SCAN_FILES && items.len() >= page_size {
+                        more_matches_available = true;
+                        break 'outer;
+                    }
+
+                    if !anchor_passed {
+                        if ts < anchor_ts || (ts == anchor_ts && sid < anchor_id) {
+                            anchor_passed = true;
+                        } else {
+                            continue;
+                        }
+                    }
+
+                    if items.len() == page_size {
+                        more_matches_available = true;
+                        break 'outer;
+                    }
+
+                    // Read head and tail
+                    let summary = read_head_and_tail(&path, HEAD_RECORD_LIMIT, TAIL_RECORD_LIMIT)
+                        .await
+                        .unwrap_or_default();
+
+                    if !allowed_sources.is_empty()
+                        && !summary
+                            .source
+                            .is_some_and(|source| allowed_sources.iter().any(|s| s == &source))
+                    {
+                        continue;
+                    }
+
+                    if let Some(matcher) = provider_matcher
+                        && !matcher.matches(summary.model_provider.as_deref())
+                    {
+                        continue;
+                    }
+
+                    // Apply filters: must have session meta and at least one user message event
+                    if summary.saw_session_meta && summary.saw_user_event {
+                        let HeadTailSummary {
+                            head,
+                            tail,
+                            created_at,
+                            mut updated_at,
+                            ..
+                        } = summary;
+                        if updated_at.is_none() {
+                            updated_at = file_modified_rfc3339(&path)
+                                .await
+                                .unwrap_or(None)
+                                .or_else(|| created_at.clone());
+                        }
+                        items.push(ThreadItem {
+                            path,
+                            head,
+                            created_at,
+                            updated_at,
+                            tail,
+                        });
+                    }
+                }
             }
         }
     }
@@ -246,7 +290,7 @@ async fn traverse_directories_for_paths(
     } else {
         None
     };
-    Ok(ConversationsPage {
+    Ok(ThreadsPage {
         items,
         next_cursor: next,
         num_scanned_files: scanned_files,
@@ -271,7 +315,7 @@ pub fn parse_cursor(token: &str) -> Option<Cursor> {
     Some(Cursor::new(ts, uuid))
 }
 
-fn build_next_cursor(items: &[ConversationItem]) -> Option<Cursor> {
+fn build_next_cursor(items: &[ThreadItem]) -> Option<Cursor> {
     let last = items.last()?;
     let file_name = last.path.file_name()?.to_string_lossy();
     let (ts, id) = parse_timestamp_uuid_from_filename(&file_name)?;
@@ -433,17 +477,6 @@ async fn read_head_and_tail(
             }
         }
 
-        // For tail, we want to capture the last N ResponseItems or relevant items.
-        // The original HEAD implementation likely captured ResponseItems.
-        // Let's assume we capture what's renderable or meaningful.
-        // Actually, let's capture strict JSON values of the items as they appear,
-        // but rolling.
-        // Wait, typically tail is just the message items?
-        // Let's stick to generic capture matching head behavior but for everything,
-        // filtered by relevant types if needed.
-        // For simplicity: store all valid lines in tail buffer? No, usually just messages.
-        // HEAD rollout/tests.rs checked for "type": "message" (ResponseItem) in tail.
-
         if let RolloutItem::ResponseItem(ref item) = rollout_line.item
             && let Ok(val) = serde_json::to_value(item)
         {
@@ -464,10 +497,20 @@ pub async fn read_head_for_summary(path: &Path) -> io::Result<Vec<serde_json::Va
     Ok(summary.head)
 }
 
-/// Locate a recorded conversation rollout file by its UUID string using the existing
+async fn file_modified_rfc3339(path: &Path) -> io::Result<Option<String>> {
+    let meta = tokio::fs::metadata(path).await?;
+    let modified = meta.modified().ok();
+    let Some(modified) = modified else {
+        return Ok(None);
+    };
+    let dt = OffsetDateTime::from(modified);
+    Ok(dt.format(&time::format_description::well_known::Rfc3339).ok())
+}
+
+/// Locate a recorded thread rollout file by its UUID string using the existing
 /// paginated listing implementation. Returns `Ok(Some(path))` if found, `Ok(None)` if not present
 /// or the id is invalid.
-pub async fn find_conversation_path_by_id_str(
+pub async fn find_thread_path_by_id_str(
     codex_home: &Path,
     id_str: &str,
 ) -> io::Result<Option<PathBuf>> {

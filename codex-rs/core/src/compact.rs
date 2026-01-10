@@ -13,8 +13,8 @@ use crate::features::Feature;
 use crate::protocol::CompactedItem;
 use crate::protocol::ContextCompactedEvent;
 use crate::protocol::EventMsg;
-use crate::protocol::TaskStartedEvent;
 use crate::protocol::TurnContextItem;
+use crate::protocol::TurnStartedEvent;
 use crate::protocol::WarningEvent;
 use crate::truncate::TruncationPolicy;
 use crate::truncate::approx_token_count;
@@ -56,7 +56,7 @@ pub(crate) async fn run_compact_task(
     turn_context: Arc<TurnContext>,
     input: Vec<UserInput>,
 ) {
-    let start_event = EventMsg::TaskStarted(TaskStartedEvent {
+    let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         model_context_window: turn_context.client.get_model_context_window(),
     });
     sess.send_event(&turn_context, start_event).await;
@@ -274,7 +274,8 @@ async fn run_compact_task_inner(
     sess.persist_rollout_items(&[rollout_item]).await;
 
     loop {
-        let mut turn_input = history.get_history_for_prompt();
+        // Clone is required because of the loop
+        let mut turn_input = history.clone().for_prompt();
 
         if let Some((start, end)) = range
             && end < turn_input.len()
@@ -286,8 +287,9 @@ async fn run_compact_task_inner(
             turn_input = slice;
         }
 
+        let turn_input_len = turn_input.len();
         let prompt = Prompt {
-            input: turn_input.clone(),
+            input: turn_input,
             last_response_id: None,
             ..Default::default()
         };
@@ -299,7 +301,7 @@ async fn run_compact_task_inner(
                     sess.notify_background_event(
                         turn_context.as_ref(),
                         format!(
-                            "Trimmed {truncated_count} older conversation item(s) before compacting so the prompt fits the model context window."
+                            "Trimmed {truncated_count} older thread item(s) before compacting so the prompt fits the model context window."
                         ),
                     )
                     .await;
@@ -310,7 +312,7 @@ async fn run_compact_task_inner(
                 return;
             }
             Err(e @ CodexErr::ContextWindowExceeded) => {
-                if turn_input.len() > 1 {
+                if turn_input_len > 1 {
                     // Trim from the beginning to preserve cache (prefix-based) and keep recent messages intact.
                     error!(
                         "Context window exceeded while compacting; removing oldest history item. Error: {e}"
@@ -364,11 +366,10 @@ async fn run_compact_task_inner(
         }
     }
 
-    let history_snapshot = sess.clone_history().await.get_history();
-    let summary_suffix =
-        get_last_assistant_message_from_turn(&history_snapshot).unwrap_or_default();
+    let history_snapshot = sess.clone_history().await;
+    let history_items = history_snapshot.raw_items();
+    let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
-
     // For user messages, we only want those in the range if range is specified.
     let items_to_collect = if let Some((start, end)) = range {
         if end < history_snapshot.len() {
@@ -430,10 +431,16 @@ async fn run_compact_task_inner(
 
         final_history
     } else {
-        // Original logic
-        remove_ghost_snapshots(new_compacted_slice)
+        // Original logic from MAIN (append ghost snapshots)
+        let mut h = new_compacted_slice;
+        let ghost_snapshots: Vec<ResponseItem> = history_items
+            .iter()
+            .filter(|item| matches!(item, ResponseItem::GhostSnapshot { .. }))
+            .cloned()
+            .collect();
+        h.extend(ghost_snapshots);
+        h
     };
-
     sess.replace_history(new_history).await;
     sess.recompute_token_usage(&turn_context).await;
 
@@ -447,7 +454,7 @@ async fn run_compact_task_inner(
     sess.send_event(&turn_context, event).await;
 
     let warning = EventMsg::Warning(WarningEvent {
-        message: "Heads up: Long conversations and multiple compactions can cause the model to be less accurate. Start a new conversation when possible to keep conversations small and targeted.".to_string(),
+        message: "Heads up: Long threads and multiple compactions can cause the model to be less accurate. Start a new thread when possible to keep threads small and targeted.".to_string(),
     });
     sess.send_event(&turn_context, warning).await;
 }
