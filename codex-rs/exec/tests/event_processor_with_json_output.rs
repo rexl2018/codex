@@ -32,6 +32,7 @@ use codex_exec::exec_events::McpToolCallStatus;
 use codex_exec::exec_events::PatchApplyStatus;
 use codex_exec::exec_events::PatchChangeKind;
 use codex_exec::exec_events::ReasoningItem;
+use codex_exec::exec_events::TaskStartedEvent;
 use codex_exec::exec_events::ThreadErrorEvent;
 use codex_exec::exec_events::ThreadEvent;
 use codex_exec::exec_events::ThreadItem;
@@ -41,7 +42,6 @@ use codex_exec::exec_events::TodoItem as ExecTodoItem;
 use codex_exec::exec_events::TodoListItem as ExecTodoListItem;
 use codex_exec::exec_events::TurnCompletedEvent;
 use codex_exec::exec_events::TurnFailedEvent;
-use codex_exec::exec_events::TurnStartedEvent;
 use codex_exec::exec_events::Usage;
 use codex_exec::exec_events::WebSearchItem;
 use codex_protocol::plan_tool::PlanItemArg;
@@ -69,8 +69,7 @@ fn event(id: &str, msg: EventMsg) -> Event {
 fn session_configured_produces_thread_started_event() {
     let mut ep = EventProcessorWithJsonOutput::new(None);
     let session_id =
-        codex_protocol::ConversationId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8")
-            .unwrap();
+        codex_protocol::ThreadId::from_string("67e55044-10b1-426f-9247-bb680e5fe0c8").unwrap();
     let rollout_path = PathBuf::from("/tmp/rollout.json");
     let ev = event(
         "e1",
@@ -107,7 +106,7 @@ fn task_started_produces_turn_started_event() {
         }),
     ));
 
-    assert_eq!(out, vec![ThreadEvent::TurnStarted(TurnStartedEvent {})]);
+    assert_eq!(out, vec![ThreadEvent::TurnStarted(TaskStartedEvent {})]);
 }
 
 #[test]
@@ -1058,7 +1057,7 @@ fn task_complete_produces_turn_completed_with_usage() {
     );
     assert!(ep.collect_thread_events(&token_count_event).is_empty());
 
-    // Then TaskComplete should produce turn.completed with the captured usage.
+    // Then TurnComplete should produce turn.completed with the captured usage.
     let complete_event = event(
         "e2",
         EventMsg::TaskComplete(codex_core::protocol::TaskCompleteEvent {

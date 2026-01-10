@@ -14,6 +14,8 @@ pub enum SlashCommand {
     // more frequently used commands should be listed first.
     Model,
     Approvals,
+    #[strum(serialize = "setup-elevated-sandbox")]
+    ElevateSandbox,
     Experimental,
     Skills,
     Review,
@@ -59,6 +61,7 @@ impl SlashCommand {
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Copy => "copy last AI output to clipboard or file",
             SlashCommand::Approvals => "choose what Codex can do without approval",
+            SlashCommand::ElevateSandbox => "set up elevated agent sandbox",
             SlashCommand::Experimental => "toggle beta features",
             SlashCommand::Mcp => "list configured MCP tools",
             SlashCommand::Logout => "log out of Codex",
@@ -86,6 +89,7 @@ impl SlashCommand {
             // | SlashCommand::Undo
             | SlashCommand::Model
             | SlashCommand::Approvals
+            | SlashCommand::ElevateSandbox
             | SlashCommand::Experimental
             | SlashCommand::Review
             | SlashCommand::Logout => false,

@@ -389,7 +389,10 @@ async fn make_chatwidget_manual(
         config: cfg.clone(),
         model_family: ModelsManager::construct_model_family_offline(&resolved_model, &cfg),
         auth_manager: auth_manager.clone(),
-        models_manager: Arc::new(ModelsManager::new(auth_manager)),
+        models_manager: Arc::new(ModelsManager::new(
+            cfg.codex_home.clone(),
+            auth_manager.clone(),
+        )),
         session_header: SessionHeader::new(resolved_model.clone()),
         initial_user_message: None,
         token_info: None,
@@ -432,7 +435,10 @@ async fn make_chatwidget_manual(
 fn set_chatgpt_auth(chat: &mut ChatWidget) {
     chat.auth_manager =
         AuthManager::from_auth_for_testing(CodexAuth::create_dummy_chatgpt_auth_for_testing());
-    chat.models_manager = Arc::new(ModelsManager::new(chat.auth_manager.clone()));
+    chat.models_manager = Arc::new(ModelsManager::new(
+        chat.config.codex_home.clone(),
+        chat.auth_manager.clone(),
+    ));
 }
 
 pub(crate) async fn make_chatwidget_manual_with_sender() -> (

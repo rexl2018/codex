@@ -103,16 +103,8 @@ impl ModelFamily {
 
     fn apply_remote_overrides(&mut self, model: ModelInfo) {
         let ModelInfo {
-            slug: _,
-            display_name: _,
-            description: _,
             default_reasoning_level,
-            supported_reasoning_levels: _,
             shell_type,
-            visibility: _,
-            supported_in_api: _,
-            priority: _,
-            upgrade: _,
             base_instructions,
             supports_reasoning_summaries,
             support_verbosity,
@@ -121,14 +113,15 @@ impl ModelFamily {
             truncation_policy,
             supports_parallel_tool_calls,
             context_window,
+            auto_compact_token_limit,
+            effective_context_window_percent,
             experimental_supported_tools,
+            ..
         } = model;
 
-        self.default_reasoning_effort = Some(default_reasoning_level);
+        self.default_reasoning_effort = default_reasoning_level;
         self.shell_type = shell_type;
-        if let Some(base) = base_instructions {
-            self.base_instructions = base;
-        }
+        self.base_instructions = base_instructions;
         self.supports_reasoning_summaries = supports_reasoning_summaries;
         self.support_verbosity = support_verbosity;
         self.default_verbosity = default_verbosity;
@@ -136,6 +129,8 @@ impl ModelFamily {
         self.truncation_policy = truncation_policy.into();
         self.supports_parallel_tool_calls = supports_parallel_tool_calls;
         self.context_window = context_window;
+        self.auto_compact_token_limit = auto_compact_token_limit;
+        self.effective_context_window_percent = effective_context_window_percent;
         self.experimental_supported_tools = experimental_supported_tools;
     }
 

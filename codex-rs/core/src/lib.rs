@@ -5,6 +5,8 @@
 // the TUI or the tracing stack).
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
+mod agent;
+
 pub mod api_bridge;
 mod apply_patch;
 pub mod auth;
@@ -13,9 +15,11 @@ mod client;
 mod client_common;
 pub mod codex;
 mod codex_conversation;
+mod codex_thread;
 mod compact_remote;
 mod conversation_build;
 pub use codex_conversation::CodexConversation;
+pub use codex_thread::CodexThread;
 mod codex_delegate;
 mod command_safety;
 pub mod config;
@@ -51,6 +55,7 @@ pub mod token_data;
 mod truncate;
 mod unified_exec;
 mod user_instructions;
+pub mod windows_sandbox;
 pub use model_provider_info::CHAT_WIRE_API_DEPRECATION_SUMMARY;
 pub use model_provider_info::DEFAULT_LMSTUDIO_PORT;
 pub use model_provider_info::DEFAULT_OLLAMA_PORT;
@@ -64,9 +69,11 @@ mod conversation_manager;
 mod event_mapping;
 pub mod review_format;
 pub mod review_prompts;
+mod thread_manager;
 pub use codex_protocol::protocol::InitialHistory;
 pub use conversation_manager::ConversationManager;
 pub use conversation_manager::NewConversation;
+pub use thread_manager::ThreadManager;
 // Re-export common auth types for workspace consumers
 pub use auth::AuthManager;
 pub use auth::CodexAuth;

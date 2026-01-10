@@ -14,7 +14,7 @@ pub enum ThreadEvent {
     /// Emitted when a turn is started by sending a new prompt to the model.
     /// A turn encompasses all events that happen while agent is processing the prompt.
     #[serde(rename = "turn.started")]
-    TurnStarted(TurnStartedEvent),
+    TurnStarted(TaskStartedEvent),
     /// Emitted when a turn is completed. Typically right after the assistant's response.
     #[serde(rename = "turn.completed")]
     TurnCompleted(TurnCompletedEvent),
@@ -43,7 +43,7 @@ pub struct ThreadStartedEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS, Default)]
 
-pub struct TurnStartedEvent {}
+pub struct TaskStartedEvent {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct TurnCompletedEvent {

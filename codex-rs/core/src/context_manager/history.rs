@@ -1,10 +1,14 @@
 use crate::codex::TurnContext;
 use crate::context_manager::normalize;
+use crate::event_mapping::is_session_prefix;
 use crate::truncate::TruncationPolicy;
 use crate::truncate::approx_token_count;
 use crate::truncate::approx_tokens_from_byte_count;
 use crate::truncate::truncate_function_output_items_with_policy;
 use crate::truncate::truncate_text;
+use crate::user_instructions::SkillInstructions;
+use crate::user_instructions::UserInstructions;
+use crate::user_shell_command::is_user_shell_command_text;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
@@ -59,6 +63,10 @@ impl ContextManager {
 
     pub(crate) fn set_token_info(&mut self, info: Option<TokenUsageInfo>) {
         self.token_info = info;
+    }
+
+    pub(crate) fn raw_items(&self) -> &[ResponseItem] {
+        &self.items
     }
 
     pub(crate) fn set_token_usage_full(&mut self, context_window: i64) {
@@ -595,6 +603,40 @@ fn estimate_reasoning_length(encoded_len: usize) -> usize {
         .checked_div(4)
         .unwrap_or(0)
         .saturating_sub(650)
+}
+
+pub(crate) fn is_user_turn_boundary(item: &ResponseItem) -> bool {
+    let ResponseItem::Message { role, content, .. } = item else {
+        return false;
+    };
+
+    if role != "user" {
+        return false;
+    }
+
+    if UserInstructions::is_user_instructions(content)
+        || SkillInstructions::is_skill_instructions(content)
+    {
+        return false;
+    }
+
+    for content_item in content {
+        match content_item {
+            ContentItem::InputText { text } => {
+                if is_session_prefix(text) || is_user_shell_command_text(text) {
+                    return false;
+                }
+            }
+            ContentItem::OutputText { text } => {
+                if is_session_prefix(text) {
+                    return false;
+                }
+            }
+            ContentItem::InputImage { .. } => {}
+        }
+    }
+
+    true
 }
 
 #[cfg(test)]

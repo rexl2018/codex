@@ -8,6 +8,9 @@ use std::sync::atomic::Ordering;
 
 use crate::AuthManager;
 use crate::SandboxState;
+use crate::agent::AgentControl;
+use crate::agent::AgentStatus;
+use crate::agent::agent_status_from_event;
 use crate::client_common::REVIEW_PROMPT;
 use crate::compact;
 use crate::compact::run_inline_auto_compact_task;
@@ -30,9 +33,11 @@ use crate::util::error_or_panic;
 use async_channel::Receiver;
 use async_channel::Sender;
 use codex_protocol::ConversationId;
+use codex_protocol::ThreadId;
 use codex_protocol::approvals::ExecPolicyAmendment;
 use codex_protocol::items::AgentMessageContent;
 use codex_protocol::items::TurnItem;
+use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::HasLegacyEvent;
 use codex_protocol::protocol::ItemCompletedEvent;
@@ -143,7 +148,7 @@ use crate::tools::sandboxing::ApprovalStore;
 use crate::tools::spec::ToolsConfig;
 use crate::tools::spec::ToolsConfigParams;
 use crate::turn_diff_tracker::TurnDiffTracker;
-use crate::unified_exec::UnifiedExecSessionManager;
+use crate::unified_exec::UnifiedExecProcessManager;
 use crate::user_instructions::DeveloperInstructions;
 use crate::user_instructions::UserInstructions;
 use crate::user_notification::UserNotification;
@@ -169,6 +174,7 @@ pub struct Codex {
     pub(crate) next_id: AtomicU64,
     pub(crate) tx_sub: Sender<Submission>,
     pub(crate) rx_event: Receiver<Event>,
+    pub(crate) agent_status: Arc<Mutex<AgentStatus>>,
 }
 
 /// Wrapper returned by [`Codex::spawn`] containing the spawned [`Codex`],
@@ -177,6 +183,7 @@ pub struct Codex {
 pub struct CodexSpawnOk {
     pub codex: Codex,
     pub conversation_id: ConversationId,
+    pub thread_id: ThreadId,
 }
 
 pub(crate) const INITIAL_SUBMIT_ID: &str = "";
@@ -206,21 +213,24 @@ fn maybe_push_chat_wire_api_deprecation(
 
 impl Codex {
     /// Spawn a new [`Codex`] and initialize the session.
-    pub async fn spawn(
+    pub(crate) async fn spawn(
         config: Config,
         auth_manager: Arc<AuthManager>,
         models_manager: Arc<ModelsManager>,
         skills_manager: Arc<SkillsManager>,
         conversation_history: InitialHistory,
         session_source: SessionSource,
+        agent_control: AgentControl,
     ) -> CodexResult<CodexSpawnOk> {
         let (tx_sub, rx_sub) = async_channel::bounded(SUBMISSION_CHANNEL_CAPACITY);
         let (tx_event, rx_event) = async_channel::unbounded();
+        let agent_status = Arc::new(Mutex::new(AgentStatus::PendingInit));
 
-        let loaded_skills = config
-            .features
-            .enabled(Feature::Skills)
-            .then(|| skills_manager.skills_for_cwd(&config.cwd));
+        let loaded_skills = if config.features.enabled(Feature::Skills) {
+            Some(skills_manager.skills_for_cwd(&config.cwd, false).await)
+        } else {
+            None
+        };
 
         if let Some(outcome) = &loaded_skills {
             for err in &outcome.errors {
@@ -246,7 +256,9 @@ impl Codex {
 
         let config = Arc::new(config);
         if config.features.enabled(Feature::RemoteModels)
-            && let Err(err) = models_manager.refresh_available_models(&config).await
+            && let Err(err) = models_manager
+                .refresh_available_models_with_cache(&config)
+                .await
         {
             error!("failed to refresh available models: {err:?}");
         }
@@ -280,6 +292,8 @@ impl Codex {
             conversation_history,
             session_source_clone,
             skills_manager,
+            agent_control.clone(),
+            Arc::clone(&agent_status),
         )
         .await
         .map_err(|e| {
@@ -294,11 +308,13 @@ impl Codex {
             next_id: AtomicU64::new(0),
             tx_sub,
             rx_event,
+            agent_status: agent_status.clone(),
         };
 
         Ok(CodexSpawnOk {
             codex,
             conversation_id,
+            thread_id: conversation_id,
         })
     }
 
@@ -329,7 +345,19 @@ impl Codex {
             .recv()
             .await
             .map_err(|_| CodexErr::InternalAgentDied)?;
+        self.update_agent_status(&event.msg).await;
         Ok(event)
+    }
+
+    async fn update_agent_status(&self, msg: &EventMsg) {
+        if let Some(status) = agent_status_from_event(msg) {
+            let mut guard = self.agent_status.lock().await;
+            *guard = status;
+        }
+    }
+
+    pub async fn agent_status(&self) -> AgentStatus {
+        self.agent_status.lock().await.clone()
     }
 }
 
@@ -346,6 +374,7 @@ pub(crate) struct Session {
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) services: SessionServices,
     next_internal_sub_id: AtomicU64,
+    agent_status: Arc<Mutex<AgentStatus>>,
 }
 
 /// The context needed for a single turn of the conversation.
@@ -485,6 +514,7 @@ impl Session {
         session_configuration: &SessionConfiguration,
         per_turn_config: Config,
         model_family: ModelFamily,
+        model_info: ModelInfo,
         conversation_id: ConversationId,
         sub_id: String,
     ) -> TurnContext {
@@ -498,6 +528,7 @@ impl Session {
             per_turn_config.clone(),
             auth_manager,
             model_family.clone(),
+            model_info,
             otel_manager,
             provider,
             session_configuration.model_reasoning_effort,
@@ -545,6 +576,8 @@ impl Session {
         initial_history: InitialHistory,
         session_source: SessionSource,
         skills_manager: Arc<SkillsManager>,
+        agent_control: AgentControl,
+        agent_status: Arc<Mutex<AgentStatus>>,
     ) -> anyhow::Result<Arc<Self>> {
         debug!(
             "Configuring session: model={}; provider={:?}",
@@ -618,13 +651,14 @@ impl Session {
         maybe_push_chat_wire_api_deprecation(&config, &mut post_session_configured_events);
 
         // todo(aibrahim): why are we passing model here while it can change?
+        let auth_snapshot = auth_manager.auth().await;
         let otel_manager = OtelManager::new(
             conversation_id,
             session_configuration.model.as_str(),
             session_configuration.model.as_str(),
-            auth_manager.auth().and_then(|a| a.get_account_id()),
-            auth_manager.auth().and_then(|a| a.get_account_email()),
-            auth_manager.auth().map(|a| a.mode),
+            auth_snapshot.as_ref().and_then(|a| a.get_account_id()),
+            auth_snapshot.as_ref().and_then(|a| a.get_account_email()),
+            auth_snapshot.as_ref().map(|a| a.mode),
             config.otel.log_user_prompt,
             terminal::user_agent(),
             session_configuration.session_source.clone(),
@@ -655,7 +689,7 @@ impl Session {
         let services = SessionServices {
             mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::default())),
             mcp_startup_cancellation_token: CancellationToken::new(),
-            unified_exec_manager: UnifiedExecSessionManager::default(),
+            unified_exec_manager: UnifiedExecProcessManager::default(),
             notifier: UserNotifier::new(config.notify.clone()),
             rollout: Mutex::new(Some(rollout_recorder)),
             user_shell: Arc::new(default_shell),
@@ -666,6 +700,7 @@ impl Session {
             models_manager: Arc::clone(&models_manager),
             tool_approvals: Mutex::new(ApprovalStore::default()),
             skills_manager,
+            agent_control,
         };
 
         let sess = Arc::new(Session {
@@ -676,6 +711,7 @@ impl Session {
             active_turn: Mutex::new(None),
             services,
             next_internal_sub_id: AtomicU64::new(0),
+            agent_status,
         });
 
         // Dispatch the SessionConfiguredEvent first and then report any errors.
@@ -907,6 +943,11 @@ impl Session {
             .models_manager
             .construct_model_family(session_configuration.model.as_str(), &per_turn_config)
             .await;
+        let model_info = self
+            .services
+            .models_manager
+            .construct_model_info(session_configuration.model.as_str(), &per_turn_config)
+            .await;
         let mut turn_context: TurnContext = Self::make_turn_context(
             Some(Arc::clone(&self.services.auth_manager)),
             &self.services.otel_manager,
@@ -914,6 +955,7 @@ impl Session {
             &session_configuration,
             per_turn_config,
             model_family,
+            model_info,
             self.conversation_id,
             sub_id,
         );
@@ -980,8 +1022,16 @@ impl Session {
         // Persist the event into rollout (recorder filters as needed)
         let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
         self.persist_rollout_items(&rollout_items).await;
+        self.record_agent_status(&event.msg).await;
         if let Err(e) = self.tx_event.send(event).await {
             error!("failed to send tool call event: {e}");
+        }
+    }
+
+    async fn record_agent_status(&self, msg: &EventMsg) {
+        if let Some(status) = agent_status_from_event(msg) {
+            let mut guard = self.agent_status.lock().await;
+            *guard = status;
         }
     }
 
@@ -1777,7 +1827,7 @@ mod handlers {
                     final_output_json_schema: Some(final_output_json_schema),
                 },
             ),
-            Op::UserInput { items } => (items, SessionSettingsUpdate::default()),
+            Op::UserInput { items, .. } => (items, SessionSettingsUpdate::default()),
             _ => unreachable!(),
         };
 
@@ -1979,18 +2029,18 @@ mod handlers {
         };
         let skills = if sess.enabled(Feature::Skills) {
             let skills_manager = &sess.services.skills_manager;
-            cwds.into_iter()
-                .map(|cwd| {
-                    let outcome = skills_manager.skills_for_cwd_with_options(&cwd, force_reload);
-                    let errors = super::errors_to_info(&outcome.errors);
-                    let skills = super::skills_to_info(&outcome.skills);
-                    SkillsListEntry {
-                        cwd,
-                        skills,
-                        errors,
-                    }
-                })
-                .collect()
+            let mut entries = Vec::new();
+            for cwd in cwds.clone() {
+                let outcome = skills_manager.skills_for_cwd(&cwd, force_reload).await;
+                let errors = super::errors_to_info(&outcome.errors);
+                let skills = super::skills_to_info(&outcome.skills);
+                entries.push(SkillsListEntry {
+                    cwd,
+                    skills,
+                    errors,
+                });
+            }
+            entries
         } else {
             cwds.into_iter()
                 .map(|cwd| SkillsListEntry {
@@ -2030,7 +2080,7 @@ mod handlers {
         sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
         sess.services
             .unified_exec_manager
-            .terminate_all_sessions()
+            .terminate_all_processes()
             .await;
         info!("Shutting down Codex instance");
 
@@ -2262,6 +2312,11 @@ async fn spawn_review_thread(
         .models_manager
         .construct_model_family(&review_model, &per_turn_config)
         .await;
+    let review_model_info = sess
+        .services
+        .models_manager
+        .construct_model_info(&review_model, &per_turn_config)
+        .await;
     let tools_config = ToolsConfig::new(&ToolsConfigParams {
         model_family: &review_model_family,
         features: &review_features,
@@ -2282,6 +2337,7 @@ async fn spawn_review_thread(
         per_turn_config.clone(),
         auth_manager,
         model_family.clone(),
+        review_model_info,
         otel_manager,
         if config.review_profile.is_some() {
             per_turn_config.model_provider.clone()
@@ -2402,11 +2458,16 @@ pub(crate) async fn run_task(
     });
     sess.send_event(&turn_context, event).await;
 
-    let skills_outcome = sess.enabled(Feature::Skills).then(|| {
-        sess.services
-            .skills_manager
-            .skills_for_cwd(&turn_context.cwd)
-    });
+    let skills_outcome = if sess.enabled(Feature::Skills) {
+        Some(
+            sess.services
+                .skills_manager
+                .skills_for_cwd(&turn_context.cwd, false)
+                .await,
+        )
+    } else {
+        None
+    };
 
     let SkillInjections {
         items: skill_items,
@@ -2538,7 +2599,7 @@ async fn run_auto_compact(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) 
         cwd = %turn_context.cwd.display()
     )
 )]
-async fn run_turn(
+pub(crate) async fn run_turn(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     turn_diff_tracker: SharedTurnDiffTracker,
@@ -2662,7 +2723,7 @@ async fn run_turn(
 }
 
 #[derive(Debug)]
-struct TurnRunResult {
+pub(crate) struct TurnRunResult {
     needs_follow_up: bool,
     last_agent_message: Option<String>,
 }
@@ -2864,6 +2925,9 @@ async fn try_run_turn(
                 // Update internal state with latest rate limits, but defer sending until
                 // token usage is available to avoid duplicate TokenCount events.
                 sess.update_rate_limits(&turn_context, snapshot).await;
+            }
+            ResponseEvent::ModelsEtag(_) => {
+                // Models etag updates are handled via explicit refresh calls elsewhere.
             }
             ResponseEvent::Completed {
                 response_id,
@@ -3491,7 +3555,10 @@ mod tests {
         let conversation_id = ConversationId::default();
         let auth_manager =
             AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
-        let models_manager = Arc::new(ModelsManager::new(auth_manager.clone()));
+        let models_manager = Arc::new(ModelsManager::new(
+            config.codex_home.clone(),
+            auth_manager.clone(),
+        ));
         let exec_policy = ExecPolicyManager::default();
         let model = ModelsManager::get_model_offline(config.model.as_deref());
         let session_configuration = SessionConfiguration {
@@ -3514,6 +3581,14 @@ mod tests {
             session_configuration.model.as_str(),
             &per_turn_config,
         );
+        let model_info = ModelsManager::construct_model_info_offline(
+            session_configuration.model.as_str(),
+            &per_turn_config,
+        );
+        let model_info = ModelsManager::construct_model_info_offline(
+            session_configuration.model.as_str(),
+            &per_turn_config,
+        );
         let otel_manager = otel_manager(
             conversation_id,
             config.as_ref(),
@@ -3527,7 +3602,7 @@ mod tests {
         let services = SessionServices {
             mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::default())),
             mcp_startup_cancellation_token: CancellationToken::new(),
-            unified_exec_manager: UnifiedExecSessionManager::default(),
+            unified_exec_manager: UnifiedExecProcessManager::default(),
             notifier: UserNotifier::new(None),
             rollout: Mutex::new(None),
             user_shell: Arc::new(default_user_shell()),
@@ -3538,7 +3613,10 @@ mod tests {
             models_manager,
             tool_approvals: Mutex::new(ApprovalStore::default()),
             skills_manager,
+            agent_control: AgentControl::default(),
         };
+
+        let agent_status = Arc::new(Mutex::new(AgentStatus::PendingInit));
 
         let turn_context = Session::make_turn_context(
             Some(Arc::clone(&auth_manager)),
@@ -3547,6 +3625,7 @@ mod tests {
             &session_configuration,
             per_turn_config,
             model_family,
+            model_info,
             conversation_id,
             "turn_id".to_string(),
         );
@@ -3559,6 +3638,7 @@ mod tests {
             active_turn: Mutex::new(None),
             services,
             next_internal_sub_id: AtomicU64::new(0),
+            agent_status,
         };
 
         (session, turn_context)
@@ -3578,7 +3658,10 @@ mod tests {
         let conversation_id = ConversationId::default();
         let auth_manager =
             AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
-        let models_manager = Arc::new(ModelsManager::new(auth_manager.clone()));
+        let models_manager = Arc::new(ModelsManager::new(
+            config.codex_home.clone(),
+            auth_manager.clone(),
+        ));
         let exec_policy = ExecPolicyManager::default();
         let model = ModelsManager::get_model_offline(config.model.as_deref());
         let session_configuration = SessionConfiguration {
@@ -3614,7 +3697,7 @@ mod tests {
         let services = SessionServices {
             mcp_connection_manager: Arc::new(RwLock::new(McpConnectionManager::default())),
             mcp_startup_cancellation_token: CancellationToken::new(),
-            unified_exec_manager: UnifiedExecSessionManager::default(),
+            unified_exec_manager: UnifiedExecProcessManager::default(),
             notifier: UserNotifier::new(None),
             rollout: Mutex::new(None),
             user_shell: Arc::new(default_user_shell()),
@@ -3625,7 +3708,10 @@ mod tests {
             models_manager,
             tool_approvals: Mutex::new(ApprovalStore::default()),
             skills_manager,
+            agent_control: AgentControl::default(),
         };
+
+        let agent_status = Arc::new(Mutex::new(AgentStatus::PendingInit));
 
         let turn_context = Arc::new(Session::make_turn_context(
             Some(Arc::clone(&auth_manager)),
@@ -3634,6 +3720,7 @@ mod tests {
             &session_configuration,
             per_turn_config,
             model_family,
+            model_info,
             conversation_id,
             "turn_id".to_string(),
         ));
@@ -3646,6 +3733,7 @@ mod tests {
             active_turn: Mutex::new(None),
             services,
             next_internal_sub_id: AtomicU64::new(0),
+            agent_status,
         });
 
         (session, turn_context, rx_event)

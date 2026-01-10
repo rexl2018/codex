@@ -74,6 +74,10 @@ pub enum Feature {
     ApplyPatchFreeform,
     /// Allow the model to request web searches.
     WebSearchRequest,
+    /// Append project doc guidance for hierarchical agents flow.
+    HierarchicalAgents,
+    /// Force cached web search responses.
+    WebSearchCached,
     /// Gate the execpolicy enforcement for shell/unified exec.
     ExecPolicy,
     /// Enable Windows sandbox (restricted token) on Windows.
@@ -96,6 +100,8 @@ pub enum Feature {
     Skills,
     /// Enforce UTF8 output in Powershell.
     PowershellUtf8,
+    /// Enable request compression for Responses API requests (ChatGPT auth only).
+    EnableRequestCompression,
 }
 
 impl Feature {
@@ -328,6 +334,18 @@ pub const FEATURES: &[FeatureSpec] = &[
         stage: Stage::Stable,
         default_enabled: false,
     },
+    FeatureSpec {
+        id: Feature::HierarchicalAgents,
+        key: "hierarchical_agents",
+        stage: Stage::Experimental,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::WebSearchCached,
+        key: "web_search_cached",
+        stage: Stage::Experimental,
+        default_enabled: false,
+    },
     // Beta program. Rendered in the `/experimental` menu for users.
     FeatureSpec {
         id: Feature::UnifiedExec,
@@ -406,6 +424,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Tui2,
         key: "tui2",
+        stage: Stage::Experimental,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::EnableRequestCompression,
+        key: "request_compression",
         stage: Stage::Experimental,
         default_enabled: false,
     },

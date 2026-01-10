@@ -14,6 +14,19 @@ use serde_json::Value;
 pub struct ResponsesRequest {
     pub body: Value,
     pub headers: HeaderMap,
+    pub compression: Compression,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Compression {
+    None,
+    Zstd,
+}
+
+impl Default for Compression {
+    fn default() -> Self {
+        Compression::None
+    }
 }
 
 #[derive(Default)]
@@ -34,6 +47,7 @@ pub struct ResponsesRequestBuilder<'a> {
     headers: HeaderMap,
     previous_response_id: Option<String>,
     caching: Option<crate::common::Caching>,
+    compression: Compression,
 }
 
 impl<'a> ResponsesRequestBuilder<'a> {
@@ -111,6 +125,11 @@ impl<'a> ResponsesRequestBuilder<'a> {
         self
     }
 
+    pub fn compression(mut self, compression: Compression) -> Self {
+        self.compression = compression;
+        self
+    }
+
     pub fn build(self, provider: &Provider) -> Result<ResponsesRequest, ApiError> {
         let model = self
             .model
@@ -170,7 +189,11 @@ impl<'a> ResponsesRequestBuilder<'a> {
             insert_header(&mut headers, "x-openai-subagent", &subagent);
         }
 
-        Ok(ResponsesRequest { body, headers })
+        Ok(ResponsesRequest {
+            body,
+            headers,
+            compression: self.compression,
+        })
     }
 }
 

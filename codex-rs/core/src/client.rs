@@ -17,11 +17,13 @@ use codex_api::TransportError;
 use codex_api::common::Reasoning;
 use codex_api::create_text_param_for_request;
 use codex_api::error::ApiError;
+use codex_api::requests::responses::Compression;
 use codex_app_server_protocol::AuthMode;
 use codex_otel::otel_manager::OtelManager;
 use codex_protocol::ConversationId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::SessionSource;
 use eventsource_stream::Event;
@@ -48,6 +50,7 @@ use crate::default_client::build_reqwest_client;
 use crate::error::CodexErr;
 use crate::error::Result;
 use crate::features::FEATURES;
+use crate::features::Feature;
 use crate::flags::CODEX_RS_SSE_FIXTURE;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
@@ -60,6 +63,7 @@ pub struct ModelClient {
     config: Arc<Config>,
     auth_manager: Option<Arc<AuthManager>>,
     model_family: ModelFamily,
+    model_info: ModelInfo,
     otel_manager: OtelManager,
     provider: ModelProviderInfo,
     conversation_id: ConversationId,
@@ -74,6 +78,7 @@ impl ModelClient {
         config: Arc<Config>,
         auth_manager: Option<Arc<AuthManager>>,
         model_family: ModelFamily,
+        model_info: ModelInfo,
         otel_manager: OtelManager,
         provider: ModelProviderInfo,
         effort: Option<ReasoningEffortConfig>,
@@ -85,6 +90,7 @@ impl ModelClient {
             config,
             auth_manager,
             model_family,
+            model_info,
             otel_manager,
             provider,
             conversation_id,
@@ -148,8 +154,9 @@ impl ModelClient {
         }
 
         let auth_manager = self.auth_manager.clone();
-        let model_family = self.get_model_family();
-        let instructions = prompt.get_full_instructions(&model_family).into_owned();
+        let instructions = prompt
+            .get_full_instructions(self.get_model_info())
+            .into_owned();
         let tools_json = create_tools_json_for_chat_completions_api(&prompt.tools)?;
         let formatted_input = prompt.get_formatted_input();
         let api_prompt = build_api_prompt(prompt, instructions, tools_json, formatted_input, true);
@@ -158,11 +165,15 @@ impl ModelClient {
 
         let mut refreshed = false;
         loop {
-            let auth = auth_manager.as_ref().and_then(|m| m.auth());
+            let auth = if let Some(manager) = auth_manager.as_ref() {
+                manager.auth().await
+            } else {
+                None
+            };
             let api_provider = self
                 .provider
                 .to_api_provider(auth.as_ref().map(|a| a.mode))?;
-            let api_auth = auth_provider_from_auth(auth.clone(), &self.provider).await?;
+            let api_auth = auth_provider_from_auth(auth.clone(), &self.provider)?;
             let transport = ReqwestTransport::new(build_reqwest_client());
             let (request_telemetry, sse_telemetry) = self.build_streaming_telemetry();
             let client = ApiChatClient::new(transport, api_provider, api_auth)
@@ -204,7 +215,9 @@ impl ModelClient {
 
         let auth_manager = self.auth_manager.clone();
         let model_family = self.get_model_family();
-        let instructions = prompt.get_full_instructions(&model_family).into_owned();
+        let instructions = prompt
+            .get_full_instructions(self.get_model_info())
+            .into_owned();
         let tools_json: Vec<Value> = create_tools_json_for_responses_api(&prompt.tools)?;
         let formatted_input = prompt.get_formatted_input();
 
@@ -271,15 +284,30 @@ impl ModelClient {
 
         let mut refreshed = false;
         loop {
-            let auth = auth_manager.as_ref().and_then(|m| m.auth());
+            let auth = if let Some(manager) = auth_manager.as_ref() {
+                manager.auth().await
+            } else {
+                None
+            };
             let api_provider = self
                 .provider
                 .to_api_provider(auth.as_ref().map(|a| a.mode))?;
-            let api_auth = auth_provider_from_auth(auth.clone(), &self.provider).await?;
+            let api_auth = auth_provider_from_auth(auth.clone(), &self.provider)?;
             let transport = ReqwestTransport::new(build_reqwest_client());
             let (request_telemetry, sse_telemetry) = self.build_streaming_telemetry();
             let client = ApiResponsesClient::new(transport, api_provider, api_auth)
                 .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+
+            let compression = if self
+                .config
+                .features
+                .enabled(Feature::EnableRequestCompression)
+                && matches!(auth.as_ref().map(|a| a.mode), Some(AuthMode::ChatGPT))
+            {
+                Compression::Zstd
+            } else {
+                Compression::None
+            };
 
             let options = ApiResponsesOptions {
                 reasoning: reasoning.clone(),
@@ -293,6 +321,7 @@ impl ModelClient {
                 previous_response_id: previous_response_id.clone(),
                 caching: caching.clone(),
                 extra_headers: beta_feature_headers(&self.config),
+                compression,
             };
 
             let stream_result = client
@@ -336,6 +365,10 @@ impl ModelClient {
         self.model_family.clone()
     }
 
+    pub fn get_model_info(&self) -> &ModelInfo {
+        &self.model_info
+    }
+
     /// Returns the current reasoning effort setting.
     pub fn get_reasoning_effort(&self) -> Option<ReasoningEffortConfig> {
         self.effort
@@ -359,18 +392,22 @@ impl ModelClient {
             return Ok(Vec::new());
         }
         let auth_manager = self.auth_manager.clone();
-        let auth = auth_manager.as_ref().and_then(|m| m.auth());
+        let auth = if let Some(manager) = auth_manager.as_ref() {
+            manager.auth().await
+        } else {
+            None
+        };
         let api_provider = self
             .provider
             .to_api_provider(auth.as_ref().map(|a| a.mode))?;
-        let api_auth = auth_provider_from_auth(auth.clone(), &self.provider).await?;
+        let api_auth = auth_provider_from_auth(auth.clone(), &self.provider)?;
         let transport = ReqwestTransport::new(build_reqwest_client());
         let request_telemetry = self.build_request_telemetry();
         let client = ApiCompactClient::new(transport, api_provider, api_auth)
             .with_telemetry(Some(request_telemetry));
 
         let instructions = prompt
-            .get_full_instructions(&self.get_model_family())
+            .get_full_instructions(self.get_model_info())
             .into_owned();
         let payload = ApiCompactionInput {
             model: &self.get_model(),
@@ -550,6 +587,7 @@ async fn handle_unauthorized(
 fn map_unauthorized_status(status: StatusCode) -> CodexErr {
     map_api_error(ApiError::Transport(TransportError::Http {
         status,
+        url: None,
         headers: None,
         body: None,
     }))

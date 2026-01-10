@@ -3,6 +3,7 @@ use crate::AuthManager;
 use crate::CodexAuth;
 #[cfg(any(test, feature = "test-support"))]
 use crate::ModelProviderInfo;
+use crate::agent::AgentControl;
 use crate::codex::Codex;
 use crate::codex::CodexSpawnOk;
 use crate::codex::INITIAL_SUBMIT_ID;
@@ -57,7 +58,10 @@ impl ConversationManager {
             conversations: Arc::new(RwLock::new(HashMap::new())),
             auth_manager: auth_manager.clone(),
             session_source,
-            models_manager: Arc::new(ModelsManager::new(auth_manager)),
+            models_manager: Arc::new(ModelsManager::new(
+                auth_manager.codex_home().to_path_buf(),
+                auth_manager.clone(),
+            )),
             skills_manager,
             #[cfg(any(test, feature = "test-support"))]
             _test_codex_home_guard: None,
@@ -89,7 +93,11 @@ impl ConversationManager {
             conversations: Arc::new(RwLock::new(HashMap::new())),
             auth_manager: auth_manager.clone(),
             session_source: SessionSource::Exec,
-            models_manager: Arc::new(ModelsManager::with_provider(auth_manager, provider)),
+            models_manager: Arc::new(ModelsManager::with_provider(
+                auth_manager.codex_home().to_path_buf(),
+                auth_manager.clone(),
+                provider,
+            )),
             skills_manager,
             _test_codex_home_guard: None,
         }
@@ -121,6 +129,7 @@ impl ConversationManager {
         let CodexSpawnOk {
             codex,
             conversation_id,
+            ..
         } = Codex::spawn(
             config,
             auth_manager,
@@ -128,6 +137,7 @@ impl ConversationManager {
             self.skills_manager.clone(),
             InitialHistory::New,
             self.session_source.clone(),
+            AgentControl::default(),
         )
         .await?;
         self.finalize_spawn(codex, conversation_id).await
@@ -200,6 +210,7 @@ impl ConversationManager {
         let CodexSpawnOk {
             codex,
             conversation_id,
+            ..
         } = Codex::spawn(
             config,
             auth_manager,
@@ -207,6 +218,7 @@ impl ConversationManager {
             self.skills_manager.clone(),
             initial_history,
             self.session_source.clone(),
+            AgentControl::default(),
         )
         .await?;
         self.finalize_spawn(codex, conversation_id).await
@@ -242,6 +254,7 @@ impl ConversationManager {
         let CodexSpawnOk {
             codex,
             conversation_id,
+            ..
         } = Codex::spawn(
             config,
             auth_manager,
@@ -249,6 +262,7 @@ impl ConversationManager {
             self.skills_manager.clone(),
             history,
             self.session_source.clone(),
+            AgentControl::default(),
         )
         .await?;
 

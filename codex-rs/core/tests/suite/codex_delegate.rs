@@ -80,7 +80,7 @@ async fn codex_delegate_forwards_exec_approval_and_proceeds_on_approval() {
         .await
         .expect("submit review");
 
-    // Lifecycle: Entered -> ExecApprovalRequest -> Exited(Some) -> TaskComplete.
+    // Lifecycle: Entered -> ExecApprovalRequest -> Exited(Some) -> TurnComplete.
     wait_for_event(&test.codex, |ev| {
         matches!(ev, EventMsg::EnteredReviewMode(_))
     })

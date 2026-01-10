@@ -21,6 +21,7 @@ pub(crate) struct ToolsConfig {
     pub shell_type: ConfigShellToolType,
     pub apply_patch_tool_type: Option<ApplyPatchToolType>,
     pub web_search_request: bool,
+    pub web_search_external_access: Option<bool>,
     pub include_view_image_tool: bool,
     pub experimental_supported_tools: Vec<String>,
     pub freeform_as_function: bool,
@@ -39,6 +40,7 @@ impl ToolsConfig {
         } = params;
         let include_apply_patch_tool = features.enabled(Feature::ApplyPatchFreeform);
         let include_web_search_request = features.enabled(Feature::WebSearchRequest);
+        let include_web_search_cached = features.enabled(Feature::WebSearchCached);
         let include_view_image_tool = features.enabled(Feature::ViewImageTool);
         let freeform_as_function = features.enabled(Feature::FreeformAsFunction);
 
@@ -67,10 +69,20 @@ impl ToolsConfig {
             }
         };
 
+        let web_search_request = include_web_search_request || include_web_search_cached;
+        let web_search_external_access = if include_web_search_cached {
+            Some(false)
+        } else if include_web_search_request {
+            Some(true)
+        } else {
+            None
+        };
+
         Self {
             shell_type,
             apply_patch_tool_type,
-            web_search_request: include_web_search_request,
+            web_search_request,
+            web_search_external_access,
             include_view_image_tool,
             experimental_supported_tools: model_family.experimental_supported_tools.clone(),
             freeform_as_function,
@@ -1102,7 +1114,9 @@ pub(crate) fn build_specs(
     }
 
     if config.web_search_request {
-        builder.push_spec(ToolSpec::WebSearch {});
+        builder.push_spec(ToolSpec::WebSearch {
+            external_web_access: config.web_search_external_access,
+        });
     }
 
     if config.include_view_image_tool {
@@ -1145,7 +1159,7 @@ mod tests {
         match tool {
             ToolSpec::Function(ResponsesApiTool { name, .. }) => name,
             ToolSpec::LocalShell {} => "local_shell",
-            ToolSpec::WebSearch {} => "web_search",
+            ToolSpec::WebSearch { .. } => "web_search",
             ToolSpec::Freeform(FreeformTool { name, .. }) => name,
         }
     }
@@ -1223,7 +1237,7 @@ mod tests {
             ToolSpec::Function(ResponsesApiTool { parameters, .. }) => {
                 strip_descriptions_schema(parameters);
             }
-            ToolSpec::Freeform(_) | ToolSpec::LocalShell {} | ToolSpec::WebSearch {} => {}
+            ToolSpec::Freeform(_) | ToolSpec::LocalShell {} | ToolSpec::WebSearch { .. } => {}
         }
     }
 
@@ -1267,7 +1281,9 @@ mod tests {
             create_read_mcp_resource_tool(),
             PLAN_TOOL.clone(),
             create_apply_patch_freeform_tool(),
-            ToolSpec::WebSearch {},
+            ToolSpec::WebSearch {
+                external_web_access: None,
+            },
             create_view_image_tool(),
         ] {
             expected.insert(tool_name(&spec).to_string(), spec);

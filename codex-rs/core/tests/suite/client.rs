@@ -1131,6 +1131,8 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
     config.model = Some(model.clone());
     let config = Arc::new(config);
     let model_family = ModelsManager::construct_model_family_offline(model.as_str(), &config);
+    let model_info = ModelsManager::construct_model_info_offline(model.as_str(), &config);
+    let model_info = ModelsManager::construct_model_info_offline(model.as_str(), &config);
     let conversation_id = ConversationId::new();
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
     let otel_manager = OtelManager::new(
@@ -1149,6 +1151,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         Arc::clone(&config),
         None,
         model_family,
+        model_info,
         otel_manager,
         provider,
         effort,
@@ -1949,6 +1952,7 @@ async fn request_includes_previous_response_id_when_configured() {
         Arc::clone(&config),
         None,
         model_family,
+        model_info,
         otel_manager,
         provider,
         effort,
