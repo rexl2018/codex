@@ -92,6 +92,8 @@ The same setting can be persisted in `~/.codex/config.toml` via the top-level `s
 
 The fullscreen TUI exposes a `/hist` slash command that lets you inspect and curate the entries stored in `~/.codex/history.jsonl` (see `core/src/message_history.rs`). Type the command in the input box just like any other prompt—Codex will intercept it locally without sending anything to the model. Indices in every subcommand are **1-based** and match the numbering rendered in the history view.
 
+Use `/copy` to capture answers: `/copy` copies the latest assistant output to the clipboard, `/copy path/to/file` writes it to disk, and `/copy --hist N [path]` copies the numbered history entry (clipboard if `path` is omitted).
+
 - `/hist ls [snapshots|assistant|reasoning|user]` — Shows the full history by default, or filters down to snapshots (saved Git states), assistant replies, reasoning traces, or user messages only.
 - `/hist ll [count]` — Prints the last `count` items (defaults to 10) so you can spot recent artifacts quickly.
 - `/hist la <index>` — Shows a small window around the indexed entry, which is useful when you only remember roughly where an event happened.

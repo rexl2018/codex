@@ -212,14 +212,20 @@ pub(crate) enum AppEvent {
         category: FeedbackCategory,
     },
 
-    /// Copy the last agent message to the clipboard or a file.
-    CopyLastAgentMessage(Option<String>),
+    /// Copy a conversation entry to the clipboard or a file.
+    CopyMessage(CopyRequest),
 
     /// Add a directory to the writable roots and file search.
     AddWritableDir(PathBuf),
 
     /// Launch the external editor after a normal draw has completed.
     LaunchExternalEditor,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CopyRequest {
+    pub history_index: Option<usize>,
+    pub destination: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

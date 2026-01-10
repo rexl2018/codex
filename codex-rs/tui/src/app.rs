@@ -1,5 +1,6 @@
 use crate::app_backtrack::BacktrackState;
 use crate::app_event::AppEvent;
+use crate::app_event::CopyRequest;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
 #[cfg(target_os = "windows")]
@@ -56,6 +57,8 @@ use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::Wrap;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -298,6 +301,8 @@ pub(crate) struct App {
     pub(crate) file_search: FileSearchManager,
 
     pub(crate) transcript_cells: Vec<Arc<dyn HistoryCell>>,
+    history_metadata: Option<(u64, usize)>,
+    pending_history_copies: HashMap<(u64, usize), Vec<CopyRequest>>,
 
     // Pager overlay state (Transcript or Static like Diff)
     pub(crate) overlay: Option<Overlay>,
@@ -431,6 +436,8 @@ impl App {
             file_search,
             enhanced_keys_supported,
             transcript_cells: Vec::new(),
+            history_metadata: None,
+            pending_history_copies: HashMap::new(),
             overlay: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
@@ -499,65 +506,115 @@ impl App {
         })
     }
 
-    pub(crate) fn handle_copy_last_agent_message(&mut self, filename: Option<String>) {
-        let text = if let Some(raw) = self.chat_widget.last_agent_message() {
-            Some(raw.to_string())
-        } else {
-            // Find the last AgentMessageCell(s) in the transcript.
-            // We scan backwards. Once we find an AgentMessageCell, we keep collecting them
-            // until we hit a non-AgentMessageCell. This handles split messages.
-            let mut parts = Vec::new();
-            let mut found_any = false;
+    pub(crate) fn handle_copy_request(&mut self, request: CopyRequest) {
+        if let Some(index) = request.history_index {
+            self.copy_history_entry(index, request);
+            return;
+        }
 
-            for cell in self.transcript_cells.iter().rev() {
-                if let Some(agent_cell) = cell
-                    .as_any()
-                    .downcast_ref::<crate::history_cell::AgentMessageCell>()
-                {
-                    parts.push(agent_cell.text());
-                    found_any = true;
-                } else if found_any {
-                    // We found the block of agent messages, and now we hit something else (e.g. user message).
-                    // Stop collecting.
-                    break;
-                }
-                // If !found_any, we keep skipping non-agent cells (e.g. separators, errors) until we find the message.
-            }
-
-            if parts.is_empty() {
-                None
-            } else {
-                parts.reverse();
-                Some(parts.join("\n"))
-            }
-        };
-
-        if let Some(text) = text {
-            if let Some(filename) = filename {
-                // Save to file
-                let path = self.config.cwd.join(&filename);
-                match std::fs::write(&path, &text) {
-                    Ok(_) => self
-                        .chat_widget
-                        .add_info_message(format!("Saved output to {}", path.display()), None),
-                    Err(e) => self
-                        .chat_widget
-                        .add_error_message(format!("Failed to save to {}: {e}", path.display())),
-                }
-            } else {
-                // Copy to clipboard
-                match crate::clipboard_paste::copy_text(&text) {
-                    Ok(_) => self
-                        .chat_widget
-                        .add_info_message("Last output copied to clipboard".to_string(), None),
-                    Err(e) => self
-                        .chat_widget
-                        .add_error_message(format!("Failed to copy to clipboard: {e}")),
-                }
-            }
+        if let Some(text) = self.latest_agent_message_text() {
+            self.copy_text_to_destination(text, request.destination);
         } else {
             self.chat_widget
                 .add_info_message("No output in history".to_string(), None);
+        }
+    }
+
+    fn latest_agent_message_text(&self) -> Option<String> {
+        if let Some(raw) = self.chat_widget.last_agent_message() {
+            return Some(raw.to_string());
+        }
+
+        let mut parts = Vec::new();
+        let mut found_any = false;
+        for cell in self.transcript_cells.iter().rev() {
+            if let Some(agent_cell) = cell
+                .as_any()
+                .downcast_ref::<crate::history_cell::AgentMessageCell>()
+            {
+                parts.push(agent_cell.text());
+                found_any = true;
+            } else if found_any {
+                break;
+            }
+        }
+
+        if parts.is_empty() {
+            None
+        } else {
+            parts.reverse();
+            Some(parts.join("\n"))
+        }
+    }
+
+    fn copy_history_entry(&mut self, index: usize, request: CopyRequest) {
+        if index == 0 {
+            self.chat_widget
+                .add_error_message("History indices start at 1".to_string());
+            return;
+        }
+
+        let Some((log_id, _count)) = self.history_metadata else {
+            self.chat_widget.add_error_message(
+                "History entries are not available yet; try again after the session starts"
+                    .to_string(),
+            );
+            return;
+        };
+
+        let offset = index - 1;
+        let key = (log_id, offset);
+        match self.pending_history_copies.entry(key) {
+            Entry::Occupied(mut existing) => existing.get_mut().push(request),
+            Entry::Vacant(vacant) => {
+                vacant.insert(vec![request]);
+            }
+        }
+
+        self.chat_widget
+            .submit_op(Op::GetHistoryEntryRequest { log_id, offset });
+    }
+
+    fn copy_text_to_destination(&mut self, text: String, destination: Option<String>) {
+        if let Some(filename) = destination {
+            let path = self.config.cwd.join(&filename);
+            match std::fs::write(&path, &text) {
+                Ok(_) => self
+                    .chat_widget
+                    .add_info_message(format!("Saved output to {}", path.display()), None),
+                Err(e) => self
+                    .chat_widget
+                    .add_error_message(format!("Failed to save to {}: {e}", path.display())),
+            }
+        } else {
+            match crate::clipboard_paste::copy_text(&text) {
+                Ok(_) => self
+                    .chat_widget
+                    .add_info_message("Last output copied to clipboard".to_string(), None),
+                Err(e) => self
+                    .chat_widget
+                    .add_error_message(format!("Failed to copy to clipboard: {e}")),
+            }
+        }
+    }
+
+    fn handle_history_entry_copy_response(
+        &mut self,
+        event: &codex_core::protocol::GetHistoryEntryResponseEvent,
+    ) {
+        let key = (event.log_id, event.offset);
+        let Some(requests) = self.pending_history_copies.remove(&key) else {
+            return;
+        };
+
+        let index = event.offset.saturating_add(1);
+        if let Some(entry) = &event.entry {
+            for request in requests {
+                self.copy_text_to_destination(entry.text.clone(), request.destination);
+            }
+        } else {
+            self.chat_widget
+                .add_error_message(format!("History entry #{index} is unavailable"));
         }
     }
 
@@ -776,6 +833,14 @@ impl App {
                     let errors = errors_for_cwd(&cwd, response);
                     emit_skill_load_warnings(&self.app_event_tx, &errors);
                 }
+                if let EventMsg::SessionConfigured(configured) = &event.msg {
+                    self.history_metadata =
+                        Some((configured.history_log_id, configured.history_entry_count));
+                    self.pending_history_copies.clear();
+                }
+                if let EventMsg::GetHistoryEntryResponse(response) = &event.msg {
+                    self.handle_history_entry_copy_response(response);
+                }
                 self.chat_widget.handle_codex_event(event);
             }
             AppEvent::ConversationHistory(ev) => {
@@ -810,8 +875,14 @@ impl App {
                     is_first_run: false,
                     model: resumed.session_configured.model.clone(),
                 };
+                let history_metadata = (
+                    resumed.session_configured.history_log_id,
+                    resumed.session_configured.history_entry_count,
+                );
                 self.chat_widget =
                     ChatWidget::new_from_existing(init, resumed.thread, resumed.session_configured);
+                self.history_metadata = Some(history_metadata);
+                self.pending_history_copies.clear();
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::CodexOp(op) => self.chat_widget.submit_op(op),
@@ -1276,8 +1347,8 @@ impl App {
             AppEvent::UpdateRateLimitSwitchPromptHidden(hidden) => {
                 self.chat_widget.set_rate_limit_switch_prompt_hidden(hidden);
             }
-            AppEvent::CopyLastAgentMessage(filename) => {
-                self.handle_copy_last_agent_message(filename);
+            AppEvent::CopyMessage(request) => {
+                self.handle_copy_request(request);
             }
             AppEvent::PersistFullAccessWarningAcknowledged => {
                 if let Err(err) = ConfigEditsBuilder::new(&self.config.codex_home)
@@ -1592,6 +1663,7 @@ mod tests {
     use super::*;
     use crate::app_backtrack::BacktrackState;
     use crate::app_backtrack::user_count;
+    use crate::app_event::CopyRequest;
     use crate::chatwidget::tests::make_chatwidget_manual_with_sender;
     use crate::file_search::FileSearchManager;
     use crate::history_cell::AgentMessageCell;
@@ -1637,6 +1709,8 @@ mod tests {
             active_profile: None,
             file_search,
             transcript_cells: Vec::new(),
+            history_metadata: None,
+            pending_history_copies: HashMap::new(),
             overlay: None,
             deferred_history_lines: Vec::new(),
             has_emitted_history_lines: false,
@@ -1677,6 +1751,8 @@ mod tests {
                 active_profile: None,
                 file_search,
                 transcript_cells: Vec::new(),
+                history_metadata: None,
+                pending_history_copies: HashMap::new(),
                 overlay: None,
                 deferred_history_lines: Vec::new(),
                 has_emitted_history_lines: false,
@@ -1735,7 +1811,10 @@ mod tests {
 
         app.transcript_cells = vec![user_cell, agent_first, agent_continued];
 
-        app.handle_copy_last_agent_message(Some("docs/result.md".to_string()));
+        app.handle_copy_request(CopyRequest {
+            history_index: None,
+            destination: Some("docs/result.md".to_string()),
+        });
 
         let saved =
             std::fs::read_to_string(workdir.path().join("docs/result.md")).expect("saved file");
@@ -1758,7 +1837,10 @@ mod tests {
         app.chat_widget
             .set_last_agent_message_for_test(Some(expected.clone()));
 
-        app.handle_copy_last_agent_message(Some("out.txt".to_string()));
+        app.handle_copy_request(CopyRequest {
+            history_index: None,
+            destination: Some("out.txt".to_string()),
+        });
 
         let saved = std::fs::read_to_string(workdir.path().join("out.txt")).expect("saved file");
         assert_eq!(saved, expected);

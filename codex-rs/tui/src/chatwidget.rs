@@ -88,6 +88,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::app_event::AppEvent;
+use crate::app_event::CopyRequest;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
 use crate::app_event::WindowsSandboxFallbackReason;
@@ -1718,10 +1719,16 @@ impl ChatWidget {
                             self.handle_chat_command(args);
                             return;
                         }
-                        if let Some(copy_destination) = parse_copy_command(&text) {
-                            self.app_event_tx
-                                .send(AppEvent::CopyLastAgentMessage(copy_destination));
-                            return;
+                        match parse_copy_command(&text) {
+                            Ok(Some(request)) => {
+                                self.app_event_tx.send(AppEvent::CopyMessage(request));
+                                return;
+                            }
+                            Err(err) => {
+                                self.add_error_message(err);
+                                return;
+                            }
+                            Ok(None) => {}
                         }
                         let user_message = UserMessage {
                             text,
@@ -1973,7 +1980,10 @@ impl ChatWidget {
                 self.handle_chat_command("");
             }
             SlashCommand::Copy => {
-                self.app_event_tx.send(AppEvent::CopyLastAgentMessage(None));
+                self.app_event_tx.send(AppEvent::CopyMessage(CopyRequest {
+                    history_index: None,
+                    destination: None,
+                }));
             }
             SlashCommand::AddDir => {
                 let input_string = self.bottom_pane.composer_text();
@@ -4566,24 +4576,118 @@ fn find_skill_mentions(text: &str, skills: &[SkillMetadata]) -> Vec<SkillMetadat
 #[cfg(test)]
 pub(crate) mod tests;
 
-pub(crate) fn parse_copy_command(text: &str) -> Option<Option<String>> {
+pub(crate) fn parse_copy_command(text: &str) -> Result<Option<CopyRequest>, String> {
+    const COMMAND: &str = "/copy";
     let trimmed = text.trim();
-    if trimmed == "/copy" {
-        return Some(None);
+    if !trimmed.starts_with(COMMAND) {
+        return Ok(None);
     }
 
-    let rest = trimmed.strip_prefix("/copy")?;
+    if trimmed.len() > COMMAND.len() && !trimmed.as_bytes()[COMMAND.len()].is_ascii_whitespace() {
+        return Ok(None);
+    }
 
-    match rest.chars().next() {
-        Some(ch) if ch.is_whitespace() => {
-            let filename = rest.trim();
-            if filename.is_empty() {
-                Some(None)
-            } else {
-                Some(Some(filename.to_string()))
+    let rest = trimmed[COMMAND.len()..].trim();
+    if rest.is_empty() {
+        return Ok(Some(CopyRequest {
+            history_index: None,
+            destination: None,
+        }));
+    }
+
+    let token_ranges = tokenize_ranges(rest);
+    let mut removal_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut history_index: Option<usize> = None;
+
+    let mut idx = 0usize;
+    while idx < token_ranges.len() {
+        let (start, end) = token_ranges[idx];
+        let token = &rest[start..end];
+        if token == "--hist" || token.starts_with("--hist=") {
+            if history_index.is_some() {
+                return Err("/copy only accepts one --hist flag".to_string());
             }
+            let value = if let Some(value) = token.strip_prefix("--hist=") {
+                if value.is_empty() {
+                    return Err("Missing value for --hist".to_string());
+                }
+                value
+            } else {
+                idx += 1;
+                if idx >= token_ranges.len() {
+                    return Err("Missing value for --hist".to_string());
+                }
+                let (value_start, value_end) = token_ranges[idx];
+                removal_ranges.push((value_start, value_end));
+                &rest[value_start..value_end]
+            };
+
+            let parsed = value
+                .parse::<usize>()
+                .map_err(|_| "--hist must be a positive number".to_string())?;
+            if parsed == 0 {
+                return Err("--hist must be at least 1".to_string());
+            }
+            history_index = Some(parsed);
+            removal_ranges.push((start, end));
         }
-        _ => None,
+        idx += 1;
+    }
+
+    let destination = build_destination(rest, &removal_ranges);
+
+    Ok(Some(CopyRequest {
+        history_index,
+        destination,
+    }))
+}
+
+fn tokenize_ranges(input: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start: Option<usize> = None;
+    for (idx, ch) in input.char_indices() {
+        if ch.is_whitespace() {
+            if let Some(s) = start.take() {
+                ranges.push((s, idx));
+            }
+        } else if start.is_none() {
+            start = Some(idx);
+        }
+    }
+    if let Some(s) = start {
+        ranges.push((s, input.len()));
+    }
+    ranges
+}
+
+fn build_destination(input: &str, removal_ranges: &[(usize, usize)]) -> Option<String> {
+    if input.is_empty() {
+        return None;
+    }
+
+    let mut keep = vec![true; input.len()];
+    for &(start, end) in removal_ranges {
+        keep[start..end].fill(false);
+    }
+
+    let mut filtered = String::with_capacity(input.len());
+    let mut byte_idx = 0;
+    while byte_idx < input.len() {
+        if keep[byte_idx]
+            && let Some(ch) = input[byte_idx..].chars().next()
+        {
+            filtered.push(ch);
+            byte_idx += ch.len_utf8();
+            continue;
+        }
+        byte_idx += 1;
+    }
+
+    let trimmed = filtered.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 

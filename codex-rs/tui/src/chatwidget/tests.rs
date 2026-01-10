@@ -1,5 +1,6 @@
 use super::*;
 use crate::app_event::AppEvent;
+use crate::app_event::CopyRequest;
 use crate::app_event_sender::AppEventSender;
 use crate::test_backend::VT100Backend;
 use crate::tui::FrameRequester;
@@ -117,17 +118,60 @@ fn snapshot(percent: f64) -> RateLimitSnapshot {
 
 #[test]
 fn parse_copy_command_accepts_optional_filename() {
-    assert_eq!(parse_copy_command("/copy"), Some(None));
-    assert_eq!(parse_copy_command("  /copy   "), Some(None));
+    let clipboard = CopyRequest {
+        history_index: None,
+        destination: None,
+    };
+    assert_eq!(parse_copy_command("/copy"), Ok(Some(clipboard.clone())));
+    assert_eq!(parse_copy_command("  /copy   "), Ok(Some(clipboard)));
     assert_eq!(
         parse_copy_command("/copy docs/result.md"),
-        Some(Some("docs/result.md".to_string())),
+        Ok(Some(CopyRequest {
+            history_index: None,
+            destination: Some("docs/result.md".to_string()),
+        })),
     );
     assert_eq!(
         parse_copy_command("/copy \tdocs/my file.md"),
-        Some(Some("docs/my file.md".to_string())),
+        Ok(Some(CopyRequest {
+            history_index: None,
+            destination: Some("docs/my file.md".to_string()),
+        })),
     );
-    assert_eq!(parse_copy_command("/copycat"), None);
+    assert_eq!(parse_copy_command("/copycat"), Ok(None));
+}
+
+#[test]
+fn parse_copy_command_supports_history_flag() {
+    assert_eq!(
+        parse_copy_command("/copy --hist 2"),
+        Ok(Some(CopyRequest {
+            history_index: Some(2),
+            destination: None,
+        })),
+    );
+    assert_eq!(
+        parse_copy_command("/copy --hist=5 output.txt"),
+        Ok(Some(CopyRequest {
+            history_index: Some(5),
+            destination: Some("output.txt".to_string()),
+        })),
+    );
+    assert_eq!(
+        parse_copy_command("/copy results.log --hist 7"),
+        Ok(Some(CopyRequest {
+            history_index: Some(7),
+            destination: Some("results.log".to_string()),
+        })),
+    );
+}
+
+#[test]
+fn parse_copy_command_rejects_invalid_history_flag() {
+    assert!(parse_copy_command("/copy --hist").is_err());
+    assert!(parse_copy_command("/copy --hist=0").is_err());
+    assert!(parse_copy_command("/copy --hist nope").is_err());
+    assert!(parse_copy_command("/copy --hist 1 --hist 2").is_err());
 }
 
 #[tokio::test]
