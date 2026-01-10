@@ -147,7 +147,7 @@ async fn run_compact_task_inner(
 
     // Let's modify `run_compact_task_inner` to take an optional `merge_callback` or `range`.
 
-    let mut history_for_prompt = sess.clone_history().await;
+    let history_for_prompt = sess.clone_history().await;
 
     let (prefix, suffix) = if let Some((start, end)) = range {
         // Extract the slice to be compacted.

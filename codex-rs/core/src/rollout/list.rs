@@ -504,7 +504,9 @@ async fn file_modified_rfc3339(path: &Path) -> io::Result<Option<String>> {
         return Ok(None);
     };
     let dt = OffsetDateTime::from(modified);
-    Ok(dt.format(&time::format_description::well_known::Rfc3339).ok())
+    Ok(dt
+        .format(&time::format_description::well_known::Rfc3339)
+        .ok())
 }
 
 /// Locate a recorded thread rollout file by its UUID string using the existing

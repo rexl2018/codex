@@ -231,12 +231,6 @@ impl ModelClient {
             None
         };
 
-        let include: Vec<String> = if reasoning.is_some() {
-            vec!["reasoning.encrypted_content".to_string()]
-        } else {
-            vec![]
-        };
-
         let verbosity = if model_info.support_verbosity {
             self.config.model_verbosity.or(model_info.default_verbosity)
         } else {

@@ -337,6 +337,7 @@ impl ThreadManagerState {
         })
     }
 
+    #[allow(dead_code)]
     pub async fn get_conversation(
         &self,
         conversation_id: ThreadId,
@@ -347,7 +348,6 @@ impl ThreadManagerState {
             .cloned()
             .ok_or_else(|| CodexErr::ThreadNotFound(conversation_id))
     }
-
 }
 
 /// Return a prefix of `items` obtained by cutting strictly before the nth user message

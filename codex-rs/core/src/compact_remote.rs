@@ -3,7 +3,6 @@ use std::sync::Arc;
 use crate::Prompt;
 use crate::codex::Session;
 use crate::codex::TurnContext;
-use crate::compact::remove_ghost_snapshots;
 use crate::error::Result as CodexResult;
 use crate::protocol::CompactedItem;
 use crate::protocol::ContextCompactedEvent;

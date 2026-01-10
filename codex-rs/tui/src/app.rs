@@ -787,7 +787,7 @@ impl App {
             AppEvent::ResumeSession(path) => {
                 let resumed = self
                     .server
-                    .resume_conversation_from_rollout(
+                    .resume_thread_from_rollout(
                         self.config.clone(),
                         path.clone(),
                         self.auth_manager.clone(),
@@ -810,11 +810,8 @@ impl App {
                     is_first_run: false,
                     model: resumed.session_configured.model.clone(),
                 };
-                self.chat_widget = ChatWidget::new_from_existing(
-                    init,
-                    resumed.thread,
-                    resumed.session_configured,
-                );
+                self.chat_widget =
+                    ChatWidget::new_from_existing(init, resumed.thread, resumed.session_configured);
                 tui.frame_requester().schedule_frame();
             }
             AppEvent::CodexOp(op) => self.chat_widget.submit_op(op),

@@ -2007,7 +2007,7 @@ impl ChatWidget {
                     let codex_home = self.config.codex_home.clone();
                     let tx = self.app_event_tx.clone();
                     tokio::spawn(async move {
-                        match codex_core::get_conversations(
+                        match codex_core::get_threads(
                             &codex_home,
                             20,
                             None,

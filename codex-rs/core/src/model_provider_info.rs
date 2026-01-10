@@ -147,7 +147,7 @@ impl ModelProviderInfo {
         let retry = ApiRetryConfig {
             max_attempts: self.request_max_retries(),
             base_delay: Duration::from_millis(200),
-            retry_429: false,
+            retry_429: true,
             retry_5xx: true,
             retry_transport: true,
         };
@@ -155,7 +155,7 @@ impl ModelProviderInfo {
         let stream_retry = ApiRetryConfig {
             max_attempts: self.stream_max_retries(),
             base_delay: Duration::from_millis(200),
-            retry_429: false,
+            retry_429: true,
             retry_5xx: true,
             retry_transport: true,
         };

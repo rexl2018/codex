@@ -99,9 +99,11 @@ pub use rollout::SessionMeta;
 pub use rollout::find_conversation_path_by_id_str;
 pub use rollout::find_thread_path_by_id_str;
 pub use rollout::list::Cursor;
-pub use rollout::list::get_conversations;
 pub use rollout::list::ThreadItem;
 pub use rollout::list::ThreadsPage;
+#[allow(deprecated)]
+pub use rollout::list::get_conversations;
+pub use rollout::list::get_threads;
 pub use rollout::list::parse_cursor;
 pub use rollout::list::parse_timestamp_uuid_from_filename;
 pub use rollout::list::read_head_for_summary;

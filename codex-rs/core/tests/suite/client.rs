@@ -2048,11 +2048,8 @@ async fn previous_response_id_is_sent_in_subsequent_turn() {
     config.conversation_build_strategy = ConversationBuildStrategy::PreviousResponseId;
 
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("test"));
-    let thread_manager = ThreadManager::new(
-        home.path().to_path_buf(),
-        auth_manager,
-        SessionSource::Exec,
-    );
+    let thread_manager =
+        ThreadManager::new(home.path().to_path_buf(), auth_manager, SessionSource::Exec);
     let codex = thread_manager
         .start_thread(config)
         .await

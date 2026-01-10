@@ -2397,10 +2397,10 @@ async fn spawn_review_thread(
     let auth_manager = parent_turn_context.client.get_auth_manager();
     let model_info = review_model_info.clone();
 
-    let otel_manager = parent_turn_context.client.get_otel_manager().with_model(
-        review_model.as_str(),
-        review_model_info.slug.as_str(),
-    );
+    let otel_manager = parent_turn_context
+        .client
+        .get_otel_manager()
+        .with_model(review_model.as_str(), review_model_info.slug.as_str());
 
     let per_turn_config = Arc::new(per_turn_config);
     let client = ModelClient::new(
