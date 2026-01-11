@@ -100,6 +100,15 @@ impl ContextManager {
         self.items
     }
 
+    /// Returns a normalized copy of the in-memory history.
+    ///
+    /// This mirrors the older `get_history()` semantics: normalize in-place, then
+    /// return a snapshot for read-only consumers (e.g., history views / undo).
+    pub(crate) fn get_history(&mut self) -> Vec<ResponseItem> {
+        self.normalize_history();
+        self.items.clone()
+    }
+
     /// Returns raw items in the history.
     pub(crate) fn raw_items(&self) -> &[ResponseItem] {
         &self.items

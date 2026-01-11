@@ -24,7 +24,6 @@ use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
-use core_test_support::wait_for_event_with_timeout;
 use std::collections::VecDeque;
 use tempfile::TempDir;
 

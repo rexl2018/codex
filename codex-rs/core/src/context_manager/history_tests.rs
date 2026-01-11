@@ -319,7 +319,7 @@ fn delete_range_supports_open_ended_del_after() {
 
     assert_eq!(output.content, "Deleted items #2 to #4");
     assert!(output.history_changed);
-    assert_eq!(history.contents(), vec![first]);
+    assert_eq!(history.raw_items(), vec![first]);
 }
 
 #[test]
@@ -330,7 +330,7 @@ fn delete_range_invalid_range_does_not_change_history() {
 
     assert_eq!(output.content, "Invalid range: 0-2");
     assert!(!output.history_changed);
-    assert_eq!(history.contents(), vec![first, assistant_msg("second")]);
+    assert_eq!(history.raw_items(), vec![first, assistant_msg("second")]);
 }
 
 #[test]

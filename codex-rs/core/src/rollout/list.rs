@@ -171,7 +171,10 @@ pub async fn get_conversations(
 
 /// Load thread file paths from disk using directory traversal.
 ///
-/// Directory layout: `~/.codex/sessions/YYYY/MM/DD/rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl`
+/// Directory layout: `~/.codex/sessions/YYYYMMDD/rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl`
+///
+/// Backward compatibility: we also support a nested `YYYY/MM/DD` layout for
+/// older fixtures/installs.
 /// Returned newest (latest) first.
 async fn traverse_directories_for_paths(
     root: PathBuf,
@@ -189,93 +192,117 @@ async fn traverse_directories_for_paths(
     };
     let mut more_matches_available = false;
 
-    // Traverse Year -> Month -> Day
-    let year_dirs = collect_dirs_desc(&root, |s| s.parse::<u32>().ok()).await?;
-    'outer: for (_year, year_path) in year_dirs.iter() {
+    macro_rules! scan_day_dir {
+        ($day_path:expr, $outer:tt) => {{
+            if scanned_files >= MAX_SCAN_FILES {
+                break $outer;
+            }
+
+            let mut day_files = collect_files($day_path, |name_str, path| {
+                if !name_str.starts_with("rollout-") || !name_str.ends_with(".jsonl") {
+                    return None;
+                }
+
+                parse_timestamp_uuid_from_filename(name_str)
+                    .map(|(ts, id)| (ts, id, name_str.to_string(), path.to_path_buf()))
+            })
+            .await?;
+
+            // Stable ordering within the same second: (timestamp desc, uuid desc)
+            day_files.sort_by_key(|(ts, sid, _name_str, _path)| (Reverse(*ts), Reverse(*sid)));
+
+            for (ts, sid, _name_str, path) in day_files.into_iter() {
+                scanned_files += 1;
+                if scanned_files >= MAX_SCAN_FILES && items.len() >= page_size {
+                    more_matches_available = true;
+                    break $outer;
+                }
+
+                if !anchor_passed {
+                    if ts < anchor_ts || (ts == anchor_ts && sid < anchor_id) {
+                        anchor_passed = true;
+                    } else {
+                        continue;
+                    }
+                }
+
+                if items.len() == page_size {
+                    more_matches_available = true;
+                    break $outer;
+                }
+
+                // Read head and tail
+                let summary = read_head_and_tail(&path, HEAD_RECORD_LIMIT, TAIL_RECORD_LIMIT)
+                    .await
+                    .unwrap_or_default();
+
+                if !allowed_sources.is_empty()
+                    && !summary
+                        .source
+                        .is_some_and(|source| allowed_sources.iter().any(|s| s == &source))
+                {
+                    continue;
+                }
+
+                if let Some(matcher) = provider_matcher
+                    && !matcher.matches(summary.model_provider.as_deref())
+                {
+                    continue;
+                }
+
+                // Apply filters: must have session meta and at least one user message event
+                if summary.saw_session_meta && summary.saw_user_event {
+                    let HeadTailSummary {
+                        head,
+                        tail,
+                        created_at,
+                        mut updated_at,
+                        ..
+                    } = summary;
+                    if updated_at.is_none() {
+                        updated_at = file_modified_rfc3339(&path)
+                            .await
+                            .unwrap_or(None)
+                            .or_else(|| created_at.clone());
+                    }
+                    items.push(ThreadItem {
+                        path,
+                        head,
+                        created_at,
+                        updated_at,
+                        tail,
+                    });
+                }
+            }
+        }};
+    }
+
+    // Preferred layout: Flat YYYYMMDD directories.
+    let day_dirs = collect_dirs_desc(&root, |s| {
+        if s.len() != 8 {
+            return None;
+        }
+        s.parse::<u32>().ok()
+    })
+    .await?;
+    'flat: for (_day, day_path) in day_dirs.iter() {
+        scan_day_dir!(day_path, 'flat);
+    }
+
+    // Backward compatible layout: YYYY/MM/DD.
+    let year_dirs = collect_dirs_desc(&root, |s| {
+        if s.len() != 4 {
+            return None;
+        }
+        s.parse::<u32>().ok()
+    })
+    .await?;
+    'nested: for (_year, year_path) in year_dirs.iter() {
         let month_dirs = collect_dirs_desc(year_path, |s| s.parse::<u32>().ok()).await?;
         for (_month, month_path) in month_dirs.iter() {
             let day_dirs = collect_dirs_desc(month_path, |s| s.parse::<u32>().ok()).await?;
             for (_day, day_path) in day_dirs.iter() {
-                if scanned_files >= MAX_SCAN_FILES {
-                    break 'outer;
-                }
-
-                let mut day_files = collect_files(day_path, |name_str, path| {
-                    if !name_str.starts_with("rollout-") || !name_str.ends_with(".jsonl") {
-                        return None;
-                    }
-
-                    parse_timestamp_uuid_from_filename(name_str)
-                        .map(|(ts, id)| (ts, id, name_str.to_string(), path.to_path_buf()))
-                })
-                .await?;
-
-                // Stable ordering within the same second: (timestamp desc, uuid desc)
-                day_files.sort_by_key(|(ts, sid, _name_str, _path)| (Reverse(*ts), Reverse(*sid)));
-
-                for (ts, sid, _name_str, path) in day_files.into_iter() {
-                    scanned_files += 1;
-                    if scanned_files >= MAX_SCAN_FILES && items.len() >= page_size {
-                        more_matches_available = true;
-                        break 'outer;
-                    }
-
-                    if !anchor_passed {
-                        if ts < anchor_ts || (ts == anchor_ts && sid < anchor_id) {
-                            anchor_passed = true;
-                        } else {
-                            continue;
-                        }
-                    }
-
-                    if items.len() == page_size {
-                        more_matches_available = true;
-                        break 'outer;
-                    }
-
-                    // Read head and tail
-                    let summary = read_head_and_tail(&path, HEAD_RECORD_LIMIT, TAIL_RECORD_LIMIT)
-                        .await
-                        .unwrap_or_default();
-
-                    if !allowed_sources.is_empty()
-                        && !summary
-                            .source
-                            .is_some_and(|source| allowed_sources.iter().any(|s| s == &source))
-                    {
-                        continue;
-                    }
-
-                    if let Some(matcher) = provider_matcher
-                        && !matcher.matches(summary.model_provider.as_deref())
-                    {
-                        continue;
-                    }
-
-                    // Apply filters: must have session meta and at least one user message event
-                    if summary.saw_session_meta && summary.saw_user_event {
-                        let HeadTailSummary {
-                            head,
-                            tail,
-                            created_at,
-                            mut updated_at,
-                            ..
-                        } = summary;
-                        if updated_at.is_none() {
-                            updated_at = file_modified_rfc3339(&path)
-                                .await
-                                .unwrap_or(None)
-                                .or_else(|| created_at.clone());
-                        }
-                        items.push(ThreadItem {
-                            path,
-                            head,
-                            created_at,
-                            updated_at,
-                            tail,
-                        });
-                    }
-                }
+                scan_day_dir!(day_path, 'nested);
             }
         }
     }

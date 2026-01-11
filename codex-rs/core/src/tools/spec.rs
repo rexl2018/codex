@@ -1756,13 +1756,13 @@ mod tests {
     #[test]
     fn test_freeform_as_function_conversion() {
         let config = test_config();
-        let model_family = ModelsManager::construct_model_family_offline("gpt-5.1", &config);
+        let model_info = ModelsManager::construct_model_info_offline("gpt-5.1", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::ApplyPatchFreeform);
         features.enable(Feature::FreeformAsFunction);
 
         let config = ToolsConfig::new(&ToolsConfigParams {
-            model_family: &model_family,
+            model_info: &model_info,
             features: &features,
         });
 
@@ -1784,13 +1784,13 @@ mod tests {
     #[test]
     fn test_freeform_without_conversion() {
         let config = test_config();
-        let model_family = ModelsManager::construct_model_family_offline("gpt-5.1", &config);
+        let model_info = ModelsManager::construct_model_info_offline("gpt-5.1", &config);
         let mut features = Features::with_defaults();
         features.enable(Feature::ApplyPatchFreeform);
         // Do NOT enable FreeformAsFunction
 
         let config = ToolsConfig::new(&ToolsConfigParams {
-            model_family: &model_family,
+            model_info: &model_info,
             features: &features,
         });
 

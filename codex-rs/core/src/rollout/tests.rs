@@ -70,12 +70,11 @@ fn write_session_file_with_provider(
     let dt = PrimitiveDateTime::parse(ts_str, format)
         .unwrap()
         .assume_utc();
-    let dir = root.join("sessions").join(format!(
-        "{}{:02}{:02}",
-        dt.year(),
-        u8::from(dt.month()),
-        dt.day()
-    ));
+    let dir = root
+        .join("sessions")
+        .join(format!("{:04}", dt.year()))
+        .join(format!("{:02}", u8::from(dt.month())))
+        .join(format!("{:02}", dt.day()));
     fs::create_dir_all(&dir)?;
 
     let filename = format!("rollout-{ts_str}-{uuid}.jsonl");
@@ -178,15 +177,21 @@ async fn test_list_conversations_latest_first() {
     // Build expected objects
     let p1 = home
         .join("sessions")
-        .join("20250103")
+        .join("2025")
+        .join("01")
+        .join("03")
         .join(format!("rollout-2025-01-03T12-00-00-{u3}.jsonl"));
     let p2 = home
         .join("sessions")
-        .join("20250102")
+        .join("2025")
+        .join("01")
+        .join("02")
         .join(format!("rollout-2025-01-02T12-00-00-{u2}.jsonl"));
     let p3 = home
         .join("sessions")
-        .join("20250101")
+        .join("2025")
+        .join("01")
+        .join("01")
         .join(format!("rollout-2025-01-01T12-00-00-{u1}.jsonl"));
 
     let head_3 = vec![serde_json::json!({
@@ -322,11 +327,15 @@ async fn test_pagination_cursor() {
     .unwrap();
     let p5 = home
         .join("sessions")
-        .join("20250305")
+        .join("2025")
+        .join("03")
+        .join("05")
         .join(format!("rollout-2025-03-05T09-00-00-{u5}.jsonl"));
     let p4 = home
         .join("sessions")
-        .join("20250304")
+        .join("2025")
+        .join("03")
+        .join("04")
         .join(format!("rollout-2025-03-04T09-00-00-{u4}.jsonl"));
     let head_5 = vec![serde_json::json!({
         "id": u5,
@@ -387,11 +396,15 @@ async fn test_pagination_cursor() {
     .unwrap();
     let p3 = home
         .join("sessions")
-        .join("20250303")
+        .join("2025")
+        .join("03")
+        .join("03")
         .join(format!("rollout-2025-03-03T09-00-00-{u3}.jsonl"));
     let p2 = home
         .join("sessions")
-        .join("20250302")
+        .join("2025")
+        .join("03")
+        .join("02")
         .join(format!("rollout-2025-03-02T09-00-00-{u2}.jsonl"));
     let head_3 = vec![serde_json::json!({
         "id": u3,
@@ -452,7 +465,9 @@ async fn test_pagination_cursor() {
     .unwrap();
     let p1 = home
         .join("sessions")
-        .join("20250301")
+        .join("2025")
+        .join("03")
+        .join("01")
         .join(format!("rollout-2025-03-01T09-00-00-{u1}.jsonl"));
     let head_1 = vec![serde_json::json!({
         "id": u1,
@@ -508,7 +523,9 @@ async fn test_get_thread_contents() {
     // Page equality (single item)
     let expected_path = home
         .join("sessions")
-        .join("20250401")
+        .join("2025")
+        .join("04")
+        .join("01")
         .join(format!("rollout-2025-04-01T10-30-00-{uuid}.jsonl"));
     let expected_head = vec![serde_json::json!({
         "id": uuid,
@@ -567,7 +584,7 @@ async fn test_updated_at_uses_file_mtime() -> Result<()> {
 
     let ts = "2025-06-01T08-00-00";
     let uuid = Uuid::from_u128(42);
-    let day_dir = home.join("sessions").join("20250601");
+    let day_dir = home.join("sessions").join("2025").join("06").join("01");
     fs::create_dir_all(&day_dir)?;
     let file_path = day_dir.join(format!("rollout-{ts}-{uuid}.jsonl"));
     let mut file = File::create(&file_path)?;
@@ -648,17 +665,17 @@ async fn test_tail_handles_short_sessions() -> Result<()> {
 
     let ts = "2025-06-02T08-30-00";
     let uuid = Uuid::from_u128(7);
-    let day_dir = home.join("sessions").join("20250602");
+    let day_dir = home.join("sessions").join("2025").join("06").join("02");
     fs::create_dir_all(&day_dir)?;
     let file_path = day_dir.join(format!("rollout-{ts}-{uuid}.jsonl"));
     let mut file = File::create(&file_path)?;
 
-    let conversation_id = ConversationId::from_string(&uuid.to_string())?;
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
     let meta_line = RolloutLine {
         timestamp: ts.to_string(),
         item: RolloutItem::SessionMeta(SessionMetaLine {
             meta: SessionMeta {
-                id: conversation_id,
+                id: thread_id,
                 timestamp: ts.to_string(),
                 instructions: None,
                 cwd: ".".into(),
@@ -697,7 +714,7 @@ async fn test_tail_handles_short_sessions() -> Result<()> {
     drop(file);
 
     let provider_filter = provider_vec(&[TEST_PROVIDER]);
-    let page = get_conversations(
+    let page = get_threads(
         home,
         1,
         None,
@@ -741,17 +758,17 @@ async fn test_tail_skips_trailing_non_responses() -> Result<()> {
 
     let ts = "2025-06-03T10-00-00";
     let uuid = Uuid::from_u128(11);
-    let day_dir = home.join("sessions").join("20250603");
+    let day_dir = home.join("sessions").join("2025").join("06").join("03");
     fs::create_dir_all(&day_dir)?;
     let file_path = day_dir.join(format!("rollout-{ts}-{uuid}.jsonl"));
     let mut file = File::create(&file_path)?;
 
-    let conversation_id = ConversationId::from_string(&uuid.to_string())?;
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
     let meta_line = RolloutLine {
         timestamp: ts.to_string(),
         item: RolloutItem::SessionMeta(SessionMetaLine {
             meta: SessionMeta {
-                id: conversation_id,
+                id: thread_id,
                 timestamp: ts.to_string(),
                 instructions: None,
                 cwd: ".".into(),
@@ -805,7 +822,7 @@ async fn test_tail_skips_trailing_non_responses() -> Result<()> {
     drop(file);
 
     let provider_filter = provider_vec(&[TEST_PROVIDER]);
-    let page = get_conversations(
+    let page = get_threads(
         home,
         1,
         None,
@@ -864,11 +881,15 @@ async fn test_stable_ordering_same_second_pagination() {
 
     let p3 = home
         .join("sessions")
-        .join("20250701")
+        .join("2025")
+        .join("07")
+        .join("01")
         .join(format!("rollout-2025-07-01T00-00-00-{u3}.jsonl"));
     let p2 = home
         .join("sessions")
-        .join("20250701")
+        .join("2025")
+        .join("07")
+        .join("01")
         .join(format!("rollout-2025-07-01T00-00-00-{u2}.jsonl"));
     let head = |u: Uuid| -> Vec<serde_json::Value> {
         vec![serde_json::json!({
@@ -920,7 +941,9 @@ async fn test_stable_ordering_same_second_pagination() {
     .unwrap();
     let p1 = home
         .join("sessions")
-        .join("20250701")
+        .join("2025")
+        .join("07")
+        .join("01")
         .join(format!("rollout-2025-07-01T00-00-00-{u1}.jsonl"));
     let updated_page2: Vec<Option<String>> =
         page2.items.iter().map(|i| i.updated_at.clone()).collect();

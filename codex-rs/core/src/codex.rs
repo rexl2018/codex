@@ -1027,7 +1027,16 @@ impl Session {
         // Record the last known agent status.
         if let Some(status) = agent_status_from_event(&event.msg) {
             let mut guard = self.agent_status.write().await;
-            *guard = status;
+            // Avoid flipping a successfully completed turn into an errored agent
+            // status due to late-delivered errors (e.g., background teardown).
+            //
+            // This preserves the older behavior where completion was terminal
+            // for the turn result unless a new turn starts.
+            let keep_completed = matches!(&*guard, AgentStatus::Completed(_))
+                && matches!(&event.msg, EventMsg::Error(_) | EventMsg::TurnAborted(_));
+            if !keep_completed {
+                *guard = status;
+            }
         }
         // Persist the event into rollout (recorder filters as needed)
         let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
@@ -1046,7 +1055,11 @@ impl Session {
         // Record the last known agent status.
         if let Some(status) = agent_status_from_event(&event.msg) {
             let mut guard = self.agent_status.write().await;
-            *guard = status;
+            let keep_completed = matches!(&*guard, AgentStatus::Completed(_))
+                && matches!(&event.msg, EventMsg::Error(_) | EventMsg::TurnAborted(_));
+            if !keep_completed {
+                *guard = status;
+            }
         }
         self.persist_rollout_items(&[RolloutItem::EventMsg(event.msg.clone())])
             .await;
@@ -2245,7 +2258,7 @@ mod handlers {
                 let mut state = sess.state.lock().await;
                 let output = state.history.handle_history_action(other);
                 let replacement_history = if output.history_changed {
-                    Some(state.history.raw_items().to_vec())
+                    Some(state.history.get_history())
                 } else {
                     None
                 };
@@ -2273,7 +2286,7 @@ mod handlers {
         start: Option<usize>,
     ) -> (String, Option<Vec<ResponseItem>>) {
         let mut state = sess.state.lock().await;
-        let history = state.history.raw_items().to_vec();
+        let history = state.history.get_history();
         if history.is_empty() {
             return ("History is empty; nothing to undo.".to_string(), None);
         }
@@ -2321,7 +2334,7 @@ mod handlers {
         if !delete_output.history_changed {
             return (delete_output.content, None);
         }
-        let replacement_history = state.history.raw_items().to_vec();
+        let replacement_history = state.history.get_history();
 
         let mut content = if start_index == end_index {
             format!("Undid item #{start_index}.")

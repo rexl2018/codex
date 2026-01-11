@@ -1,9 +1,9 @@
 #![allow(clippy::expect_used)]
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
-use codex_core::ConversationManager;
 use codex_core::ModelProviderInfo;
-use codex_core::NewConversation;
+use codex_core::NewThread;
+use codex_core::ThreadManager;
 use codex_core::built_in_model_providers;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::protocol::EventMsg;
@@ -67,11 +67,12 @@ async fn compact_range_middle() {
     config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
 
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
-    let conversation_manager = ConversationManager::new(auth_manager, SessionSource::Exec);
-    let NewConversation {
-        conversation: codex,
-        ..
-    } = conversation_manager.new_conversation(config).await.unwrap();
+    let thread_manager = ThreadManager::new(
+        home.path().to_path_buf(),
+        auth_manager.clone(),
+        SessionSource::Exec,
+    );
+    let NewThread { thread: codex, .. } = thread_manager.start_thread(config).await.unwrap();
 
     // 1. Submit "msg1"
     codex
@@ -79,10 +80,11 @@ async fn compact_range_middle() {
             items: vec![UserInput::Text {
                 text: "msg1".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     // 2. Submit "msg2"
     codex
@@ -90,10 +92,11 @@ async fn compact_range_middle() {
             items: vec![UserInput::Text {
                 text: "msg2".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     // 3. Submit "msg3"
     codex
@@ -101,10 +104,11 @@ async fn compact_range_middle() {
             items: vec![UserInput::Text {
                 text: "msg3".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     // Current History (indices are 1-based for users, but 0-based internal):
     // 0: msg1
@@ -137,7 +141,7 @@ async fn compact_range_middle() {
         })
         .await
         .unwrap();
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
+    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
     // Verify requests
     let requests = server.received_requests().await.unwrap();

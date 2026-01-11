@@ -54,6 +54,7 @@ async fn interrupt_reasoning_records_history() {
             items: vec![UserInput::Text {
                 text: "Think about it".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -80,7 +81,7 @@ async fn interrupt_reasoning_records_history() {
         {
             found_reasoning = true;
         }
-        matches!(ev, EventMsg::TurnAborted(_) | EventMsg::TaskComplete(_))
+        matches!(ev, EventMsg::TurnAborted(_) | EventMsg::TurnComplete(_))
     })
     .await;
 

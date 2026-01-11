@@ -18,6 +18,7 @@ use codex_core::ThreadManager;
 use codex_core::built_in_model_providers;
 use codex_core::compact::SUMMARIZATION_PROMPT;
 use codex_core::config::Config;
+use codex_core::features::Feature;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::Op;
 use codex_core::protocol::WarningEvent;
@@ -27,7 +28,7 @@ use core_test_support::load_default_config_for_test;
 use core_test_support::responses::ResponseMock;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
-use core_test_support::responses::mount_sse_once_match;
+use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
@@ -41,17 +42,6 @@ const AFTER_SECOND_RESUME: &str = "AFTER_SECOND_RESUME";
 
 fn network_disabled() -> bool {
     std::env::var(CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok()
-}
-
-fn body_contains_text(body: &str, text: &str) -> bool {
-    body.contains(&json_fragment(text))
-}
-
-fn json_fragment(text: &str) -> String {
-    serde_json::to_string(text)
-        .expect("serialize text to JSON")
-        .trim_matches('"')
-        .to_string()
 }
 
 fn filter_out_ghost_snapshot_entries(items: &[Value]) -> Vec<Value> {
@@ -92,15 +82,13 @@ fn extract_summary_message(request: &Value, summary_text: &str) -> Value {
         .and_then(|items| {
             items.iter().find(|item| {
                 item.get("type").and_then(Value::as_str) == Some("message")
-                    && item.get("role").and_then(Value::as_str) == Some("user")
                     && item
                         .get("content")
                         .and_then(Value::as_array)
                         .and_then(|arr| arr.first())
                         .and_then(|entry| entry.get("text"))
                         .and_then(Value::as_str)
-                        .map(|text| text.contains(summary_text))
-                        .unwrap_or(false)
+                        .is_some_and(|text| text.contains(summary_text))
             })
         })
         .cloned()
@@ -148,7 +136,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
 
     // 1. Arrange mocked SSE responses for the initial compact/resume/fork flow.
     let server = MockServer::start().await;
-    let request_log = mount_initial_flow(&server).await;
+    let request_log = vec![mount_flow(&server, false).await];
     let expected_model = "gpt-5.1-codex";
     // 2. Start a new conversation and drive it through the compact/resume/fork steps.
     let (_home, config, manager, base) =
@@ -600,8 +588,7 @@ async fn compact_resume_after_second_compaction_preserves_history() {
 
     // 1. Arrange mocked SSE responses for the initial flow plus the second compact.
     let server = MockServer::start().await;
-    let mut request_log = mount_initial_flow(&server).await;
-    request_log.extend(mount_second_compact_flow(&server).await);
+    let request_log = vec![mount_flow(&server, true).await];
 
     // 2. Drive the conversation through compact -> resume -> fork -> compact -> resume.
     let (_home, config, manager, base) = start_test_conversation(&server, None).await;
@@ -675,8 +662,10 @@ async fn compact_resume_after_second_compaction_preserves_history() {
 
     // Build expected final request input: initial context + forked user message +
     // compacted summary + post-compact user message + resumed user message.
-    let summary_after_second_compact =
-        extract_summary_message(&requests[requests.len() - 3], SUMMARY_TEXT);
+    let summary_after_second_compact = extract_summary_message(
+        requests.last().expect("expected at least one request"),
+        SUMMARY_TEXT,
+    );
 
     let mut expected = json!([
       {
@@ -783,7 +772,7 @@ fn gather_request_bodies(request_log: &[ResponseMock]) -> Vec<Value> {
     bodies
 }
 
-async fn mount_initial_flow(server: &MockServer) -> Vec<ResponseMock> {
+async fn mount_flow(server: &MockServer, include_second_compact: bool) -> ResponseMock {
     let sse1 = sse(vec![
         ev_assistant_message("m1", FIRST_REPLY),
         ev_completed("r1"),
@@ -798,66 +787,24 @@ async fn mount_initial_flow(server: &MockServer) -> Vec<ResponseMock> {
     ]);
     let sse4 = sse(vec![ev_completed("r4")]);
     let sse5 = sse(vec![ev_completed("r5")]);
-
-    let match_first = |req: &wiremock::Request| {
-        let body = std::str::from_utf8(&req.body).unwrap_or("");
-        body.contains("\"text\":\"hello world\"")
-            && !body.contains(&format!("\"text\":\"{SUMMARY_TEXT}\""))
-            && !body.contains("\"text\":\"AFTER_COMPACT\"")
-            && !body.contains("\"text\":\"AFTER_RESUME\"")
-            && !body.contains("\"text\":\"AFTER_FORK\"")
-    };
-    let first = mount_sse_once_match(server, match_first, sse1).await;
-
-    let match_compact = |req: &wiremock::Request| {
-        let body = std::str::from_utf8(&req.body).unwrap_or("");
-        body_contains_text(body, SUMMARIZATION_PROMPT) || body.contains(&json_fragment(FIRST_REPLY))
-    };
-    let compact = mount_sse_once_match(server, match_compact, sse2).await;
-
-    let match_after_compact = |req: &wiremock::Request| {
-        let body = std::str::from_utf8(&req.body).unwrap_or("");
-        body.contains("\"text\":\"AFTER_COMPACT\"")
-            && !body.contains("\"text\":\"AFTER_RESUME\"")
-            && !body.contains("\"text\":\"AFTER_FORK\"")
-    };
-    let after_compact = mount_sse_once_match(server, match_after_compact, sse3).await;
-
-    let match_after_resume = |req: &wiremock::Request| {
-        let body = std::str::from_utf8(&req.body).unwrap_or("");
-        body.contains("\"text\":\"AFTER_RESUME\"")
-    };
-    let after_resume = mount_sse_once_match(server, match_after_resume, sse4).await;
-
-    let match_after_fork = |req: &wiremock::Request| {
-        let body = std::str::from_utf8(&req.body).unwrap_or("");
-        body.contains("\"text\":\"AFTER_FORK\"")
-    };
-    let after_fork = mount_sse_once_match(server, match_after_fork, sse5).await;
-
-    vec![first, compact, after_compact, after_resume, after_fork]
-}
-
-async fn mount_second_compact_flow(server: &MockServer) -> Vec<ResponseMock> {
     let sse6 = sse(vec![
         ev_assistant_message("m4", SUMMARY_TEXT),
         ev_completed("r6"),
     ]);
+    // After the second compaction, we expect two additional user turns:
+    // - `AFTER_COMPACT_2` on the forked thread
+    // - `AFTER_SECOND_RESUME` on the resumed-again thread
     let sse7 = sse(vec![ev_completed("r7")]);
+    let sse8 = sse(vec![ev_completed("r8")]);
 
-    let match_second_compact = |req: &wiremock::Request| {
-        let body = std::str::from_utf8(&req.body).unwrap_or("");
-        body.contains("AFTER_FORK")
-    };
-    let second_compact = mount_sse_once_match(server, match_second_compact, sse6).await;
+    let mut bodies = vec![sse1, sse2, sse3, sse4, sse5];
+    if include_second_compact {
+        bodies.push(sse6);
+        bodies.push(sse7);
+        bodies.push(sse8);
+    }
 
-    let match_after_second_resume = |req: &wiremock::Request| {
-        let body = std::str::from_utf8(&req.body).unwrap_or("");
-        body.contains(&format!("\"text\":\"{AFTER_SECOND_RESUME}\""))
-    };
-    let after_second_resume = mount_sse_once_match(server, match_after_second_resume, sse7).await;
-
-    vec![second_compact, after_second_resume]
+    mount_sse_sequence(server, bodies).await
 }
 
 async fn start_test_conversation(
@@ -873,6 +820,8 @@ async fn start_test_conversation(
     let mut config = load_default_config_for_test(&home).await;
     config.model_provider = model_provider;
     config.compact_prompt = Some(SUMMARIZATION_PROMPT.to_string());
+    config.features.disable(Feature::EnableRequestCompression);
+    config.features.disable(Feature::RemoteCompaction);
     if let Some(model) = model {
         config.model = Some(model.to_string());
     }

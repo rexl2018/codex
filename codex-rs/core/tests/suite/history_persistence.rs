@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
-use codex_core::CodexConversation;
-use codex_core::ConversationManager;
+use codex_core::CodexThread;
 use codex_core::ModelProviderInfo;
+use codex_core::ThreadManager;
 use codex_core::built_in_model_providers;
 use codex_core::protocol::EventMsg;
 use codex_core::protocol::HistoryAction;
@@ -47,37 +47,45 @@ async fn deleting_history_persists_across_resume() {
     config.model_provider = model_provider;
 
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
-    let manager = ConversationManager::new(auth_manager, SessionSource::Exec);
-    let conversation = manager
-        .new_conversation(config.clone())
+    let manager = ThreadManager::new(
+        home.path().to_path_buf(),
+        auth_manager.clone(),
+        SessionSource::Exec,
+    );
+    let thread = manager
+        .start_thread(config.clone())
         .await
-        .expect("spawn conversation")
-        .conversation;
-    let rollout_path = conversation.rollout_path();
+        .expect("spawn thread")
+        .thread;
+    let rollout_path = thread.rollout_path();
 
-    submit_user_text(&conversation, "first turn").await;
-    submit_user_text(&conversation, "second turn").await;
+    submit_user_text(&thread, "first turn").await;
+    submit_user_text(&thread, "second turn").await;
 
-    let history_view = fetch_history_view(&conversation).await;
+    let history_view = fetch_history_view(&thread).await;
     let assistant_two_index = find_index(&history_view, "assistant-two");
 
-    delete_history_entry(&conversation, assistant_two_index).await;
+    delete_history_entry(&thread, assistant_two_index).await;
 
-    let post_delete_view = fetch_history_view(&conversation).await;
+    let post_delete_view = fetch_history_view(&thread).await;
     assert!(
         !post_delete_view.contains("assistant-two"),
         "expected assistant-two to be removed before shutdown\n{post_delete_view}"
     );
 
-    shutdown_conversation(&conversation).await;
+    shutdown_thread(&thread).await;
 
     let resume_auth = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
-    let resumed_manager = ConversationManager::new(resume_auth.clone(), SessionSource::Exec);
+    let resumed_manager = ThreadManager::new(
+        home.path().to_path_buf(),
+        resume_auth.clone(),
+        SessionSource::Exec,
+    );
     let resumed = resumed_manager
-        .resume_conversation_from_rollout(config.clone(), rollout_path, resume_auth)
+        .resume_thread_from_rollout(config.clone(), rollout_path, resume_auth)
         .await
-        .expect("resume conversation")
-        .conversation;
+        .expect("resume thread")
+        .thread;
 
     let resumed_view = fetch_history_view(&resumed).await;
     assert!(
@@ -89,7 +97,7 @@ async fn deleting_history_persists_across_resume() {
         "deleted assistant response should not reappear after resume\n{resumed_view}"
     );
 
-    shutdown_conversation(&resumed).await;
+    shutdown_thread(&resumed).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -116,23 +124,27 @@ async fn undo_history_range_persists_across_resume() {
     config.model_provider = model_provider;
 
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
-    let manager = ConversationManager::new(auth_manager, SessionSource::Exec);
-    let conversation = manager
-        .new_conversation(config.clone())
+    let manager = ThreadManager::new(
+        home.path().to_path_buf(),
+        auth_manager.clone(),
+        SessionSource::Exec,
+    );
+    let thread = manager
+        .start_thread(config.clone())
         .await
-        .expect("spawn conversation")
-        .conversation;
-    let rollout_path = conversation.rollout_path();
+        .expect("spawn thread")
+        .thread;
+    let rollout_path = thread.rollout_path();
 
-    submit_user_text(&conversation, "first turn").await;
-    submit_user_text(&conversation, "second turn").await;
+    submit_user_text(&thread, "first turn").await;
+    submit_user_text(&thread, "second turn").await;
 
-    let history_view = fetch_history_view(&conversation).await;
+    let history_view = fetch_history_view(&thread).await;
     let assistant_one_index = find_index(&history_view, "assistant-one");
 
-    undo_history_from(&conversation, Some(assistant_one_index)).await;
+    undo_history_from(&thread, Some(assistant_one_index)).await;
 
-    let post_undo_view = fetch_history_view(&conversation).await;
+    let post_undo_view = fetch_history_view(&thread).await;
     assert!(
         !post_undo_view.contains("assistant-one"),
         "expected undo to remove assistant-one\n{post_undo_view}"
@@ -142,15 +154,19 @@ async fn undo_history_range_persists_across_resume() {
         "expected undo to remove assistant-two\n{post_undo_view}"
     );
 
-    shutdown_conversation(&conversation).await;
+    shutdown_thread(&thread).await;
 
     let resume_auth = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy"));
-    let resumed_manager = ConversationManager::new(resume_auth.clone(), SessionSource::Exec);
+    let resumed_manager = ThreadManager::new(
+        home.path().to_path_buf(),
+        resume_auth.clone(),
+        SessionSource::Exec,
+    );
     let resumed = resumed_manager
-        .resume_conversation_from_rollout(config.clone(), rollout_path, resume_auth)
+        .resume_thread_from_rollout(config.clone(), rollout_path, resume_auth)
         .await
-        .expect("resume conversation")
-        .conversation;
+        .expect("resume thread")
+        .thread;
 
     let resumed_view = fetch_history_view(&resumed).await;
     assert!(
@@ -162,30 +178,30 @@ async fn undo_history_range_persists_across_resume() {
         "assistant-two should remain removed after resume\n{resumed_view}"
     );
 
-    shutdown_conversation(&resumed).await;
+    shutdown_thread(&resumed).await;
 }
 
-async fn submit_user_text(conversation: &Arc<CodexConversation>, text: &str) {
-    conversation
+async fn submit_user_text(thread: &Arc<CodexThread>, text: &str) {
+    thread
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: text.to_string(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .expect("submit user input");
-    wait_for_event(conversation, |ev| matches!(ev, EventMsg::TaskComplete(_))).await;
+    wait_for_event(thread, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 }
 
-async fn fetch_history_view(conversation: &Arc<CodexConversation>) -> String {
-    conversation
+async fn fetch_history_view(thread: &Arc<CodexThread>) -> String {
+    thread
         .submit(Op::ManageHistory {
             action: HistoryAction::ViewAll,
         })
         .await
         .expect("request view");
-    let view_event =
-        wait_for_event(conversation, |ev| matches!(ev, EventMsg::HistoryView(_))).await;
+    let view_event = wait_for_event(thread, |ev| matches!(ev, EventMsg::HistoryView(_))).await;
     let EventMsg::HistoryView(view) = view_event else {
         unreachable!("predicate guaranteed a HistoryView event");
     };
@@ -205,30 +221,27 @@ fn find_index(view: &str, needle: &str) -> usize {
     panic!("needle {needle} not found in history view:\n{view}");
 }
 
-async fn delete_history_entry(conversation: &Arc<CodexConversation>, index: usize) {
-    conversation
+async fn delete_history_entry(thread: &Arc<CodexThread>, index: usize) {
+    thread
         .submit(Op::ManageHistory {
             action: HistoryAction::Delete { index },
         })
         .await
         .expect("delete history entry");
-    wait_for_event(conversation, |ev| matches!(ev, EventMsg::HistoryView(_))).await;
+    wait_for_event(thread, |ev| matches!(ev, EventMsg::HistoryView(_))).await;
 }
 
-async fn undo_history_from(conversation: &Arc<CodexConversation>, start: Option<usize>) {
-    conversation
+async fn undo_history_from(thread: &Arc<CodexThread>, start: Option<usize>) {
+    thread
         .submit(Op::ManageHistory {
             action: HistoryAction::Undo { start },
         })
         .await
         .expect("undo history range");
-    wait_for_event(conversation, |ev| matches!(ev, EventMsg::HistoryView(_))).await;
+    wait_for_event(thread, |ev| matches!(ev, EventMsg::HistoryView(_))).await;
 }
 
-async fn shutdown_conversation(conversation: &Arc<CodexConversation>) {
-    conversation
-        .submit(Op::Shutdown)
-        .await
-        .expect("shutdown conversation");
-    wait_for_event(conversation, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
+async fn shutdown_thread(thread: &Arc<CodexThread>) {
+    thread.submit(Op::Shutdown).await.expect("shutdown thread");
+    wait_for_event(thread, |ev| matches!(ev, EventMsg::ShutdownComplete)).await;
 }
