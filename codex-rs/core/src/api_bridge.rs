@@ -36,6 +36,7 @@ pub(crate) fn map_api_error(err: ApiError) -> CodexErr {
                 body,
             } => {
                 let body_text = body.unwrap_or_default();
+                let request_id = extract_request_id(headers.as_ref());
 
                 if status == http::StatusCode::BAD_REQUEST {
                     if body_text
@@ -65,16 +66,23 @@ pub(crate) fn map_api_error(err: ApiError) -> CodexErr {
                         }
                     }
 
-                    CodexErr::RetryLimit(RetryLimitReachedError {
-                        status,
-                        request_id: extract_request_id(headers.as_ref()),
-                    })
+                    let mut message = format!("Server responded with {status}");
+                    if !body_text.is_empty() {
+                        message.push_str(&format!(", body: {body_text}"));
+                    }
+                    if let Some(id) = &request_id {
+                        message.push_str(&format!(", request id: {id}"));
+                    }
+
+                    // Map generic 429s to a retryable stream error so callers can honor
+                    // stream_max_retries/backoff instead of failing immediately.
+                    CodexErr::Stream(message, None)
                 } else {
                     CodexErr::UnexpectedStatus(UnexpectedResponseError {
                         status,
                         body: body_text,
                         url,
-                        request_id: extract_request_id(headers.as_ref()),
+                        request_id,
                     })
                 }
             }
@@ -101,6 +109,46 @@ fn extract_request_id(headers: Option<&HeaderMap>) -> Option<String> {
                     .map(str::to_string)
             })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::HeaderMap;
+    use http::HeaderValue;
+    use http::StatusCode;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn generic_429_is_mapped_to_stream_error() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-request-id", HeaderValue::from_str("req-123").unwrap());
+
+        let err = ApiError::Transport(TransportError::Http {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            url: None,
+            headers: Some(headers),
+            body: Some("try again later".to_string()),
+        });
+
+        let codex_err = map_api_error(err);
+
+        match codex_err {
+            CodexErr::Stream(message, delay) => {
+                assert_eq!(delay, None);
+                assert!(
+                    message.contains("429 Too Many Requests"),
+                    "unexpected message: {message}"
+                );
+                assert!(
+                    message.contains("try again later"),
+                    "unexpected message: {message}"
+                );
+                assert!(message.contains("req-123"), "unexpected message: {message}");
+            }
+            other => panic!("Expected stream error, got {other:?}"),
+        }
+    }
 }
 
 pub(crate) fn auth_provider_from_auth(
