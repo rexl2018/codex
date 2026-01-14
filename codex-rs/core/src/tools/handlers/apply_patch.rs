@@ -195,15 +195,13 @@ pub(crate) async fn intercept_apply_patch(
 ) -> Result<Option<ToolOutput>, FunctionCallError> {
     match codex_apply_patch::maybe_parse_apply_patch_verified(command, cwd) {
         codex_apply_patch::MaybeApplyPatchVerified::Body(changes) => {
-            session
-                .record_model_warning(
-                    format!("apply_patch was requested via {tool_name}. Use the apply_patch tool instead of exec_command."),
-                    turn,
-                )
-                .await;
+            let warning = format!(
+                "Warning: apply_patch was requested via {tool_name}. Use the apply_patch tool instead of exec_command.\n\n"
+            );
             match apply_patch::apply_patch(turn, changes).await {
                 InternalApplyPatchInvocation::Output(item) => {
-                    let content = item?;
+                    let mut content = item?;
+                    content.insert_str(0, &warning);
                     Ok(Some(ToolOutput::Function {
                         content,
                         content_items: None,
@@ -240,7 +238,8 @@ pub(crate) async fn intercept_apply_patch(
                         .await;
                     let event_ctx =
                         ToolEventCtx::new(session, turn, call_id, tracker.as_ref().copied());
-                    let content = emitter.finish(event_ctx, out).await?;
+                    let mut content = emitter.finish(event_ctx, out).await?;
+                    content.insert_str(0, &warning);
                     Ok(Some(ToolOutput::Function {
                         content,
                         content_items: None,

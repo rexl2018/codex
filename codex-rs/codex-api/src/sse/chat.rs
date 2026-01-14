@@ -52,14 +52,13 @@ fn extract_thought_signature(tool_call: &serde_json::Value) -> Option<String> {
         return Some(sig.to_string());
     }
 
-    if let Some(func) = tool_call.get("function") {
-        if let Some(sig) = func
+    if let Some(func) = tool_call.get("function")
+        && let Some(sig) = func
             .get("thought_signature")
             .or_else(|| func.get("signature"))
             .and_then(|sig| sig.as_str())
-        {
-            return Some(sig.to_string());
-        }
+    {
+        return Some(sig.to_string());
     }
 
     None

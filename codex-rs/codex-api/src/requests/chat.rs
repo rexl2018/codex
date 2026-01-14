@@ -506,7 +506,7 @@ fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value, reasoning
     // (with `tool_calls: [...]`) followed by tool role responses.
     if let Some(Value::Object(obj)) = messages.last_mut()
         && obj.get("role").and_then(Value::as_str) == Some("assistant")
-        && obj.get("content").is_some_and(Value::is_null)
+        && obj.get("content").is_none_or(serde_json::Value::is_null)
         && let Some(tool_calls) = obj.get_mut("tool_calls").and_then(Value::as_array_mut)
     {
         tool_calls.push(tool_call);
@@ -528,7 +528,6 @@ fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value, reasoning
 
     let mut msg = json!({
         "role": "assistant",
-        "content": null,
         "tool_calls": [tool_call],
     });
     if let Some(reasoning) = reasoning
@@ -552,20 +551,23 @@ mod tests {
     use std::time::Duration;
 
     fn provider() -> Provider {
+        let retry = RetryConfig {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(10),
+            retry_429: false,
+            retry_5xx: true,
+            retry_transport: true,
+        };
         Provider {
             name: "openai".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
             query_params: None,
             wire: WireApi::Chat,
             headers: HeaderMap::new(),
-            retry: RetryConfig {
-                max_attempts: 1,
-                base_delay: Duration::from_millis(10),
-                retry_429: false,
-                retry_5xx: true,
-                retry_transport: true,
-            },
+            retry: retry.clone(),
+            stream_retry: retry,
             stream_idle_timeout: Duration::from_secs(1),
+            base_url_suffix: None,
         }
     }
 
