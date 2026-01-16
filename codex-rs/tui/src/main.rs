@@ -26,6 +26,9 @@ fn main() -> anyhow::Result<()> {
         if !token_usage.is_zero() {
             println!("{}", codex_core::protocol::FinalOutput::from(token_usage),);
         }
+        if matches!(exit_info.exit_reason, codex_tui::ExitReason::Fatal(_)) {
+            std::process::exit(1);
+        }
         Ok(())
     })
 }

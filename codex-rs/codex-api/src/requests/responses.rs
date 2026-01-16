@@ -243,6 +243,7 @@ struct MergedResponsesApiRequest<'a> {
 fn coalesce_input(items: &[ResponseItem], store: bool, is_azure: bool) -> Vec<Value> {
     let mut merged: Vec<Value> = Vec::new();
     let mut current_merge: Option<serde_json::Map<String, Value>> = None;
+    let merge_assistant_items = !(store && is_azure);
 
     for item in items {
         let mut item_value = match serde_json::to_value(item) {
@@ -259,7 +260,7 @@ fn coalesce_input(items: &[ResponseItem], store: bool, is_azure: bool) -> Vec<Va
             obj.insert("id".to_string(), Value::String(id.to_string()));
         }
 
-        if is_mergeable_assistant_item(item) {
+        if merge_assistant_items && is_mergeable_assistant_item(item) {
             if let Some(mut existing) = current_merge.take() {
                 merge_assistant_objects(&mut existing, item_value);
                 current_merge = Some(existing);
@@ -277,8 +278,10 @@ fn coalesce_input(items: &[ResponseItem], store: bool, is_azure: bool) -> Vec<Va
         }
     }
 
-    if let Some(existing) = current_merge {
-        merged.push(Value::Object(existing));
+    if merge_assistant_items {
+        if let Some(existing) = current_merge {
+            merged.push(Value::Object(existing));
+        }
     }
 
     merged

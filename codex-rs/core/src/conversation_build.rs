@@ -2,13 +2,14 @@ use codex_api::common::Caching;
 use codex_api::common::CachingType;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
 /// Determines how Codex should build the conversation payload that gets sent to
 /// a model provider. Different providers have subtly different requirements,
 /// so we centralize that logic here instead of scattering feature flags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ConversationBuildStrategy {
     /// Sends the full conversation history along with the standard

@@ -447,6 +447,26 @@ fn derive_forbidden_reason(command_args: &[String], evaluation: &Evaluation) -> 
 
 async fn collect_policy_files(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>, ExecPolicyError> {
     let dir = dir.as_ref();
+    match fs::metadata(dir).await {
+        Ok(metadata) => {
+            if !metadata.is_dir() {
+                return Err(ExecPolicyError::ReadDir {
+                    dir: dir.to_path_buf(),
+                    source: std::io::Error::new(
+                        ErrorKind::NotADirectory,
+                        "rules path is not a directory",
+                    ),
+                });
+            }
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => {
+            return Err(ExecPolicyError::ReadDir {
+                dir: dir.to_path_buf(),
+                source,
+            });
+        }
+    }
     let mut read_dir = match fs::read_dir(dir).await {
         Ok(read_dir) => read_dir,
         Err(err) if err.kind() == ErrorKind::NotFound => return Ok(Vec::new()),

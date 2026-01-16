@@ -696,6 +696,8 @@ async fn test_tail_handles_short_sessions() -> Result<()> {
         item: RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
             message: "hi".into(),
             images: None,
+            local_images: Vec::new(),
+            text_elements: Vec::new(),
         })),
     };
     writeln!(file, "{}", serde_json::to_string(&user_event_line)?)?;
@@ -789,6 +791,8 @@ async fn test_tail_skips_trailing_non_responses() -> Result<()> {
         item: RolloutItem::EventMsg(EventMsg::UserMessage(UserMessageEvent {
             message: "hello".into(),
             images: None,
+            local_images: Vec::new(),
+            text_elements: Vec::new(),
         })),
     };
     writeln!(file, "{}", serde_json::to_string(&user_event_line)?)?;

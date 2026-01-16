@@ -136,7 +136,10 @@ struct ExecOutputMetadataJson {
 }
 
 fn parse_structured_shell_output(raw: &str) -> Option<String> {
-    let parsed: ExecOutputJson = serde_json::from_str(raw).ok()?;
+    let parsed: ExecOutputJson = serde_json::from_str(raw).ok().or_else(|| {
+        let json_start = raw.find('{')?;
+        serde_json::from_str(raw.get(json_start..)?).ok()
+    })?;
     Some(build_structured_output(&parsed))
 }
 

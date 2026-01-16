@@ -79,6 +79,7 @@ async fn compact_range_middle() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "msg1".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -91,6 +92,7 @@ async fn compact_range_middle() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "msg2".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -103,6 +105,7 @@ async fn compact_range_middle() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "msg3".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -133,11 +136,27 @@ async fn compact_range_middle() {
     // 5. msg3
     // 6. reply3
 
-    // So start=5, end=6.
+    // Resolve the actual indices from the history view so we align with any
+    // session prefix items (e.g., environment context).
+    codex
+        .submit(Op::ManageHistory {
+            action: HistoryAction::ViewAll,
+        })
+        .await
+        .unwrap();
+    let view_event = wait_for_event(&codex, |ev| matches!(ev, EventMsg::HistoryView(_))).await;
+    let EventMsg::HistoryView(view) = view_event else {
+        panic!("expected history view");
+    };
+    let msg2_index = find_index(&view.content, "msg2");
+    let reply2_index = find_index(&view.content, "reply2");
 
     codex
         .submit(Op::ManageHistory {
-            action: HistoryAction::Compact { start: 5, end: 6 },
+            action: HistoryAction::Compact {
+                start: msg2_index,
+                end: reply2_index,
+            },
         })
         .await
         .unwrap();
@@ -277,4 +296,17 @@ async fn compact_range_middle() {
     assert!(view.content.contains("Another language model"));
     assert!(view.content.contains("msg2")); // User message is preserved
     assert!(!view.content.contains("reply2")); // Assistant reply is summarized
+}
+
+fn find_index(view: &str, needle: &str) -> usize {
+    for line in view.lines() {
+        if let Some((idx, rest)) = line.split_once(". ")
+            && rest.contains(needle)
+        {
+            return idx
+                .parse()
+                .unwrap_or_else(|e| panic!("invalid index in history view: {line} ({e})"));
+        }
+    }
+    panic!("history view did not contain {needle}");
 }

@@ -53,6 +53,7 @@ async fn interrupt_reasoning_records_history() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "Think about it".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })

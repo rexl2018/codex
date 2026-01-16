@@ -292,8 +292,24 @@ async fn run_compact_task_inner(
         }
 
         let turn_input_len = turn_input.len();
+        let model_supports_parallel = turn_context
+            .client
+            .get_model_info()
+            .supports_parallel_tool_calls;
+        let parallel_tool_calls =
+            model_supports_parallel && sess.enabled(Feature::ParallelToolCalls);
+        let mut base_instructions = turn_context.base_instructions.clone();
+        if parallel_tool_calls {
+            static INSTRUCTIONS: &str = include_str!("../templates/parallel/instructions.md");
+            let family = turn_context.client.get_model_info();
+            let mut new_instructions = base_instructions.unwrap_or(family.base_instructions);
+            new_instructions.push_str(INSTRUCTIONS);
+            base_instructions = Some(new_instructions);
+        }
         let prompt = Prompt {
             input: turn_input,
+            parallel_tool_calls,
+            base_instructions_override: base_instructions,
             last_response_id: None,
             ..Default::default()
         };

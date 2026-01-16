@@ -446,7 +446,7 @@ pub async fn run_main(cli: Cli, codex_linux_sandbox_exe: Option<PathBuf>) -> any
             // Check for shell command: if strict prompt starts with '!', treats as shell cmd.
             // We search for the text item which contains the prompt.
             let shell_command = items.iter().find_map(|item| {
-                if let UserInput::Text { text } = item {
+                if let UserInput::Text { text, .. } = item {
                     if let Some(stripped) = text.trim().strip_prefix('!') {
                         return Some(stripped.trim().to_string());
                     }

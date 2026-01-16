@@ -1813,6 +1813,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            web_search_mode: None,
         });
 
         let (tools, _) = build_specs(&config, None).build();
@@ -1841,6 +1842,7 @@ mod tests {
         let config = ToolsConfig::new(&ToolsConfigParams {
             model_info: &model_info,
             features: &features,
+            web_search_mode: None,
         });
 
         let (tools, _) = build_specs(&config, None).build();

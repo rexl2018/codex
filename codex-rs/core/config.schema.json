@@ -41,6 +41,14 @@
       "description": "Compact prompt used for history compaction.",
       "type": "string"
     },
+    "conversation_build_strategy": {
+      "description": "Strategy for constructing the conversation payload sent to the provider.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/ConversationBuildStrategy"
+        }
+      ]
+    },
     "developer_instructions": {
       "description": "Developer instructions inserted as a `developer` role message.",
       "default": null,
@@ -75,6 +83,9 @@
         "apply_patch_freeform": {
           "type": "boolean"
         },
+        "child_agents_md": {
+          "type": "boolean"
+        },
         "collab": {
           "type": "boolean"
         },
@@ -99,10 +110,13 @@
         "experimental_windows_sandbox": {
           "type": "boolean"
         },
-        "child_agents_md": {
+        "freeform_as_function": {
           "type": "boolean"
         },
         "include_apply_patch_tool": {
+          "type": "boolean"
+        },
+        "parallel_tool_calls": {
           "type": "boolean"
         },
         "powershell_utf8": {
@@ -118,6 +132,9 @@
           "type": "boolean"
         },
         "shell_tool": {
+          "type": "boolean"
+        },
+        "skills": {
           "type": "boolean"
         },
         "steer": {
@@ -237,6 +254,11 @@
       "type": "integer",
       "format": "int64"
     },
+    "model_max_output_tokens": {
+      "description": "Optional max output tokens limit for Responses API.",
+      "type": "integer",
+      "format": "int64"
+    },
     "model_provider": {
       "description": "Provider to use from the model_providers map.",
       "type": "string"
@@ -336,6 +358,10 @@
     },
     "review_model": {
       "description": "Review model override used by the `/review` feature.",
+      "type": "string"
+    },
+    "review_profile": {
+      "description": "Profile name to use for review sessions.\n\nWhen set, review sessions use the configuration resolved from this profile (model/provider/reasoning/token limits/etc) instead of the primary session configuration.",
       "type": "string"
     },
     "sandbox_mode": {
@@ -523,6 +549,9 @@
         "chatgpt_base_url": {
           "type": "string"
         },
+        "conversation_build_strategy": {
+          "$ref": "#/definitions/ConversationBuildStrategy"
+        },
         "experimental_compact_prompt_file": {
           "$ref": "#/definitions/AbsolutePathBuf"
         },
@@ -541,6 +570,9 @@
           "type": "object",
           "properties": {
             "apply_patch_freeform": {
+              "type": "boolean"
+            },
+            "child_agents_md": {
               "type": "boolean"
             },
             "collab": {
@@ -567,10 +599,13 @@
             "experimental_windows_sandbox": {
               "type": "boolean"
             },
-            "child_agents_md": {
+            "freeform_as_function": {
               "type": "boolean"
             },
             "include_apply_patch_tool": {
+              "type": "boolean"
+            },
+            "parallel_tool_calls": {
               "type": "boolean"
             },
             "powershell_utf8": {
@@ -586,6 +621,9 @@
               "type": "boolean"
             },
             "shell_tool": {
+              "type": "boolean"
+            },
+            "skills": {
               "type": "boolean"
             },
             "steer": {
@@ -618,6 +656,10 @@
         "model": {
           "type": "string"
         },
+        "model_max_output_tokens": {
+          "type": "integer",
+          "format": "int64"
+        },
         "model_provider": {
           "description": "The key in the `model_providers` map identifying the [`ModelProviderInfo`] to use.",
           "type": "string"
@@ -648,6 +690,25 @@
         }
       },
       "additionalProperties": false
+    },
+    "ConversationBuildStrategy": {
+      "description": "Determines how Codex should build the conversation payload that gets sent to a model provider. Different providers have subtly different requirements, so we centralize that logic here instead of scattering feature flags.",
+      "oneOf": [
+        {
+          "description": "Sends the full conversation history along with the standard `instructions` field that OpenAI's Responses API expects.",
+          "type": "string",
+          "enum": [
+            "full_history"
+          ]
+        },
+        {
+          "description": "Uses `previous_response_id` to anchor the provider's context cache and only sends the delta since that response. Instructions are moved into the first system message because some providers reject the dedicated `instructions` field when caching is enabled.",
+          "type": "string",
+          "enum": [
+            "previous_response_id"
+          ]
+        }
+      ]
     },
     "FeedbackConfigToml": {
       "type": "object",
@@ -737,6 +798,10 @@
       "properties": {
         "base_url": {
           "description": "Base URL for the provider's OpenAI-compatible API.",
+          "type": "string"
+        },
+        "base_url_suffix": {
+          "description": "Optional suffix to append to the base URL (e.g. for custom paths vs default \"/chat/completions\").",
           "type": "string"
         },
         "env_http_headers": {

@@ -2050,7 +2050,8 @@ async fn request_includes_previous_response_id_when_configured() {
         content: vec![ContentItem::InputText { text: "new".into() }],
     });
 
-    let mut stream = client
+    let mut session = client.new_session();
+    let mut stream = session
         .stream(&prompt)
         .await
         .expect("responses stream to start");
@@ -2143,6 +2144,7 @@ async fn previous_response_id_is_sent_in_subsequent_turn() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "turn 1".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
@@ -2156,6 +2158,7 @@ async fn previous_response_id_is_sent_in_subsequent_turn() {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: "turn 2".into(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })

@@ -147,6 +147,7 @@ fn websocket_provider(server: &WebSocketTestServer) -> ModelProviderInfo {
     ModelProviderInfo {
         name: "mock-ws".into(),
         base_url: Some(format!("{}/v1", server.uri())),
+        base_url_suffix: None,
         env_key: None,
         env_key_instructions: None,
         experimental_bearer_token: None,

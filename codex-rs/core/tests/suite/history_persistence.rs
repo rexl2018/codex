@@ -186,6 +186,7 @@ async fn submit_user_text(thread: &Arc<CodexThread>, text: &str) {
         .submit(Op::UserInput {
             items: vec![UserInput::Text {
                 text: text.to_string(),
+                text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
         })
