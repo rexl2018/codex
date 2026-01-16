@@ -386,10 +386,6 @@ mod tests {
         assert_eq!(ids, vec![Some("m1".to_string()), None]);
 
         assert_eq!(
-            request.headers.get("conversation_id"),
-            Some(&HeaderValue::from_static("conv-1"))
-        );
-        assert_eq!(
             request.headers.get("session_id"),
             Some(&HeaderValue::from_static("conv-1"))
         );

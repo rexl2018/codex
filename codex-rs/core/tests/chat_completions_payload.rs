@@ -89,7 +89,7 @@ async fn run_request(input: Vec<ResponseItem>) -> Value {
         SessionSource::Exec,
     );
 
-    let client = ModelClient::new(
+    let mut client_session = ModelClient::new(
         Arc::clone(&config),
         None,
         model_info,
@@ -99,12 +99,13 @@ async fn run_request(input: Vec<ResponseItem>) -> Value {
         summary,
         conversation_id,
         SessionSource::Exec,
-    );
+    )
+    .new_session();
 
     let mut prompt = Prompt::default();
     prompt.input = input;
 
-    let mut stream = match client.stream(&prompt).await {
+    let mut stream = match client_session.stream(&prompt).await {
         Ok(s) => s,
         Err(e) => panic!("stream chat failed: {e}"),
     };

@@ -204,11 +204,12 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let user_instructions = requests[0]["input"][0]["content"][0]["text"]
+    let permissions_message = requests[0]["input"][0].clone();
+    let user_instructions = requests[0]["input"][1]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let environment_context = requests[0]["input"][1]["content"][0]["text"]
+    let environment_context = requests[0]["input"][2]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
@@ -229,6 +230,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       "model": expected_model,
       "instructions": prompt,
       "input": [
+        permissions_message,
         {
           "type": "message",
           "role": "user",
@@ -278,6 +280,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       "model": expected_model,
       "instructions": prompt,
       "input": [
+        permissions_message,
         {
           "type": "message",
           "role": "user",
@@ -347,6 +350,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       "model": expected_model,
       "instructions": prompt,
       "input": [
+        permissions_message,
         {
           "type": "message",
           "role": "user",
@@ -407,6 +411,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       "model": expected_model,
       "instructions": prompt,
       "input": [
+        permissions_message,
         {
           "type": "message",
           "role": "user",
@@ -458,6 +463,27 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
             }
           ]
         },
+        permissions_message,
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": user_instructions
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": environment_context
+            }
+          ]
+        },
         {
           "type": "message",
           "role": "user",
@@ -487,6 +513,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
       "model": expected_model,
       "instructions": prompt,
       "input": [
+        permissions_message,
         {
           "type": "message",
           "role": "user",
@@ -535,6 +562,48 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
             {
               "type": "output_text",
               "text": "AFTER_COMPACT_REPLY"
+            }
+          ]
+        },
+        permissions_message,
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": user_instructions
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": environment_context
+            }
+          ]
+        },
+        permissions_message,
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": user_instructions
+            }
+          ]
+        },
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": environment_context
             }
           ]
         },
@@ -651,11 +720,12 @@ async fn compact_resume_after_second_compaction_preserves_history() {
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let user_instructions = requests[0]["input"][0]["content"][0]["text"]
+    let permissions_message = requests[0]["input"][0].clone();
+    let user_instructions = requests[0]["input"][1]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let environment_instructions = requests[0]["input"][1]["content"][0]["text"]
+    let environment_instructions = requests[0]["input"][2]["content"][0]["text"]
         .as_str()
         .unwrap_or_default()
         .to_string();
@@ -671,6 +741,7 @@ async fn compact_resume_after_second_compaction_preserves_history() {
       {
         "instructions": prompt,
         "input": [
+          permissions_message,
           {
             "type": "message",
             "role": "user",
@@ -709,6 +780,27 @@ async fn compact_resume_after_second_compaction_preserves_history() {
               {
                 "type": "input_text",
                 "text": "AFTER_COMPACT_2"
+              }
+            ]
+          },
+          permissions_message,
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": user_instructions
+              }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": environment_instructions
               }
             ]
           },
@@ -840,7 +932,10 @@ async fn start_test_conversation(
 async fn user_turn(conversation: &Arc<CodexThread>, text: &str) {
     conversation
         .submit(Op::UserInput {
-            items: vec![UserInput::Text { text: text.into() }],
+            items: vec![UserInput::Text {
+                text: text.into(),
+                text_elements: Vec::new(),
+            }],
             final_output_json_schema: None,
         })
         .await
