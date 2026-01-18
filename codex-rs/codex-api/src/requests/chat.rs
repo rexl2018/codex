@@ -11,8 +11,10 @@ use codex_protocol::protocol::SessionSource;
 use http::HeaderMap;
 use serde_json::Value;
 use serde_json::json;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use tracing::info;
 use tracing::warn;
 
 /// Assembled request body plus headers for Chat Completions streaming calls.
@@ -59,7 +61,8 @@ impl<'a> ChatRequestBuilder<'a> {
 
     pub fn build(self, _provider: &Provider) -> Result<ChatRequest, ApiError> {
         let mut messages = Vec::<Value>::new();
-        messages.push(json!({"role": "system", "content": self.instructions}));
+        let system_role = map_role_for_model("system", self.model);
+        messages.push(json!({"role": system_role, "content": self.instructions}));
 
         let input = self.input;
         let mut reasoning_by_anchor_index: HashMap<usize, String> = HashMap::new();
@@ -175,7 +178,8 @@ impl<'a> ChatRequestBuilder<'a> {
                         }
                     }
 
-                    if role == "assistant" {
+                    let mapped_role = map_role_for_model(role, self.model);
+                    if is_assistant_role(mapped_role.as_ref(), self.model) {
                         if let Some(prev) = &last_assistant_text
                             && prev == &text
                         {
@@ -184,7 +188,7 @@ impl<'a> ChatRequestBuilder<'a> {
                         last_assistant_text = Some(text.clone());
                     }
 
-                    let content_value = if role == "assistant" {
+                    let content_value = if is_assistant_role(mapped_role.as_ref(), self.model) {
                         json!(text)
                     } else if saw_image {
                         json!(items)
@@ -192,8 +196,8 @@ impl<'a> ChatRequestBuilder<'a> {
                         json!(text)
                     };
 
-                    let mut msg = json!({"role": role, "content": content_value});
-                    if role == "assistant"
+                    let mut msg = json!({"role": mapped_role, "content": content_value});
+                    if is_assistant_role(mapped_role.as_ref(), self.model)
                         && let Some(reasoning) = reasoning_by_anchor_index.get(&idx)
                         && let Some(obj) = msg.as_object_mut()
                     {
@@ -248,7 +252,7 @@ impl<'a> ChatRequestBuilder<'a> {
                     }
 
                     let reasoning = reasoning_by_anchor_index.get(&idx).map(String::as_str);
-                    push_tool_call_message(&mut messages, tool_call, reasoning);
+                    push_tool_call_message(&mut messages, tool_call, reasoning, self.model);
                 }
                 ResponseItem::LocalShellCall {
                     id,
@@ -263,7 +267,7 @@ impl<'a> ChatRequestBuilder<'a> {
                         "status": status,
                         "action": action,
                     });
-                    push_tool_call_message(&mut messages, tool_call, reasoning);
+                    push_tool_call_message(&mut messages, tool_call, reasoning, self.model);
                 }
                 ResponseItem::FunctionCallOutput { call_id, output } => {
                     let request_tool_id = tool_call_id_overrides
@@ -287,8 +291,9 @@ impl<'a> ChatRequestBuilder<'a> {
                         json!(output.content)
                     };
 
+                    let tool_role = map_role_for_model("tool", self.model);
                     messages.push(json!({
-                        "role": "tool",
+                        "role": tool_role,
                         "tool_call_id": request_tool_id,
                         "content": content_value,
                     }));
@@ -309,11 +314,12 @@ impl<'a> ChatRequestBuilder<'a> {
                         }
                     });
                     let reasoning = reasoning_by_anchor_index.get(&idx).map(String::as_str);
-                    push_tool_call_message(&mut messages, tool_call, reasoning);
+                    push_tool_call_message(&mut messages, tool_call, reasoning, self.model);
                 }
                 ResponseItem::CustomToolCallOutput { call_id, output } => {
+                    let tool_role = map_role_for_model("tool", self.model);
                     messages.push(json!({
-                        "role": "tool",
+                        "role": tool_role,
                         "tool_call_id": call_id,
                         "content": output,
                     }));
@@ -330,13 +336,27 @@ impl<'a> ChatRequestBuilder<'a> {
             }
         }
 
+        if self.model.contains("gemini") {
+            let (roles, invalid_roles) = collect_message_roles(&messages);
+            if invalid_roles.is_empty() {
+                info!(model = self.model, roles = ?roles, "Gemini chat roles");
+            } else {
+                warn!(
+                    model = self.model,
+                    roles = ?roles,
+                    invalid_roles = ?invalid_roles,
+                    "Gemini chat roles include invalid entries"
+                );
+            }
+        }
+
         // Gemini specific: ensure tool calls/results are balanced and properly ordered
         // to avoid "Conversation ended with pending tool calls" errors.
         ensure_tool_results_balanced(&messages, self.model);
 
         // Coalesce consecutive assistant messages which can happen if we have
         // reasoning + tool calls in separate items or multiple reasoning blocks.
-        let messages = coalesce_messages(messages);
+        let messages = coalesce_messages(messages, self.model);
 
         let payload = json!({
             "model": self.model,
@@ -371,7 +391,7 @@ fn ensure_tool_results_balanced(messages: &[Value], model: &str) {
             .unwrap_or_default();
 
         match role {
-            "assistant" => {
+            "model" => {
                 if let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
                     for (tool_idx, call) in tool_calls.iter().enumerate() {
                         let id = call
@@ -393,7 +413,7 @@ fn ensure_tool_results_balanced(messages: &[Value], model: &str) {
                     }
                 }
             }
-            "tool" => {
+            "user" if message.get("tool_call_id").is_some() => {
                 let call_id = message
                     .get("tool_call_id")
                     .and_then(|v| v.as_str())
@@ -420,7 +440,7 @@ fn ensure_tool_results_balanced(messages: &[Value], model: &str) {
                     );
                 }
             }
-            "user" | "system" => {
+            "user" => {
                 if !pending.is_empty() {
                     warn!(
                         model,
@@ -443,13 +463,13 @@ fn ensure_tool_results_balanced(messages: &[Value], model: &str) {
     }
 }
 
-fn coalesce_messages(messages: Vec<Value>) -> Vec<Value> {
+fn coalesce_messages(messages: Vec<Value>, model: &str) -> Vec<Value> {
     let mut merged = Vec::with_capacity(messages.len());
     let mut iter = messages.into_iter();
 
     if let Some(mut current) = iter.next() {
         for next in iter {
-            if is_assistant(&current) && is_assistant(&next) {
+            if is_assistant(&current, model) && is_assistant(&next, model) {
                 merge_json_objects(&mut current, next);
             } else {
                 merged.push(current);
@@ -462,8 +482,10 @@ fn coalesce_messages(messages: Vec<Value>) -> Vec<Value> {
     merged
 }
 
-fn is_assistant(msg: &Value) -> bool {
-    msg.get("role").and_then(|r| r.as_str()) == Some("assistant")
+fn is_assistant(msg: &Value, model: &str) -> bool {
+    msg.get("role")
+        .and_then(|r| r.as_str())
+        .is_some_and(|role| is_assistant_role(role, model))
 }
 
 fn merge_json_objects(target: &mut Value, source: Value) {
@@ -501,11 +523,33 @@ fn merge_json_objects(target: &mut Value, source: Value) {
     }
 }
 
-fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value, reasoning: Option<&str>) {
+fn collect_message_roles(messages: &[Value]) -> (Vec<String>, Vec<String>) {
+    let mut roles = Vec::new();
+    let mut invalid_roles = Vec::new();
+    for message in messages {
+        if let Some(role) = message.get("role").and_then(|r| r.as_str()) {
+            roles.push(role.to_string());
+            if role != "user" && role != "model" {
+                invalid_roles.push(role.to_string());
+            }
+        }
+    }
+    (roles, invalid_roles)
+}
+
+fn push_tool_call_message(
+    messages: &mut Vec<Value>,
+    tool_call: Value,
+    reasoning: Option<&str>,
+    model: &str,
+) {
     // Chat Completions requires that tool calls are grouped into a single assistant message
     // (with `tool_calls: [...]`) followed by tool role responses.
     if let Some(Value::Object(obj)) = messages.last_mut()
-        && obj.get("role").and_then(Value::as_str) == Some("assistant")
+        && obj
+            .get("role")
+            .and_then(Value::as_str)
+            .is_some_and(|role| is_assistant_role(role, model))
         && obj.get("content").is_none_or(serde_json::Value::is_null)
         && let Some(tool_calls) = obj.get_mut("tool_calls").and_then(Value::as_array_mut)
     {
@@ -526,8 +570,9 @@ fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value, reasoning
         return;
     }
 
+    let assistant_role = map_role_for_model("assistant", model);
     let mut msg = json!({
-        "role": "assistant",
+        "role": assistant_role,
         "tool_calls": [tool_call],
     });
     if let Some(reasoning) = reasoning
@@ -536,6 +581,26 @@ fn push_tool_call_message(messages: &mut Vec<Value>, tool_call: Value, reasoning
         obj.insert("reasoning".to_string(), json!(reasoning));
     }
     messages.push(msg);
+}
+
+fn map_role_for_model<'a>(role: &'a str, model: &str) -> Cow<'a, str> {
+    if model.contains("gemini") {
+        match role {
+            "assistant" => Cow::Borrowed("model"),
+            "developer" => Cow::Borrowed("user"),
+            _ => Cow::Borrowed(role),
+        }
+    } else {
+        Cow::Borrowed(role)
+    }
+}
+
+fn is_assistant_role(role: &str, model: &str) -> bool {
+    if model.contains("gemini") {
+        role == "model"
+    } else {
+        role == "assistant"
+    }
 }
 
 #[cfg(test)]
@@ -682,5 +747,64 @@ mod tests {
         assert_eq!(messages[4]["tool_call_id"], "call-b");
         assert_eq!(messages[5]["role"], "tool");
         assert_eq!(messages[5]["tool_call_id"], "call-c");
+    }
+
+    #[test]
+    fn maps_roles_for_gemini_models() {
+        let prompt_input = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "hi".to_string(),
+                }],
+            },
+            ResponseItem::FunctionCall {
+                id: None,
+                name: "read_file".to_string(),
+                arguments: r#"{"path":"a.txt"}"#.to_string(),
+                call_id: "call-a".to_string(),
+                thought_signature: None,
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-a".to_string(),
+                output: FunctionCallOutputPayload {
+                    content: "A".to_string(),
+                    ..Default::default()
+                },
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: "ok".to_string(),
+                }],
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "developer".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "system-like".to_string(),
+                }],
+            },
+        ];
+
+        let req = ChatRequestBuilder::new("gemini-3-pro", "inst", &prompt_input, &[])
+            .build(&provider())
+            .expect("request");
+
+        let messages = req
+            .body
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .expect("messages array");
+
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[2]["role"], "model");
+        assert_eq!(messages[3]["role"], "tool");
+        assert_eq!(messages[3]["tool_call_id"], "call-a");
+        assert_eq!(messages[4]["role"], "model");
+        assert_eq!(messages[5]["role"], "user");
     }
 }
