@@ -19,6 +19,7 @@ use codex_protocol::protocol::SessionSource;
 use http::HeaderMap;
 use serde_json::Value;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use tracing::instrument;
 
 pub struct ResponsesClient<T: HttpTransport, A: AuthProvider> {
@@ -39,6 +40,7 @@ pub struct ResponsesOptions {
     pub caching: Option<crate::common::Caching>,
     pub extra_headers: HeaderMap,
     pub compression: Compression,
+    pub turn_state: Option<Arc<OnceLock<String>>>,
 }
 
 impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
@@ -61,9 +63,15 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
     pub async fn stream_request(
         &self,
         request: ResponsesRequest,
+        turn_state: Option<Arc<OnceLock<String>>>,
     ) -> Result<ResponseStream, ApiError> {
-        self.stream(request.body, request.headers, request.compression)
-            .await
+        self.stream(
+            request.body,
+            request.headers,
+            request.compression,
+            turn_state,
+        )
+        .await
     }
 
     #[instrument(level = "trace", skip_all, err)]
@@ -86,6 +94,7 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
             caching,
             extra_headers,
             compression,
+            turn_state,
         } = options;
 
         let instructions = if prompt.include_instructions {
@@ -111,7 +120,7 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
             .compression(compression)
             .build(self.streaming.provider())?;
 
-        self.stream_request(request).await
+        self.stream_request(request, turn_state).await
     }
 
     fn path(&self) -> &'static str {
@@ -126,6 +135,7 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
         body: Value,
         extra_headers: HeaderMap,
         compression: Compression,
+        turn_state: Option<Arc<OnceLock<String>>>,
     ) -> Result<ResponseStream, ApiError> {
         let compression = match compression {
             Compression::None => RequestCompression::None,
@@ -139,6 +149,7 @@ impl<T: HttpTransport, A: AuthProvider> ResponsesClient<T, A> {
                 extra_headers,
                 compression,
                 spawn_response_stream,
+                turn_state,
             )
             .await
     }

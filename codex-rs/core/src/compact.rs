@@ -403,7 +403,7 @@ async fn run_compact_task_inner(
 
     let user_messages = collect_user_messages(items_to_collect);
 
-    let initial_context = sess.build_initial_context(turn_context.as_ref());
+    let initial_context = sess.build_initial_context(turn_context.as_ref()).await;
     let mut new_compacted_slice =
         build_compacted_history(initial_context, &user_messages, &summary_text);
     new_compacted_slice = remove_ghost_snapshots(new_compacted_slice);
@@ -433,7 +433,7 @@ async fn run_compact_task_inner(
         // If `start > 0`, we assume `prefix` has it (or it's not needed in the middle).
 
         let slice_initial_context = if start == 0 {
-            sess.build_initial_context(turn_context.as_ref())
+            sess.build_initial_context(turn_context.as_ref()).await
         } else {
             Vec::new()
         };
