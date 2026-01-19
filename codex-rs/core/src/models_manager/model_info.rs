@@ -265,6 +265,35 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             context_window: Some(CONTEXT_WINDOW_272K),
             supported_reasoning_levels: supported_reasoning_level_low_medium_high_non_codex(),
         )
+    } else if slug.contains("gemini") {
+        model_info!(
+            slug,
+            base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            shell_type: ConfigShellToolType::ShellCommand,
+            supports_parallel_tool_calls: true,
+            supports_reasoning_summaries: true,
+            support_verbosity: false,
+            // Gemini has a very large context window
+            context_window: Some(2_000_000),
+            // Ensure we don't truncate too aggressively but also have some limit
+            truncation_policy: TruncationPolicyConfig::tokens(64_000),
+        )
+    } else if slug.contains("gemini") {
+        model_info!(
+            slug,
+            base_instructions: BASE_INSTRUCTIONS_WITH_APPLY_PATCH.to_string(),
+            apply_patch_tool_type: Some(ApplyPatchToolType::Freeform),
+            shell_type: ConfigShellToolType::ShellCommand,
+            supports_parallel_tool_calls: true,
+            supports_reasoning_summaries: true,
+            support_verbosity: false,
+            // Gemini has a very large context window
+            context_window: Some(2_000_000),
+            truncation_policy: TruncationPolicyConfig::tokens(64_000),
+            default_reasoning_level: Some(ReasoningEffort::Medium),
+            supported_reasoning_levels: supported_reasoning_level_low_medium_high(),
+        )
     } else if slug.starts_with("gpt-5") {
         model_info!(
             slug,
