@@ -385,7 +385,11 @@ impl<'a> ChatRequestBuilder<'a> {
                 .map(|c| {
                     let s = c.to_string();
                     if s.len() > 50 {
-                        format!("{}...", &s[..50])
+                        let mut end = 50;
+                        while !s.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        format!("{}...", &s[..end])
                     } else {
                         s
                     }
