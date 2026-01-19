@@ -14,6 +14,7 @@ use serde_json::json;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use tracing::debug;
 use tracing::info;
 use tracing::warn;
 
@@ -357,6 +358,72 @@ impl<'a> ChatRequestBuilder<'a> {
         // Coalesce consecutive assistant messages which can happen if we have
         // reasoning + tool calls in separate items or multiple reasoning blocks.
         let messages = coalesce_messages(messages, self.model);
+
+        // Filter out empty assistant messages (can happen when user interrupts a response)
+        let messages: Vec<Value> = messages
+            .into_iter()
+            .filter(|msg| {
+                let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                let has_content = msg.get("content").map_or(false, |c| match c {
+                    Value::String(s) => !s.is_empty(),
+                    Value::Array(arr) => !arr.is_empty(),
+                    Value::Null => false,
+                    _ => true,
+                });
+                let has_tool_calls = msg.get("tool_calls").is_some();
+                // Keep message if it has content, tool_calls, or tool_call_id
+                // Skip empty assistant messages
+                if role == "assistant" && !has_content && !has_tool_calls {
+                    debug!("Filtering out empty assistant message");
+                    return false;
+                }
+                true
+            })
+            .collect();
+
+        // Debug: log message summary to diagnose empty content issues
+        for (idx, msg) in messages.iter().enumerate() {
+            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("?");
+            let has_content = msg.get("content").map_or(false, |c| match c {
+                Value::String(s) => !s.is_empty(),
+                Value::Array(arr) => !arr.is_empty(),
+                Value::Null => false,
+                _ => true,
+            });
+            let has_tool_calls = msg.get("tool_calls").is_some();
+            let has_tool_call_id = msg.get("tool_call_id").is_some();
+            let content_preview = msg
+                .get("content")
+                .map(|c| {
+                    let s = c.to_string();
+                    if s.len() > 50 {
+                        format!("{}...", &s[..50])
+                    } else {
+                        s
+                    }
+                })
+                .unwrap_or_else(|| "null".to_string());
+
+            debug!(
+                idx,
+                role,
+                has_content,
+                has_tool_calls,
+                has_tool_call_id,
+                content_preview,
+                "Chat message"
+            );
+
+            // Warn if message has no content and no tool_calls (potential issue)
+            if !has_content && !has_tool_calls && !has_tool_call_id {
+                warn!(
+                    idx,
+                    role,
+                    msg = %msg,
+                    "Message has no content, tool_calls, or tool_call_id - may cause API error"
+                );
+            }
+        }
 
         let payload = json!({
             "model": self.model,
