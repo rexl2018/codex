@@ -313,8 +313,6 @@ fn coalesce_input(items: &[ResponseItem], store: bool, is_azure: bool, model: &s
 }
 
 fn map_role_for_gemini_message(item_value: &mut Value) {
-    // ModelHub Gemini endpoint uses OpenAI-format roles (system, user, assistant, tool)
-    // Only "developer" role needs to be mapped to "user"
     let Some(obj) = item_value.as_object_mut() else {
         return;
     };
@@ -325,8 +323,10 @@ fn map_role_for_gemini_message(item_value: &mut Value) {
         return;
     };
 
-    if role.as_str() == "developer" {
-        *role = "user".to_string();
+    match role.as_str() {
+        "assistant" => *role = "model".to_string(),
+        "developer" => *role = "user".to_string(),
+        _ => {}
     }
 }
 
