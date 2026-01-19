@@ -10,7 +10,6 @@ use codex_protocol::openai_models::TruncationPolicyConfig;
 
 use crate::config::Config;
 use crate::truncate::approx_bytes_for_tokens;
-use tracing::warn;
 
 pub const BASE_INSTRUCTIONS: &str = include_str!("../../prompt.md");
 const BASE_INSTRUCTIONS_WITH_APPLY_PATCH: &str =
@@ -276,7 +275,6 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             context_window: Some(CONTEXT_WINDOW_272K),
         )
     } else {
-        warn!("Unknown model {slug} is used. This will degrade the performance of Codex.");
         model_info!(
             slug,
             context_window: None,

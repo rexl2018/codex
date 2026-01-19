@@ -382,6 +382,7 @@ fn ensure_tool_results_balanced(messages: &[Value], model: &str) {
         return;
     }
 
+    // Using OpenAI-format roles: "assistant" for tool calls, "tool" for tool results
     let mut pending: VecDeque<String> = VecDeque::new();
 
     for (idx, message) in messages.iter().enumerate() {
@@ -391,7 +392,7 @@ fn ensure_tool_results_balanced(messages: &[Value], model: &str) {
             .unwrap_or_default();
 
         match role {
-            "model" => {
+            "assistant" => {
                 if let Some(tool_calls) = message.get("tool_calls").and_then(|v| v.as_array()) {
                     for (tool_idx, call) in tool_calls.iter().enumerate() {
                         let id = call
@@ -413,7 +414,7 @@ fn ensure_tool_results_balanced(messages: &[Value], model: &str) {
                     }
                 }
             }
-            "user" if message.get("tool_call_id").is_some() => {
+            "tool" => {
                 let call_id = message
                     .get("tool_call_id")
                     .and_then(|v| v.as_str())
@@ -524,12 +525,14 @@ fn merge_json_objects(target: &mut Value, source: Value) {
 }
 
 fn collect_message_roles(messages: &[Value]) -> (Vec<String>, Vec<String>) {
+    // ModelHub Gemini endpoint accepts OpenAI-format roles: system, user, assistant, tool
+    // Only "developer" role needs to be mapped (handled by map_role_for_model)
     let mut roles = Vec::new();
     let mut invalid_roles = Vec::new();
     for message in messages {
         if let Some(role) = message.get("role").and_then(|r| r.as_str()) {
             roles.push(role.to_string());
-            if role != "user" && role != "model" {
+            if !matches!(role, "system" | "user" | "assistant" | "model" | "tool") {
                 invalid_roles.push(role.to_string());
             }
         }
@@ -584,23 +587,18 @@ fn push_tool_call_message(
 }
 
 fn map_role_for_model<'a>(role: &'a str, model: &str) -> Cow<'a, str> {
-    if model.contains("gemini") {
-        match role {
-            "assistant" => Cow::Borrowed("model"),
-            "developer" => Cow::Borrowed("user"),
-            _ => Cow::Borrowed(role),
-        }
+    // ModelHub Gemini endpoint uses OpenAI-format roles (system, user, assistant, tool)
+    // Only "developer" role needs to be mapped to "user"
+    if model.contains("gemini") && role == "developer" {
+        Cow::Borrowed("user")
     } else {
         Cow::Borrowed(role)
     }
 }
 
-fn is_assistant_role(role: &str, model: &str) -> bool {
-    if model.contains("gemini") {
-        role == "model"
-    } else {
-        role == "assistant"
-    }
+fn is_assistant_role(role: &str, _model: &str) -> bool {
+    // Using OpenAI-format roles for all models including Gemini via ModelHub
+    role == "assistant"
 }
 
 #[cfg(test)]
@@ -801,10 +799,10 @@ mod tests {
 
         assert_eq!(messages[0]["role"], "system");
         assert_eq!(messages[1]["role"], "user");
-        assert_eq!(messages[2]["role"], "model");
+        assert_eq!(messages[2]["role"], "assistant");
         assert_eq!(messages[3]["role"], "tool");
         assert_eq!(messages[3]["tool_call_id"], "call-a");
-        assert_eq!(messages[4]["role"], "model");
+        assert_eq!(messages[4]["role"], "assistant");
         assert_eq!(messages[5]["role"], "user");
     }
 }
