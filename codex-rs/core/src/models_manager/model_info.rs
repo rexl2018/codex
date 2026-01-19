@@ -274,8 +274,8 @@ pub(crate) fn find_model_info_for_slug(slug: &str) -> ModelInfo {
             supports_parallel_tool_calls: true,
             supports_reasoning_summaries: true,
             support_verbosity: false,
-            // Gemini has a very large context window
-            context_window: Some(2_000_000),
+            // Our provider limits the context window to 200k
+            context_window: Some(200_000),
             // Ensure we don't truncate too aggressively but also have some limit
             truncation_policy: TruncationPolicyConfig::tokens(64_000),
         )

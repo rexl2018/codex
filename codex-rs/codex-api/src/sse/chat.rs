@@ -6,6 +6,7 @@ use codex_client::StreamResponse;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::TokenUsage;
 use eventsource_stream::Eventsource;
 use futures::Stream;
 use futures::StreamExt;
@@ -100,12 +101,13 @@ pub async fn process_chat_sse<S>(
     let mut last_tool_call_index: Option<usize> = None;
     let mut assistant_item: Option<ResponseItem> = None;
     let mut reasoning_item: Option<ResponseItem> = None;
-    let mut completed_sent = false;
+    let mut token_usage: Option<TokenUsage> = None;
 
     async fn flush_and_complete(
         tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
         reasoning_item: &mut Option<ResponseItem>,
         assistant_item: &mut Option<ResponseItem>,
+        token_usage: Option<TokenUsage>,
     ) {
         if let Some(reasoning) = reasoning_item.take() {
             let _ = tx_event
@@ -122,7 +124,7 @@ pub async fn process_chat_sse<S>(
         let _ = tx_event
             .send(Ok(ResponseEvent::Completed {
                 response_id: String::new(),
-                token_usage: None,
+                token_usage,
             }))
             .await;
     }
@@ -140,9 +142,13 @@ pub async fn process_chat_sse<S>(
                 return;
             }
             Ok(None) => {
-                if !completed_sent {
-                    flush_and_complete(&tx_event, &mut reasoning_item, &mut assistant_item).await;
-                }
+                flush_and_complete(
+                    &tx_event,
+                    &mut reasoning_item,
+                    &mut assistant_item,
+                    token_usage.clone(),
+                )
+                .await;
                 return;
             }
             Err(_) => {
@@ -162,9 +168,13 @@ pub async fn process_chat_sse<S>(
         }
 
         if data == "[DONE]" || data == "DONE" {
-            if !completed_sent {
-                flush_and_complete(&tx_event, &mut reasoning_item, &mut assistant_item).await;
-            }
+            flush_and_complete(
+                &tx_event,
+                &mut reasoning_item,
+                &mut assistant_item,
+                token_usage.clone(),
+            )
+            .await;
             return;
         }
 
@@ -178,6 +188,42 @@ pub async fn process_chat_sse<S>(
                 continue;
             }
         };
+
+        if let Some(usage) = value.get("usage") {
+            let input_tokens = usage
+                .get("prompt_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let output_tokens = usage
+                .get("completion_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let total_tokens = usage
+                .get("total_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            let cached_input_tokens = usage
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            let reasoning_output_tokens = usage
+                .get("completion_tokens_details")
+                .and_then(|d| d.get("reasoning_tokens"))
+                .and_then(|v| v.as_i64())
+                .or_else(|| usage.get("reasoning_tokens").and_then(|v| v.as_i64()))
+                .unwrap_or(0);
+
+            token_usage = Some(TokenUsage {
+                input_tokens,
+                cached_input_tokens,
+                output_tokens,
+                reasoning_output_tokens,
+                total_tokens,
+            });
+        }
 
         let Some(choices) = value.get("choices").and_then(|c| c.as_array()) else {
             continue;
@@ -333,15 +379,6 @@ pub async fn process_chat_sse<S>(
                     let _ = tx_event
                         .send(Ok(ResponseEvent::OutputItemDone(assistant)))
                         .await;
-                }
-                if !completed_sent {
-                    let _ = tx_event
-                        .send(Ok(ResponseEvent::Completed {
-                            response_id: String::new(),
-                            token_usage: None,
-                        }))
-                        .await;
-                    completed_sent = true;
                 }
                 continue;
             }
@@ -809,5 +846,35 @@ mod tests {
             )
         }));
         assert_matches!(events.last(), Some(ResponseEvent::Completed { .. }));
+    }
+
+    #[tokio::test]
+    async fn parses_usage_with_details_and_gemini_reasoning() {
+        let usage = json!({
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 20,
+                "total_tokens": 30,
+                "reasoning_tokens": 5,
+                "prompt_tokens_details": {
+                    "cached_tokens": 3
+                }
+            }
+        });
+
+        let done = "[DONE]";
+
+        let body = build_body(&[usage]) + &format!("data: {}\n\n", done);
+        let events = collect_events(&body).await;
+
+        assert_matches!(
+            events.last(),
+            Some(ResponseEvent::Completed { token_usage: Some(usage), .. })
+            if usage.input_tokens == 10
+                && usage.output_tokens == 20
+                && usage.total_tokens == 30
+                && usage.reasoning_output_tokens == 5
+                && usage.cached_input_tokens == 3
+        );
     }
 }
