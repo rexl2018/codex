@@ -278,10 +278,8 @@ fn coalesce_input(items: &[ResponseItem], store: bool, is_azure: bool) -> Vec<Va
         }
     }
 
-    if merge_assistant_items {
-        if let Some(existing) = current_merge {
-            merged.push(Value::Object(existing));
-        }
+    if merge_assistant_items && let Some(existing) = current_merge {
+        merged.push(Value::Object(existing));
     }
 
     merged
