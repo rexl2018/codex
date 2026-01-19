@@ -724,8 +724,8 @@ async fn test_tail_handles_short_sessions() -> Result<()> {
         item: RolloutItem::SessionMeta(SessionMetaLine {
             meta: SessionMeta {
                 id: thread_id,
+                forked_from_id: None,
                 timestamp: ts.to_string(),
-                instructions: None,
                 cwd: ".".into(),
                 originator: "test_originator".into(),
                 cli_version: "test_version".into(),
@@ -768,6 +768,7 @@ async fn test_tail_handles_short_sessions() -> Result<()> {
         home,
         1,
         None,
+        ThreadSortKey::UpdatedAt,
         INTERACTIVE_SESSION_SOURCES,
         Some(provider_filter.as_slice()),
         TEST_PROVIDER,
@@ -819,8 +820,8 @@ async fn test_tail_skips_trailing_non_responses() -> Result<()> {
         item: RolloutItem::SessionMeta(SessionMetaLine {
             meta: SessionMeta {
                 id: thread_id,
+                forked_from_id: None,
                 timestamp: ts.to_string(),
-                instructions: None,
                 cwd: ".".into(),
                 originator: "test_originator".into(),
                 cli_version: "test_version".into(),
@@ -878,6 +879,7 @@ async fn test_tail_skips_trailing_non_responses() -> Result<()> {
         home,
         1,
         None,
+        ThreadSortKey::UpdatedAt,
         INTERACTIVE_SESSION_SOURCES,
         Some(provider_filter.as_slice()),
         TEST_PROVIDER,

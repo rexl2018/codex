@@ -4009,10 +4009,15 @@ mod tests {
     fn last_response_id_is_none_by_default_and_updates_on_set() {
         let config = Arc::new(crate::config::test_config());
         let model = ModelsManager::get_model_offline(config.model.as_deref());
+        let collaboration_mode = CollaborationMode::Custom(Settings {
+            model: model.clone(),
+            reasoning_effort: config.model_reasoning_effort,
+            developer_instructions: None,
+        });
+
         let session_configuration = SessionConfiguration {
             provider: config.model_provider.clone(),
-            model,
-            model_reasoning_effort: config.model_reasoning_effort,
+            collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),
@@ -4038,10 +4043,15 @@ mod tests {
     fn last_response_id_is_not_cleared_by_interrupted_turn() {
         let config = Arc::new(crate::config::test_config());
         let model = ModelsManager::get_model_offline(config.model.as_deref());
+        let collaboration_mode = CollaborationMode::Custom(Settings {
+            model: model.clone(),
+            reasoning_effort: config.model_reasoning_effort,
+            developer_instructions: None,
+        });
+
         let session_configuration = SessionConfiguration {
             provider: config.model_provider.clone(),
-            model,
-            model_reasoning_effort: config.model_reasoning_effort,
+            collaboration_mode,
             model_reasoning_summary: config.model_reasoning_summary,
             developer_instructions: config.developer_instructions.clone(),
             user_instructions: config.user_instructions.clone(),

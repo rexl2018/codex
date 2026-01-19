@@ -13,6 +13,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use tracing::debug;
 use tracing::warn;
 
 /// Assembled request body plus headers for Chat Completions streaming calls.
@@ -192,7 +193,15 @@ impl<'a> ChatRequestBuilder<'a> {
                         json!(text)
                     };
 
-                    let mut msg = json!({"role": role, "content": content_value});
+                    // Map "developer" role to "user" for Gemini models since Gemini
+                    // only supports "user" and "model" roles.
+                    let effective_role = if role == "developer" && self.model.contains("gemini") {
+                        "user"
+                    } else {
+                        role.as_str()
+                    };
+
+                    let mut msg = json!({"role": effective_role, "content": content_value});
                     if role == "assistant"
                         && let Some(reasoning) = reasoning_by_anchor_index.get(&idx)
                         && let Some(obj) = msg.as_object_mut()
@@ -337,6 +346,76 @@ impl<'a> ChatRequestBuilder<'a> {
         // Coalesce consecutive assistant messages which can happen if we have
         // reasoning + tool calls in separate items or multiple reasoning blocks.
         let messages = coalesce_messages(messages);
+
+        // Filter out empty assistant messages (can happen when user interrupts a response)
+        let messages: Vec<Value> = messages
+            .into_iter()
+            .filter(|msg| {
+                let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                let has_content = msg.get("content").is_some_and(|c| match c {
+                    Value::String(s) => !s.is_empty(),
+                    Value::Array(arr) => !arr.is_empty(),
+                    Value::Null => false,
+                    _ => true,
+                });
+                let has_tool_calls = msg.get("tool_calls").is_some();
+                // Keep message if it has content, tool_calls, or tool_call_id
+                // Skip empty assistant messages
+                if role == "assistant" && !has_content && !has_tool_calls {
+                    debug!("Filtering out empty assistant message");
+                    return false;
+                }
+                true
+            })
+            .collect();
+
+        // Debug: log message summary to diagnose empty content issues
+        for (idx, msg) in messages.iter().enumerate() {
+            let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("?");
+            let has_content = msg.get("content").is_some_and(|c| match c {
+                Value::String(s) => !s.is_empty(),
+                Value::Array(arr) => !arr.is_empty(),
+                Value::Null => false,
+                _ => true,
+            });
+            let has_tool_calls = msg.get("tool_calls").is_some();
+            let has_tool_call_id = msg.get("tool_call_id").is_some();
+            let content_preview = msg
+                .get("content")
+                .map(|c| {
+                    let s = c.to_string();
+                    if s.len() > 50 {
+                        let mut end = 50;
+                        while !s.is_char_boundary(end) {
+                            end -= 1;
+                        }
+                        format!("{}...", &s[..end])
+                    } else {
+                        s
+                    }
+                })
+                .unwrap_or_else(|| "null".to_string());
+
+            debug!(
+                idx,
+                role,
+                has_content,
+                has_tool_calls,
+                has_tool_call_id,
+                content_preview,
+                "Chat message"
+            );
+
+            // Warn if message has no content and no tool_calls (potential issue)
+            if !has_content && !has_tool_calls && !has_tool_call_id {
+                warn!(
+                    idx,
+                    role,
+                    msg = %msg,
+                    "Message has no content, tool_calls, or tool_call_id - may cause API error"
+                );
+            }
+        }
 
         let payload = json!({
             "model": self.model,
@@ -682,5 +761,83 @@ mod tests {
         assert_eq!(messages[4]["tool_call_id"], "call-b");
         assert_eq!(messages[5]["role"], "tool");
         assert_eq!(messages[5]["tool_call_id"], "call-c");
+    }
+
+    #[test]
+    fn maps_developer_role_to_user_for_gemini() {
+        let prompt_input = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "developer".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "developer instructions".to_string(),
+                }],
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "hello".to_string(),
+                }],
+            },
+        ];
+
+        // For Gemini model, "developer" role should be mapped to "user"
+        let req = ChatRequestBuilder::new("gemini-2.0-flash", "inst", &prompt_input, &[])
+            .build(&provider())
+            .expect("request");
+
+        let messages = req
+            .body
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .expect("messages array");
+
+        // system + user (mapped from developer) + user
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[1]["role"], "user"); // developer mapped to user
+        assert_eq!(messages[1]["content"], "developer instructions");
+        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(messages[2]["content"], "hello");
+    }
+
+    #[test]
+    fn keeps_developer_role_for_non_gemini_models() {
+        let prompt_input = vec![
+            ResponseItem::Message {
+                id: None,
+                role: "developer".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "developer instructions".to_string(),
+                }],
+            },
+            ResponseItem::Message {
+                id: None,
+                role: "user".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "hello".to_string(),
+                }],
+            },
+        ];
+
+        // For non-Gemini model, "developer" role should remain "developer"
+        let req = ChatRequestBuilder::new("gpt-4o", "inst", &prompt_input, &[])
+            .build(&provider())
+            .expect("request");
+
+        let messages = req
+            .body
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .expect("messages array");
+
+        // system + developer + user
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[1]["role"], "developer"); // developer stays developer
+        assert_eq!(messages[1]["content"], "developer instructions");
+        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(messages[2]["content"], "hello");
     }
 }
