@@ -9,8 +9,6 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::SessionSource;
 use http::HeaderMap;
 use serde_json::Value;
-use tracing::info;
-use tracing::warn;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Compression {
@@ -149,22 +147,7 @@ impl<'a> ResponsesRequestBuilder<'a> {
             original_input,
             store,
             provider.is_azure_responses_endpoint(),
-            model,
         );
-
-        if model.contains("gemini") {
-            let (roles, invalid_roles) = collect_response_roles(&coalesced_input);
-            if invalid_roles.is_empty() {
-                info!(model, roles = ?roles, "Gemini responses roles");
-            } else {
-                warn!(
-                    model,
-                    roles = ?roles,
-                    invalid_roles = ?invalid_roles,
-                    "Gemini responses roles include invalid entries"
-                );
-            }
-        }
 
         let req = MergedResponsesApiRequest {
             model,
@@ -257,7 +240,7 @@ struct MergedResponsesApiRequest<'a> {
     caching: Option<crate::common::Caching>,
 }
 
-fn coalesce_input(items: &[ResponseItem], store: bool, is_azure: bool, model: &str) -> Vec<Value> {
+fn coalesce_input(items: &[ResponseItem], store: bool, is_azure: bool) -> Vec<Value> {
     let mut merged: Vec<Value> = Vec::new();
     let mut current_merge: Option<serde_json::Map<String, Value>> = None;
     let merge_assistant_items = !(store && is_azure);
@@ -268,10 +251,6 @@ fn coalesce_input(items: &[ResponseItem], store: bool, is_azure: bool, model: &s
             Err(_) => continue,
         };
 
-        if model.contains("gemini") {
-            map_role_for_gemini_message(&mut item_value);
-        }
-
         // Attach ID before merging if needed
         if store
             && is_azure
@@ -281,74 +260,31 @@ fn coalesce_input(items: &[ResponseItem], store: bool, is_azure: bool, model: &s
             obj.insert("id".to_string(), Value::String(id.to_string()));
         }
 
-        let mergeable = merge_assistant_items && is_mergeable_assistant_item(item);
-        match (mergeable, current_merge.take()) {
-            (true, Some(mut existing)) => {
+        if merge_assistant_items && is_mergeable_assistant_item(item) {
+            if let Some(mut existing) = current_merge.take() {
                 merge_assistant_objects(&mut existing, item_value);
                 current_merge = Some(existing);
+            } else if let Value::Object(obj) = item_value {
+                current_merge = Some(obj);
+            } else {
+                merged.push(item_value);
             }
-            (true, None) => {
-                if let Value::Object(obj) = item_value {
-                    current_merge = Some(obj);
-                } else {
-                    merged.push(item_value);
-                }
-            }
-            (false, Some(existing)) => {
-                // Flush any pending merge
+        } else {
+            // Flush any pending merge
+            if let Some(existing) = current_merge.take() {
                 merged.push(Value::Object(existing));
-                merged.push(item_value);
             }
-            (false, None) => {
-                merged.push(item_value);
-            }
+            merged.push(item_value);
         }
     }
 
-    if merge_assistant_items && let Some(existing) = current_merge {
-        merged.push(Value::Object(existing));
+    if merge_assistant_items {
+        if let Some(existing) = current_merge {
+            merged.push(Value::Object(existing));
+        }
     }
 
     merged
-}
-
-fn map_role_for_gemini_message(item_value: &mut Value) {
-    let Some(obj) = item_value.as_object_mut() else {
-        return;
-    };
-    if obj.get("type").and_then(Value::as_str) != Some("message") {
-        return;
-    }
-    let Some(Value::String(role)) = obj.get_mut("role") else {
-        return;
-    };
-
-    match role.as_str() {
-        "assistant" => *role = "model".to_string(),
-        "developer" => *role = "user".to_string(),
-        _ => {}
-    }
-}
-
-fn collect_response_roles(items: &[Value]) -> (Vec<String>, Vec<String>) {
-    let mut roles = Vec::new();
-    let mut invalid_roles = Vec::new();
-    for item in items {
-        let Some(obj) = item.as_object() else {
-            continue;
-        };
-        if obj.get("type").and_then(Value::as_str) != Some("message") {
-            continue;
-        }
-        let Some(role) = obj.get("role").and_then(Value::as_str) else {
-            continue;
-        };
-        roles.push(role.to_string());
-        if role != "user" && role != "model" {
-            invalid_roles.push(role.to_string());
-        }
-    }
-    (roles, invalid_roles)
 }
 
 fn is_mergeable_assistant_item(item: &ResponseItem) -> bool {
