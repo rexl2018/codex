@@ -1,8 +1,10 @@
 //! Validates that the collaboration mode list endpoint returns the expected default presets.
 //!
 //! The test drives the app server through the MCP harness and asserts that the list response
-//! includes the plan, collaborate, and execute modes with their default model and reasoning
+//! includes the plan, coding, pair programming, and execute modes with their default model and reasoning
 //! effort settings, which keeps the API contract visible in one place.
+
+#![allow(clippy::unwrap_used)]
 
 use std::time::Duration;
 
@@ -13,9 +15,9 @@ use codex_app_server_protocol::CollaborationModeListParams;
 use codex_app_server_protocol::CollaborationModeListResponse;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_core::models_manager::test_builtin_collaboration_mode_presets;
 use codex_protocol::config_types::CollaborationMode;
-use codex_protocol::config_types::Settings;
-use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::config_types::ModeKind;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use tokio::time::timeout;
@@ -43,7 +45,12 @@ async fn list_collaboration_modes_returns_presets() -> Result<()> {
     let CollaborationModeListResponse { data: items } =
         to_response::<CollaborationModeListResponse>(response)?;
 
-    let expected = vec![plan_preset(), collaborate_preset(), execute_preset()];
+    let expected = vec![
+        plan_preset(),
+        code_preset(),
+        pair_programming_preset(),
+        execute_preset(),
+    ];
     assert_eq!(expected, items);
     Ok(())
 }
@@ -53,23 +60,32 @@ async fn list_collaboration_modes_returns_presets() -> Result<()> {
 /// If the defaults change in the app server, this helper should be updated alongside the
 /// contract, or the test will fail in ways that imply a regression in the API.
 fn plan_preset() -> CollaborationMode {
-    CollaborationMode::Plan(Settings {
-        model: "gpt-5.2-codex".to_string(),
-        reasoning_effort: Some(ReasoningEffort::Medium),
-        developer_instructions: None,
-    })
+    let presets = test_builtin_collaboration_mode_presets();
+    presets
+        .into_iter()
+        .find(|p| p.mode == ModeKind::Plan)
+        .unwrap()
 }
 
-/// Builds the collaborate preset that the list response is expected to return.
+/// Builds the pair programming preset that the list response is expected to return.
 ///
 /// The helper keeps the expected model and reasoning defaults co-located with the test
 /// so that mismatches point directly at the API contract being exercised.
-fn collaborate_preset() -> CollaborationMode {
-    CollaborationMode::Collaborate(Settings {
-        model: "gpt-5.2-codex".to_string(),
-        reasoning_effort: Some(ReasoningEffort::Medium),
-        developer_instructions: None,
-    })
+fn pair_programming_preset() -> CollaborationMode {
+    let presets = test_builtin_collaboration_mode_presets();
+    presets
+        .into_iter()
+        .find(|p| p.mode == ModeKind::PairProgramming)
+        .unwrap()
+}
+
+/// Builds the code preset that the list response is expected to return.
+fn code_preset() -> CollaborationMode {
+    let presets = test_builtin_collaboration_mode_presets();
+    presets
+        .into_iter()
+        .find(|p| p.mode == ModeKind::Code)
+        .unwrap()
 }
 
 /// Builds the execute preset that the list response is expected to return.
@@ -77,9 +93,9 @@ fn collaborate_preset() -> CollaborationMode {
 /// The execute preset uses a different reasoning effort to capture the higher-effort
 /// execution contract the server currently exposes.
 fn execute_preset() -> CollaborationMode {
-    CollaborationMode::Execute(Settings {
-        model: "gpt-5.2-codex".to_string(),
-        reasoning_effort: Some(ReasoningEffort::XHigh),
-        developer_instructions: None,
-    })
+    let presets = test_builtin_collaboration_mode_presets();
+    presets
+        .into_iter()
+        .find(|p| p.mode == ModeKind::Execute)
+        .unwrap()
 }

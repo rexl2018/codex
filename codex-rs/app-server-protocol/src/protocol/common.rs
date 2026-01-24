@@ -129,9 +129,17 @@ client_request_definitions! {
         params: v2::ThreadLoadedListParams,
         response: v2::ThreadLoadedListResponse,
     },
+    ThreadRead => "thread/read" {
+        params: v2::ThreadReadParams,
+        response: v2::ThreadReadResponse,
+    },
     SkillsList => "skills/list" {
         params: v2::SkillsListParams,
         response: v2::SkillsListResponse,
+    },
+    AppsList => "app/list" {
+        params: v2::AppsListParams,
+        response: v2::AppsListResponse,
     },
     SkillsConfigWrite => "skills/config/write" {
         params: v2::SkillsConfigWriteParams,
@@ -508,6 +516,12 @@ server_request_definitions! {
     FileChangeRequestApproval => "item/fileChange/requestApproval" {
         params: v2::FileChangeRequestApprovalParams,
         response: v2::FileChangeRequestApprovalResponse,
+    },
+
+    /// EXPERIMENTAL - Request input from the user for a tool call.
+    ToolRequestUserInput => "item/tool/requestUserInput" {
+        params: v2::ToolRequestUserInputParams,
+        response: v2::ToolRequestUserInputResponse,
     },
 
     /// DEPRECATED APIs below

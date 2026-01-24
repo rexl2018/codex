@@ -235,9 +235,7 @@ impl ModelClient {
         let client = ApiCompactClient::new(transport, api_provider, api_auth)
             .with_telemetry(Some(request_telemetry));
 
-        let instructions = prompt
-            .get_full_instructions(&self.state.model_info)
-            .into_owned();
+        let instructions = prompt.base_instructions.text.clone();
         let payload = ApiCompactionInput {
             model: &self.state.model_info.slug,
             input: &prompt.input,
@@ -295,7 +293,7 @@ impl ModelClientSession {
 
     fn build_responses_plan(&self, prompt: &Prompt) -> Result<ResponsesPlan> {
         let model_info = &self.state.model_info;
-        let instructions = prompt.get_full_instructions(model_info).into_owned();
+        let instructions = prompt.base_instructions.text.clone();
         let tools_json: Vec<Value> = create_tools_json_for_responses_api(&prompt.tools)?;
         let formatted_input = prompt.get_formatted_input();
 
@@ -505,8 +503,7 @@ impl ModelClientSession {
         }
 
         let auth_manager = self.state.auth_manager.clone();
-        let model_info = self.state.model_info.clone();
-        let instructions = prompt.get_full_instructions(&model_info).into_owned();
+        let instructions = prompt.base_instructions.text.clone();
         let tools_json = create_tools_json_for_chat_completions_api(&prompt.tools)?;
         let formatted_input = prompt.get_formatted_input();
         let api_prompt = build_api_prompt(prompt, instructions, tools_json, formatted_input, true);

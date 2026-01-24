@@ -25,6 +25,14 @@ Supported features:
 | `tui2`                                |  false  | Experimental | Use the experimental TUI v2 (viewport) implementation |
 | `skills`                              |  false  | Experimental | Enable discovery and injection of skills              |
 
+## Apps (Connectors)
+
+Use `$` in the composer to insert a ChatGPT connector; the popover lists accessible
+apps. The `/apps` command lists available and installed apps. Connected apps appear first
+and are labeled as connected; others are marked as can be installed.
+
+## Notify
+
 Notes:
 
 - Omit a key to accept its default.

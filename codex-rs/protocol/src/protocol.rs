@@ -14,16 +14,19 @@ use std::time::Duration;
 use crate::ThreadId;
 use crate::approvals::ElicitationRequestEvent;
 use crate::config_types::CollaborationMode;
+use crate::config_types::Personality;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::custom_prompts::CustomPrompt;
 use crate::items::TurnItem;
 use crate::message_history::HistoryEntry;
+use crate::models::BaseInstructions;
 use crate::models::ContentItem;
 use crate::models::ResponseItem;
 use crate::num_format::format_with_separators;
 use crate::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crate::parse_command::ParsedCommand;
 use crate::plan_tool::UpdatePlanArgs;
+use crate::request_user_input::RequestUserInputResponse;
 use crate::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use mcp_types::CallToolResult;
@@ -44,6 +47,7 @@ pub use crate::approvals::ApplyPatchApprovalRequestEvent;
 pub use crate::approvals::ElicitationAction;
 pub use crate::approvals::ExecApprovalRequestEvent;
 pub use crate::approvals::ExecPolicyAmendment;
+pub use crate::request_user_input::RequestUserInputEvent;
 
 /// Open/close tags for special user-input blocks. Used across crates to avoid
 /// duplicated hardcoded strings.
@@ -81,7 +85,10 @@ pub enum Op {
     /// This server sends [`EventMsg::TurnAborted`] in response.
     Interrupt,
 
-    /// Input from the user
+    /// Legacy user input.
+    ///
+    /// Prefer [`Op::UserTurn`] so the caller provides full turn context
+    /// (cwd/approval/sandbox/model/etc.) for each turn.
     UserInput {
         /// User input items, see `InputItem`
         items: Vec<UserInput>,
@@ -123,13 +130,18 @@ pub enum Op {
         /// Takes precedence over model, effort, and developer instructions if set.
         #[serde(skip_serializing_if = "Option::is_none")]
         collaboration_mode: Option<CollaborationMode>,
+
+        /// Optional personality override for this turn.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        personality: Option<Personality>,
     },
 
     /// Override parts of the persistent turn context for subsequent turns.
     ///
     /// All fields are optional; when omitted, the existing value is preserved.
     /// This does not enqueue any input – it only updates defaults used for
-    /// future `UserInput` turns.
+    /// turns that rely on persistent session-level context (for example,
+    /// [`Op::UserInput`]).
     OverrideTurnContext {
         /// Updated `cwd` for sandbox/tool calls.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -163,6 +175,10 @@ pub enum Op {
         /// Takes precedence over model, effort, and developer instructions if set.
         #[serde(skip_serializing_if = "Option::is_none")]
         collaboration_mode: Option<CollaborationMode>,
+
+        /// Updated personality preference.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        personality: Option<Personality>,
     },
 
     /// Approve a command execution
@@ -189,6 +205,15 @@ pub enum Op {
         request_id: RequestId,
         /// User's decision for the request.
         decision: ElicitationAction,
+    },
+
+    /// Resolve a request_user_input tool call.
+    #[serde(rename = "user_input_answer", alias = "request_user_input_response")]
+    UserInputAnswer {
+        /// Turn id for the in-flight request.
+        id: String,
+        /// User-provided answers.
+        response: RequestUserInputResponse,
     },
 
     /// Append an entry to the persistent cross-session message history.
@@ -771,6 +796,8 @@ pub enum EventMsg {
     ViewImageToolCall(ViewImageToolCallEvent),
 
     ExecApprovalRequest(ExecApprovalRequestEvent),
+
+    RequestUserInput(RequestUserInputEvent),
 
     ElicitationRequest(ElicitationRequestEvent),
 
@@ -1457,6 +1484,14 @@ impl InitialHistory {
         }
     }
 
+    pub fn session_cwd(&self) -> Option<PathBuf> {
+        match self {
+            InitialHistory::New => None,
+            InitialHistory::Resumed(resumed) => session_cwd_from_items(&resumed.history),
+            InitialHistory::Forked(items) => session_cwd_from_items(items),
+        }
+    }
+
     pub fn get_rollout_items(&self) -> Vec<RolloutItem> {
         match self {
             InitialHistory::New => Vec::new(),
@@ -1489,6 +1524,30 @@ impl InitialHistory {
             ),
         }
     }
+
+    pub fn get_base_instructions(&self) -> Option<BaseInstructions> {
+        // TODO: SessionMeta should (in theory) always be first in the history, so we can probably only check the first item?
+        match self {
+            InitialHistory::New => None,
+            InitialHistory::Resumed(resumed) => {
+                resumed.history.iter().find_map(|item| match item {
+                    RolloutItem::SessionMeta(meta_line) => meta_line.meta.base_instructions.clone(),
+                    _ => None,
+                })
+            }
+            InitialHistory::Forked(items) => items.iter().find_map(|item| match item {
+                RolloutItem::SessionMeta(meta_line) => meta_line.meta.base_instructions.clone(),
+                _ => None,
+            }),
+        }
+    }
+}
+
+fn session_cwd_from_items(items: &[RolloutItem]) -> Option<PathBuf> {
+    items.iter().find_map(|item| match item {
+        RolloutItem::SessionMeta(meta_line) => Some(meta_line.meta.cwd.clone()),
+        _ => None,
+    })
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS, Default)]
@@ -1537,6 +1596,11 @@ impl fmt::Display for SubAgentSource {
     }
 }
 
+/// SessionMeta contains session-level data that doesn't correspond to a specific turn.
+///
+/// NOTE: There used to be an `instructions` field here, which stored user_instructions, but we
+/// now save that on TurnContext. base_instructions stores the base instructions for the session,
+/// and should be used when there is no config override.
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, TS)]
 pub struct SessionMeta {
     pub id: ThreadId,
@@ -1549,6 +1613,10 @@ pub struct SessionMeta {
     #[serde(default)]
     pub source: SessionSource,
     pub model_provider: Option<String>,
+    /// base_instructions for the session. This *should* always be present when creating a new session,
+    /// but may be missing for older sessions. If not present, fall back to rendering the base_instructions
+    /// from ModelsManager.
+    pub base_instructions: Option<BaseInstructions>,
 }
 
 impl Default for SessionMeta {
@@ -1562,6 +1630,7 @@ impl Default for SessionMeta {
             cli_version: String::new(),
             source: SessionSource::default(),
             model_provider: None,
+            base_instructions: None,
         }
     }
 }
@@ -1599,6 +1668,7 @@ impl From<CompactedItem> for ResponseItem {
             content: vec![ContentItem::OutputText {
                 text: value.message,
             }],
+            end_turn: None,
         }
     }
 }
@@ -1610,10 +1680,12 @@ pub struct TurnContextItem {
     pub sandbox_policy: SandboxPolicy,
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub personality: Option<Personality>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collaboration_mode: Option<CollaborationMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<ReasoningEffortConfig>,
     pub summary: ReasoningSummaryConfig,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_instructions: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_instructions: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2050,6 +2122,7 @@ pub struct SkillMetadata {
     pub interface: Option<SkillInterface>,
     pub path: PathBuf,
     pub scope: SkillScope,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS, PartialEq, Eq)]

@@ -148,6 +148,7 @@ fn instructions_as_system_message(instructions: &str) -> Option<ResponseItem> {
             content: vec![ContentItem::InputText {
                 text: instructions.to_string(),
             }],
+            end_turn: None,
         })
     }
 }

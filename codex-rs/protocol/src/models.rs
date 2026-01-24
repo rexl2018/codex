@@ -81,6 +81,10 @@ pub enum ResponseItem {
         role: String,
         #[serde(default)]
         content: Vec<ContentItem>,
+        // Do not use directly, no available consistently across all providers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        end_turn: Option<bool>,
     },
     Reasoning {
         #[serde(default, skip_serializing)]
@@ -175,6 +179,23 @@ pub enum ResponseItem {
     Other,
 }
 
+pub const BASE_INSTRUCTIONS_DEFAULT: &str = include_str!("prompts/base_instructions/default.md");
+
+/// Base instructions for the model in a thread. Corresponds to the `instructions` field in the ResponsesAPI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
+#[serde(rename = "base_instructions", rename_all = "snake_case")]
+pub struct BaseInstructions {
+    pub text: String,
+}
+
+impl Default for BaseInstructions {
+    fn default() -> Self {
+        Self {
+            text: BASE_INSTRUCTIONS_DEFAULT.to_string(),
+        }
+    }
+}
+
 /// Developer-provided guidance that is injected into a turn as a developer role
 /// message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
@@ -212,6 +233,13 @@ impl DeveloperInstructions {
         Self { text }
     }
 
+    pub fn personality_spec_message(spec: String) -> Self {
+        let message = format!(
+            "<personality_spec> The user has requested a new communication style. Future messages should adhere to the following personality: \n{spec} </personality_spec>"
+        );
+        DeveloperInstructions::new(message)
+    }
+
     pub fn from_policy(
         sandbox_policy: &SandboxPolicy,
         approval_policy: AskForApproval,
@@ -243,13 +271,8 @@ impl DeveloperInstructions {
 
     /// Returns developer instructions from a collaboration mode if they exist and are non-empty.
     pub fn from_collaboration_mode(collaboration_mode: &CollaborationMode) -> Option<Self> {
-        let settings = match collaboration_mode {
-            CollaborationMode::Plan(settings)
-            | CollaborationMode::Collaborate(settings)
-            | CollaborationMode::Execute(settings)
-            | CollaborationMode::Custom(settings) => settings,
-        };
-        settings
+        collaboration_mode
+            .settings
             .developer_instructions
             .as_ref()
             .filter(|instructions| !instructions.is_empty())
@@ -319,6 +342,7 @@ impl From<DeveloperInstructions> for ResponseItem {
             content: vec![ContentItem::InputText {
                 text: di.into_text(),
             }],
+            end_turn: None,
         }
     }
 }
@@ -488,6 +512,7 @@ impl From<ResponseInputItem> for ResponseItem {
                 role,
                 content,
                 id: None,
+                end_turn: None,
             },
             ResponseInputItem::FunctionCallOutput { call_id, output } => {
                 Self::FunctionCallOutput { call_id, output }

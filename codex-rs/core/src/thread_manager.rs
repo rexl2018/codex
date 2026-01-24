@@ -237,6 +237,15 @@ impl ThreadManager {
         self.state.threads.write().await.remove(thread_id)
     }
 
+    /// Closes all threads open in this ThreadManager
+    pub async fn remove_and_close_all_threads(&self) -> CodexResult<()> {
+        for thread in self.state.threads.read().await.values() {
+            thread.submit(Op::Shutdown).await?;
+        }
+        self.state.threads.write().await.clear();
+        Ok(())
+    }
+
     /// Fork an existing thread by taking messages up to the given position (not including
     /// the message at the given position) and starting a new thread with identical
     /// configuration (unless overridden by the caller's `config`). The new thread will have
@@ -408,7 +417,8 @@ impl ThreadManagerState {
             codex,
             session_configured.rollout_path.clone(),
         ));
-        self.threads.write().await.insert(thread_id, thread.clone());
+        let mut threads = self.threads.write().await;
+        threads.insert(thread_id, thread.clone());
 
         Ok(NewThread {
             thread_id,
@@ -498,6 +508,7 @@ mod tests {
             content: vec![ContentItem::OutputText {
                 text: text.to_string(),
             }],
+            end_turn: None,
         }
     }
     fn assistant_msg(text: &str) -> ResponseItem {
@@ -507,6 +518,7 @@ mod tests {
             content: vec![ContentItem::OutputText {
                 text: text.to_string(),
             }],
+            end_turn: None,
         }
     }
 

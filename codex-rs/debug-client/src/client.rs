@@ -173,6 +173,7 @@ impl AppServerClient {
                 limit: None,
                 sort_key: None,
                 model_providers: None,
+                archived: None,
             },
         };
         self.send(&request)?;
@@ -187,7 +188,7 @@ impl AppServerClient {
                 thread_id: thread_id.to_string(),
                 input: vec![UserInput::Text {
                     text,
-                    // Plain text conversion has no UI element ranges.
+                    // Debug client sends plain text with no UI markup spans.
                     text_elements: Vec::new(),
                 }],
                 ..Default::default()
