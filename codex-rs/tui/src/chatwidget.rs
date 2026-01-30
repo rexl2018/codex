@@ -6457,6 +6457,7 @@ fn format_duration_short(seconds: u64) -> String {
 #[cfg(test)]
 pub(crate) mod tests;
 
+#[allow(dead_code)]
 pub(crate) fn parse_copy_command(text: &str) -> Result<Option<CopyRequest>, String> {
     const COMMAND: &str = "/copy";
     let trimmed = text.trim();
@@ -6523,6 +6524,7 @@ pub(crate) fn parse_copy_command(text: &str) -> Result<Option<CopyRequest>, Stri
     }))
 }
 
+#[allow(dead_code)]
 fn tokenize_ranges(input: &str) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
     let mut start: Option<usize> = None;
@@ -6541,6 +6543,7 @@ fn tokenize_ranges(input: &str) -> Vec<(usize, usize)> {
     ranges
 }
 
+#[allow(dead_code)]
 fn build_destination(input: &str, removal_ranges: &[(usize, usize)]) -> Option<String> {
     if input.is_empty() {
         return None;

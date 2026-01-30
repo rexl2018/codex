@@ -1311,6 +1311,7 @@ impl App {
         }
     }
 
+    #[allow(dead_code)]
     fn handle_history_entry_copy_response(
         &mut self,
         event: &codex_core::protocol::GetHistoryEntryResponseEvent,

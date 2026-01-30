@@ -1374,7 +1374,6 @@ impl Config {
         };
 
         let features = Features::from_config(&cfg, &config_profile, feature_overrides.clone());
-        let web_search_mode = resolve_web_search_mode(&cfg, &config_profile, &features);
         #[cfg(target_os = "windows")]
         {
             // Base flag controls sandbox on/off; elevated only applies when base is enabled.

@@ -1,7 +1,6 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::WidgetRef;
-use std::cmp::Ordering;
 
 use super::popup_consts::MAX_POPUP_ROWS;
 use super::scroll_state::ScrollState;
@@ -186,6 +185,7 @@ impl CommandPopup {
         out
     }
 
+    #[allow(dead_code)]
     fn builtin_position(&self, cmd: SlashCommand) -> usize {
         self.builtins
             .iter()
