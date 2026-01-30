@@ -1,10 +1,13 @@
 mod config_requirements;
+mod diagnostics;
 mod fingerprint;
 mod layer_io;
 #[cfg(target_os = "macos")]
 mod macos;
 mod merge;
 mod overrides;
+#[cfg(test)]
+mod requirements_exec_policy;
 mod state;
 
 #[cfg(test)]
@@ -34,6 +37,16 @@ pub use config_requirements::McpServerRequirement;
 pub use config_requirements::RequirementSource;
 pub use config_requirements::SandboxModeRequirement;
 pub use config_requirements::Sourced;
+pub use diagnostics::ConfigError;
+pub use diagnostics::ConfigLoadError;
+pub use diagnostics::TextPosition;
+pub use diagnostics::TextRange;
+pub(crate) use diagnostics::config_error_from_toml;
+pub(crate) use diagnostics::first_layer_config_error;
+pub(crate) use diagnostics::first_layer_config_error_from_entries;
+pub use diagnostics::format_config_error;
+pub use diagnostics::format_config_error_with_source;
+pub(crate) use diagnostics::io_error_from_config_error;
 pub use merge::merge_toml_values;
 pub(crate) use overrides::build_cli_overrides_layer;
 pub use state::ConfigLayerEntry;
@@ -171,16 +184,44 @@ pub async fn load_config_layers_state(
             merge_toml_values(&mut merged_so_far, cli_overrides_layer);
         }
 
-        let project_root_markers = project_root_markers_from_config(&merged_so_far)?
-            .unwrap_or_else(default_project_root_markers);
-        let project_trust_context = project_trust_context(
+        let project_root_markers = match project_root_markers_from_config(&merged_so_far) {
+            Ok(markers) => markers.unwrap_or_else(default_project_root_markers),
+            Err(err) => {
+                if let Some(config_error) = first_layer_config_error_from_entries(&layers).await {
+                    return Err(io_error_from_config_error(
+                        io::ErrorKind::InvalidData,
+                        config_error,
+                        None,
+                    ));
+                }
+                return Err(err);
+            }
+        };
+        let project_trust_context = match project_trust_context(
             &merged_so_far,
             &cwd,
             &project_root_markers,
             codex_home,
             &user_file,
         )
-        .await?;
+        .await
+        {
+            Ok(context) => context,
+            Err(err) => {
+                let source = err
+                    .get_ref()
+                    .and_then(|err| err.downcast_ref::<toml::de::Error>())
+                    .cloned();
+                if let Some(config_error) = first_layer_config_error_from_entries(&layers).await {
+                    return Err(io_error_from_config_error(
+                        io::ErrorKind::InvalidData,
+                        config_error,
+                        source,
+                    ));
+                }
+                return Err(err);
+            }
+        };
         let project_layers = load_project_layers(
             &cwd,
             &project_trust_context.project_root,
@@ -252,11 +293,9 @@ async fn load_config_toml_for_required_layer(
     let toml_file = config_toml.as_ref();
     let toml_value = match tokio::fs::read_to_string(toml_file).await {
         Ok(contents) => {
-            let config: TomlValue = toml::from_str(&contents).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Error parsing config file {}: {e}", toml_file.display()),
-                )
+            let config: TomlValue = toml::from_str(&contents).map_err(|err| {
+                let config_error = config_error_from_toml(toml_file, &contents, err.clone());
+                io_error_from_config_error(io::ErrorKind::InvalidData, config_error, Some(err))
             })?;
             let config_parent = toml_file.parent().ok_or_else(|| {
                 io::Error::new(
@@ -475,10 +514,10 @@ impl ProjectTrustContext {
         let user_config_file = self.user_config_file.as_path().display();
         match decision.trust_level {
             Some(TrustLevel::Untrusted) => Some(format!(
-                "{trust_key} is marked as untrusted in {user_config_file}. Mark it trusted to enable project config folders."
+                "{trust_key} is marked as untrusted in {user_config_file}. To load config.toml, mark it trusted."
             )),
             _ => Some(format!(
-                "Add {trust_key} as a trusted project in {user_config_file}."
+                "To load config.toml, add {trust_key} as a trusted project in {user_config_file}."
             )),
         }
     }
@@ -489,21 +528,16 @@ fn project_layer_entry(
     dot_codex_folder: &AbsolutePathBuf,
     layer_dir: &AbsolutePathBuf,
     config: TomlValue,
+    config_toml_exists: bool,
 ) -> ConfigLayerEntry {
-    match trust_context.disabled_reason_for_dir(layer_dir) {
-        Some(reason) => ConfigLayerEntry::new_disabled(
-            ConfigLayerSource::Project {
-                dot_codex_folder: dot_codex_folder.clone(),
-            },
-            config,
-            reason,
-        ),
-        None => ConfigLayerEntry::new(
-            ConfigLayerSource::Project {
-                dot_codex_folder: dot_codex_folder.clone(),
-            },
-            config,
-        ),
+    let source = ConfigLayerSource::Project {
+        dot_codex_folder: dot_codex_folder.clone(),
+    };
+
+    if config_toml_exists && let Some(reason) = trust_context.disabled_reason_for_dir(layer_dir) {
+        ConfigLayerEntry::new_disabled(source, config, reason)
+    } else {
+        ConfigLayerEntry::new(source, config)
     }
 }
 
@@ -678,13 +712,15 @@ async fn load_project_layers(
                             &dot_codex_abs,
                             &layer_dir,
                             TomlValue::Table(toml::map::Map::new()),
+                            true,
                         ));
                         continue;
                     }
                 };
                 let config =
                     resolve_relative_paths_in_config_toml(config, dot_codex_abs.as_path())?;
-                let entry = project_layer_entry(trust_context, &dot_codex_abs, &layer_dir, config);
+                let entry =
+                    project_layer_entry(trust_context, &dot_codex_abs, &layer_dir, config, true);
                 layers.push(entry);
             }
             Err(err) => {
@@ -697,6 +733,7 @@ async fn load_project_layers(
                         &dot_codex_abs,
                         &layer_dir,
                         TomlValue::Table(toml::map::Map::new()),
+                        false,
                     ));
                 } else {
                     let config_file_display = config_file.as_path().display();

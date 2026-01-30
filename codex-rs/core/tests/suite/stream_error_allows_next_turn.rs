@@ -74,6 +74,7 @@ async fn continue_after_stream_error() {
         stream_idle_timeout_ms: Some(2_000),
         requires_openai_auth: false,
         base_url_suffix: None,
+        supports_websockets: false,
     };
 
     let TestCodex { codex, .. } = test_codex()

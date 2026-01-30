@@ -29,11 +29,13 @@ use codex_app_server_protocol::GetAuthStatusParams;
 use codex_app_server_protocol::InitializeParams;
 use codex_app_server_protocol::InterruptConversationParams;
 use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::ListConversationsParams;
+use codex_app_server_protocol::LoginAccountParams;
 use codex_app_server_protocol::LoginApiKeyParams;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::NewConversationParams;
@@ -53,6 +55,7 @@ use codex_app_server_protocol::ThreadReadParams;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadRollbackParams;
 use codex_app_server_protocol::ThreadStartParams;
+use codex_app_server_protocol::ThreadUnarchiveParams;
 use codex_app_server_protocol::TurnInterruptParams;
 use codex_app_server_protocol::TurnStartParams;
 use codex_core::default_client::CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR;
@@ -297,6 +300,20 @@ impl McpProcess {
         self.send_request("account/read", params).await
     }
 
+    /// Send an `account/login/start` JSON-RPC request with ChatGPT auth tokens.
+    pub async fn send_chatgpt_auth_tokens_login_request(
+        &mut self,
+        id_token: String,
+        access_token: String,
+    ) -> anyhow::Result<i64> {
+        let params = LoginAccountParams::ChatgptAuthTokens {
+            id_token,
+            access_token,
+        };
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("account/login/start", params).await
+    }
+
     /// Send a `feedback/upload` JSON-RPC request.
     pub async fn send_feedback_upload_request(
         &mut self,
@@ -363,6 +380,15 @@ impl McpProcess {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("thread/archive", params).await
+    }
+
+    /// Send a `thread/unarchive` JSON-RPC request.
+    pub async fn send_thread_unarchive_request(
+        &mut self,
+        params: ThreadUnarchiveParams,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(params)?);
+        self.send_request("thread/unarchive", params).await
     }
 
     /// Send a `thread/rollback` JSON-RPC request.
@@ -595,6 +621,15 @@ impl McpProcess {
         result: serde_json::Value,
     ) -> anyhow::Result<()> {
         self.send_jsonrpc_message(JSONRPCMessage::Response(JSONRPCResponse { id, result }))
+            .await
+    }
+
+    pub async fn send_error(
+        &mut self,
+        id: RequestId,
+        error: JSONRPCErrorError,
+    ) -> anyhow::Result<()> {
+        self.send_jsonrpc_message(JSONRPCMessage::Error(JSONRPCError { id, error }))
             .await
     }
 

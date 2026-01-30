@@ -1,6 +1,8 @@
 //! Session-wide mutable state.
 
 use codex_protocol::models::ResponseItem;
+use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::codex::SessionConfiguration;
 use crate::context_manager::ContextManager;
@@ -20,6 +22,13 @@ pub(crate) struct SessionState {
     pub(crate) latest_rate_limits: Option<RateLimitSnapshot>,
     pub(crate) last_response_id: Option<String>,
     pub(crate) server_reasoning_included: bool,
+    pub(crate) dependency_env: HashMap<String, String>,
+    pub(crate) mcp_dependency_prompted: HashSet<String>,
+    /// Whether the session's initial context has been seeded into history.
+    ///
+    /// TODO(owen): This is a temporary solution to avoid updating a thread's updated_at
+    /// timestamp when resuming a session. Remove this once SQLite is in place.
+    pub(crate) initial_context_seeded: bool,
 }
 
 impl SessionState {
@@ -32,6 +41,9 @@ impl SessionState {
             latest_rate_limits: None,
             last_response_id: None,
             server_reasoning_included: false,
+            dependency_env: HashMap::new(),
+            mcp_dependency_prompted: HashSet::new(),
+            initial_context_seeded: false,
         }
     }
 
@@ -105,6 +117,27 @@ impl SessionState {
 
     pub(crate) fn get_last_response_id(&self) -> Option<String> {
         self.last_response_id.clone()
+    }
+
+    pub(crate) fn record_mcp_dependency_prompted<I>(&mut self, names: I)
+    where
+        I: IntoIterator<Item = String>,
+    {
+        self.mcp_dependency_prompted.extend(names);
+    }
+
+    pub(crate) fn mcp_dependency_prompted(&self) -> HashSet<String> {
+        self.mcp_dependency_prompted.clone()
+    }
+
+    pub(crate) fn set_dependency_env(&mut self, values: HashMap<String, String>) {
+        for (key, value) in values {
+            self.dependency_env.insert(key, value);
+        }
+    }
+
+    pub(crate) fn dependency_env(&self) -> HashMap<String, String> {
+        self.dependency_env.clone()
     }
 }
 

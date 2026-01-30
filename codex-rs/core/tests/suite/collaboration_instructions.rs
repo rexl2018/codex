@@ -104,6 +104,7 @@ async fn user_input_includes_collaboration_instructions_after_override() -> Resu
             cwd: None,
             approval_policy: None,
             sandbox_policy: None,
+            windows_sandbox_level: None,
             model: None,
             effort: None,
             summary: None,
@@ -185,6 +186,7 @@ async fn override_then_user_turn_uses_updated_collaboration_instructions() -> Re
             cwd: None,
             approval_policy: None,
             sandbox_policy: None,
+            windows_sandbox_level: None,
             model: None,
             effort: None,
             summary: None,
@@ -238,6 +240,7 @@ async fn user_turn_overrides_collaboration_instructions_after_override() -> Resu
             cwd: None,
             approval_policy: None,
             sandbox_policy: None,
+            windows_sandbox_level: None,
             model: None,
             effort: None,
             summary: None,
@@ -292,6 +295,7 @@ async fn collaboration_mode_update_emits_new_instruction_message() -> Result<()>
             cwd: None,
             approval_policy: None,
             sandbox_policy: None,
+            windows_sandbox_level: None,
             model: None,
             effort: None,
             summary: None,
@@ -316,6 +320,7 @@ async fn collaboration_mode_update_emits_new_instruction_message() -> Result<()>
             cwd: None,
             approval_policy: None,
             sandbox_policy: None,
+            windows_sandbox_level: None,
             model: None,
             effort: None,
             summary: None,
@@ -361,6 +366,7 @@ async fn collaboration_mode_update_noop_does_not_append() -> Result<()> {
             cwd: None,
             approval_policy: None,
             sandbox_policy: None,
+            windows_sandbox_level: None,
             model: None,
             effort: None,
             summary: None,
@@ -385,6 +391,7 @@ async fn collaboration_mode_update_noop_does_not_append() -> Result<()> {
             cwd: None,
             approval_policy: None,
             sandbox_policy: None,
+            windows_sandbox_level: None,
             model: None,
             effort: None,
             summary: None,
@@ -422,7 +429,11 @@ async fn resume_replays_collaboration_instructions() -> Result<()> {
 
     let mut builder = test_codex();
     let initial = builder.build(&server).await?;
-    let rollout_path = initial.session_configured.rollout_path.clone();
+    let rollout_path = initial
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path");
     let home = initial.home.clone();
 
     let collab_text = "resume instructions";
@@ -432,6 +443,7 @@ async fn resume_replays_collaboration_instructions() -> Result<()> {
             cwd: None,
             approval_policy: None,
             sandbox_policy: None,
+            windows_sandbox_level: None,
             model: None,
             effort: None,
             summary: None,
@@ -487,6 +499,7 @@ async fn empty_collaboration_instructions_are_ignored() -> Result<()> {
             cwd: None,
             approval_policy: None,
             sandbox_policy: None,
+            windows_sandbox_level: None,
             model: None,
             effort: None,
             summary: None,

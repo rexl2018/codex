@@ -9,6 +9,7 @@ use codex_core::ModelProviderInfo;
 use codex_core::Prompt;
 use codex_core::ResponseEvent;
 use codex_core::ResponseItem;
+use codex_core::TransportManager;
 use codex_core::WEB_SEARCH_ELIGIBLE_HEADER;
 use codex_core::WireApi;
 use codex_core::models_manager::manager::ModelsManager;
@@ -57,6 +58,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
         stream_idle_timeout_ms: Some(5_000),
         requires_openai_auth: false,
         base_url_suffix: None,
+        supports_websockets: false,
     };
 
     let codex_home = TempDir::new().expect("failed to create TempDir");
@@ -95,6 +97,7 @@ async fn responses_stream_includes_subagent_header_on_review() {
         summary,
         conversation_id,
         session_source,
+        TransportManager::new(),
     )
     .new_session();
 
@@ -154,6 +157,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
         stream_idle_timeout_ms: Some(5_000),
         requires_openai_auth: false,
         base_url_suffix: None,
+        supports_websockets: false,
     };
 
     let codex_home = TempDir::new().expect("failed to create TempDir");
@@ -193,6 +197,7 @@ async fn responses_stream_includes_subagent_header_on_other() {
         summary,
         conversation_id,
         session_source,
+        TransportManager::new(),
     )
     .new_session();
 
@@ -307,6 +312,7 @@ async fn responses_respects_model_info_overrides_from_config() {
         stream_idle_timeout_ms: Some(5_000),
         requires_openai_auth: false,
         base_url_suffix: None,
+        supports_websockets: false,
     };
 
     let codex_home = TempDir::new().expect("failed to create TempDir");
@@ -349,6 +355,7 @@ async fn responses_respects_model_info_overrides_from_config() {
         summary,
         conversation_id,
         session_source,
+        TransportManager::new(),
     )
     .new_session();
 

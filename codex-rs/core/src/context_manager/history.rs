@@ -570,7 +570,7 @@ fn format_item_summary(item: &ResponseItem) -> String {
             }
         },
         ResponseItem::WebSearchCall { action, .. } => match action {
-            codex_protocol::models::WebSearchAction::Search { query } => {
+            Some(codex_protocol::models::WebSearchAction::Search { query }) => {
                 format!("[WebSearch] {}", query.as_deref().unwrap_or("?"))
             }
             _ => "[WebSearch]".to_string(),

@@ -6,6 +6,7 @@ use crate::config::ConfigOverrides;
 use crate::config::ConfigToml;
 use crate::config::ProjectConfig;
 use crate::config_loader::ConfigLayerEntry;
+use crate::config_loader::ConfigLoadError;
 use crate::config_loader::ConfigRequirements;
 use crate::config_loader::config_requirements::ConfigRequirementsWithSources;
 use crate::config_loader::fingerprint::version_for_toml;
@@ -20,6 +21,13 @@ use std::collections::HashMap;
 use std::path::Path;
 use tempfile::tempdir;
 use toml::Value as TomlValue;
+
+fn config_error_from_io(err: &std::io::Error) -> &super::ConfigError {
+    err.get_ref()
+        .and_then(|err| err.downcast_ref::<ConfigLoadError>())
+        .map(ConfigLoadError::config_error)
+        .expect("expected ConfigLoadError")
+}
 
 async fn make_config_for_test(
     codex_home: &Path,
@@ -42,6 +50,98 @@ async fn make_config_for_test(
         .expect("serialize config"),
     )
     .await
+}
+
+#[tokio::test]
+async fn returns_config_error_for_invalid_user_config_toml() {
+    let tmp = tempdir().expect("tempdir");
+    let contents = "model = \"gpt-4\"\ninvalid = [";
+    let config_path = tmp.path().join(CONFIG_TOML_FILE);
+    std::fs::write(&config_path, contents).expect("write config");
+
+    let cwd = AbsolutePathBuf::try_from(tmp.path()).expect("cwd");
+    let err = load_config_layers_state(
+        tmp.path(),
+        Some(cwd),
+        &[] as &[(String, TomlValue)],
+        LoaderOverrides::default(),
+    )
+    .await
+    .expect_err("expected error");
+
+    let config_error = config_error_from_io(&err);
+    let expected_toml_error = toml::from_str::<TomlValue>(contents).expect_err("parse error");
+    let expected_config_error =
+        super::config_error_from_toml(&config_path, contents, expected_toml_error);
+    assert_eq!(config_error, &expected_config_error);
+}
+
+#[tokio::test]
+async fn returns_config_error_for_invalid_managed_config_toml() {
+    let tmp = tempdir().expect("tempdir");
+    let managed_path = tmp.path().join("managed_config.toml");
+    let contents = "model = \"gpt-4\"\ninvalid = [";
+    std::fs::write(&managed_path, contents).expect("write managed config");
+
+    let overrides = LoaderOverrides {
+        managed_config_path: Some(managed_path.clone()),
+        ..Default::default()
+    };
+
+    let cwd = AbsolutePathBuf::try_from(tmp.path()).expect("cwd");
+    let err = load_config_layers_state(
+        tmp.path(),
+        Some(cwd),
+        &[] as &[(String, TomlValue)],
+        overrides,
+    )
+    .await
+    .expect_err("expected error");
+
+    let config_error = config_error_from_io(&err);
+    let expected_toml_error = toml::from_str::<TomlValue>(contents).expect_err("parse error");
+    let expected_config_error =
+        super::config_error_from_toml(&managed_path, contents, expected_toml_error);
+    assert_eq!(config_error, &expected_config_error);
+}
+
+#[tokio::test]
+async fn returns_config_error_for_schema_error_in_user_config() {
+    let tmp = tempdir().expect("tempdir");
+    let contents = "model_context_window = \"not_a_number\"";
+    let config_path = tmp.path().join(CONFIG_TOML_FILE);
+    std::fs::write(&config_path, contents).expect("write config");
+
+    let err = ConfigBuilder::default()
+        .codex_home(tmp.path().to_path_buf())
+        .fallback_cwd(Some(tmp.path().to_path_buf()))
+        .build()
+        .await
+        .expect_err("expected error");
+
+    let config_error = config_error_from_io(&err);
+    let _guard = codex_utils_absolute_path::AbsolutePathBufGuard::new(tmp.path());
+    let expected_config_error =
+        super::diagnostics::config_error_from_config_toml(&config_path, contents)
+            .expect("schema error");
+    assert_eq!(config_error, &expected_config_error);
+}
+
+#[test]
+fn schema_error_points_to_feature_value() {
+    let tmp = tempdir().expect("tempdir");
+    let contents = "[features]\ncollaboration_modes = \"true\"";
+    let config_path = tmp.path().join(CONFIG_TOML_FILE);
+    std::fs::write(&config_path, contents).expect("write config");
+
+    let _guard = codex_utils_absolute_path::AbsolutePathBufGuard::new(tmp.path());
+    let error = super::diagnostics::config_error_from_config_toml(&config_path, contents)
+        .expect("schema error");
+
+    let value_line = contents.lines().nth(1).expect("value line");
+    let value_column = value_line.find("\"true\"").expect("value") + 1;
+    assert_eq!(error.range.start.line, 2);
+    assert_eq!(error.range.start.column, value_column);
 }
 
 #[tokio::test]
@@ -810,4 +910,166 @@ async fn project_root_markers_supports_alternate_markers() -> std::io::Result<()
     assert_eq!(foo, "child");
 
     Ok(())
+}
+
+mod requirements_exec_policy_tests {
+    use super::super::requirements_exec_policy::RequirementsExecPolicyDecisionToml;
+    use super::super::requirements_exec_policy::RequirementsExecPolicyPatternTokenToml;
+    use super::super::requirements_exec_policy::RequirementsExecPolicyPrefixRuleToml;
+    use super::super::requirements_exec_policy::RequirementsExecPolicyToml;
+    use super::super::requirements_exec_policy::RequirementsExecPolicyTomlRoot;
+    use codex_execpolicy::Decision;
+    use codex_execpolicy::Evaluation;
+    use codex_execpolicy::RuleMatch;
+    use pretty_assertions::assert_eq;
+    use toml::from_str;
+
+    fn tokens(cmd: &[&str]) -> Vec<String> {
+        cmd.iter().map(std::string::ToString::to_string).collect()
+    }
+
+    fn allow_all(_: &[String]) -> Decision {
+        Decision::Allow
+    }
+
+    #[test]
+    fn parses_single_prefix_rule_from_raw_toml() -> anyhow::Result<()> {
+        let toml_str = r#"
+[exec_policy]
+prefix_rules = [
+    { pattern = [{ token = "rm" }], decision = "forbidden" },
+]
+"#;
+
+        let parsed: RequirementsExecPolicyTomlRoot = from_str(toml_str)?;
+
+        assert_eq!(
+            parsed,
+            RequirementsExecPolicyTomlRoot {
+                exec_policy: RequirementsExecPolicyToml {
+                    prefix_rules: vec![RequirementsExecPolicyPrefixRuleToml {
+                        pattern: vec![RequirementsExecPolicyPatternTokenToml {
+                            token: Some("rm".to_string()),
+                            any_of: None,
+                        }],
+                        decision: Some(RequirementsExecPolicyDecisionToml::Forbidden),
+                        justification: None,
+                    }],
+                },
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn parses_multiple_prefix_rules_from_raw_toml() -> anyhow::Result<()> {
+        let toml_str = r#"
+[exec_policy]
+prefix_rules = [
+    { pattern = [{ token = "rm" }], decision = "forbidden" },
+    { pattern = [{ token = "git" }, { any_of = ["push", "commit"] }], decision = "prompt", justification = "review changes before push or commit" },
+]
+"#;
+
+        let parsed: RequirementsExecPolicyTomlRoot = from_str(toml_str)?;
+
+        assert_eq!(
+            parsed,
+            RequirementsExecPolicyTomlRoot {
+                exec_policy: RequirementsExecPolicyToml {
+                    prefix_rules: vec![
+                        RequirementsExecPolicyPrefixRuleToml {
+                            pattern: vec![RequirementsExecPolicyPatternTokenToml {
+                                token: Some("rm".to_string()),
+                                any_of: None,
+                            }],
+                            decision: Some(RequirementsExecPolicyDecisionToml::Forbidden),
+                            justification: None,
+                        },
+                        RequirementsExecPolicyPrefixRuleToml {
+                            pattern: vec![
+                                RequirementsExecPolicyPatternTokenToml {
+                                    token: Some("git".to_string()),
+                                    any_of: None,
+                                },
+                                RequirementsExecPolicyPatternTokenToml {
+                                    token: None,
+                                    any_of: Some(vec!["push".to_string(), "commit".to_string()]),
+                                },
+                            ],
+                            decision: Some(RequirementsExecPolicyDecisionToml::Prompt),
+                            justification: Some("review changes before push or commit".to_string()),
+                        },
+                    ],
+                },
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn converts_rules_toml_into_internal_policy_representation() -> anyhow::Result<()> {
+        let toml_str = r#"
+[exec_policy]
+prefix_rules = [
+    { pattern = [{ token = "rm" }], decision = "forbidden" },
+]
+"#;
+
+        let parsed: RequirementsExecPolicyTomlRoot = from_str(toml_str)?;
+        let policy = parsed.exec_policy.to_policy()?;
+
+        assert_eq!(
+            policy.check(&tokens(&["rm", "-rf", "/tmp"]), &allow_all),
+            Evaluation {
+                decision: Decision::Forbidden,
+                matched_rules: vec![RuleMatch::PrefixRuleMatch {
+                    matched_prefix: tokens(&["rm"]),
+                    decision: Decision::Forbidden,
+                    justification: None,
+                }],
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn head_any_of_expands_into_multiple_program_rules() -> anyhow::Result<()> {
+        let toml_str = r#"
+[exec_policy]
+prefix_rules = [
+    { pattern = [{ any_of = ["git", "hg"] }, { token = "status" }], decision = "prompt" },
+]
+"#;
+        let parsed: RequirementsExecPolicyTomlRoot = from_str(toml_str)?;
+        let policy = parsed.exec_policy.to_policy()?;
+
+        assert_eq!(
+            policy.check(&tokens(&["git", "status"]), &allow_all),
+            Evaluation {
+                decision: Decision::Prompt,
+                matched_rules: vec![RuleMatch::PrefixRuleMatch {
+                    matched_prefix: tokens(&["git", "status"]),
+                    decision: Decision::Prompt,
+                    justification: None,
+                }],
+            }
+        );
+        assert_eq!(
+            policy.check(&tokens(&["hg", "status"]), &allow_all),
+            Evaluation {
+                decision: Decision::Prompt,
+                matched_rules: vec![RuleMatch::PrefixRuleMatch {
+                    matched_prefix: tokens(&["hg", "status"]),
+                    decision: Decision::Prompt,
+                    justification: None,
+                }],
+            }
+        );
+
+        Ok(())
+    }
 }
