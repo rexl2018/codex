@@ -63,6 +63,7 @@ pub(crate) async fn run_compact_task(
 ) {
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         model_context_window: turn_context.client.get_model_context_window(),
+        collaboration_mode_kind: turn_context.collaboration_mode_kind,
     });
     sess.send_event(&turn_context, start_event).await;
     run_compact_task_inner(sess, turn_context, input, None).await;
@@ -77,6 +78,7 @@ pub(crate) async fn run_compact_task_on_range(
 ) {
     let start_event = EventMsg::TurnStarted(TurnStartedEvent {
         model_context_window: turn_context.client.get_model_context_window(),
+        collaboration_mode_kind: turn_context.collaboration_mode_kind,
     });
     sess.send_event(&turn_context, start_event).await;
 

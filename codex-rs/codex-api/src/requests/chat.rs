@@ -774,6 +774,7 @@ mod tests {
                 content: vec![ContentItem::InputText {
                     text: "developer instructions".to_string(),
                 }],
+                end_turn: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -781,6 +782,7 @@ mod tests {
                 content: vec![ContentItem::InputText {
                     text: "hello".to_string(),
                 }],
+                end_turn: None,
             },
         ];
 
@@ -813,6 +815,7 @@ mod tests {
                 content: vec![ContentItem::InputText {
                     text: "developer instructions".to_string(),
                 }],
+                end_turn: None,
             },
             ResponseItem::Message {
                 id: None,
@@ -820,6 +823,7 @@ mod tests {
                 content: vec![ContentItem::InputText {
                     text: "hello".to_string(),
                 }],
+                end_turn: None,
             },
         ];
 

@@ -969,6 +969,8 @@ async fn test_tail_handles_short_sessions() -> Result<()> {
                 cli_version: "test_version".into(),
                 source: SessionSource::VSCode,
                 model_provider: Some("test-provider".into()),
+                base_instructions: None,
+                dynamic_tools: None,
             },
             git: None,
         }),
@@ -995,6 +997,7 @@ async fn test_tail_handles_short_sessions() -> Result<()> {
                 content: vec![ContentItem::OutputText {
                     text: format!("short-{idx}"),
                 }],
+                end_turn: None,
             }),
         };
         writeln!(file, "{}", serde_json::to_string(&response_line)?)?;
@@ -1065,6 +1068,8 @@ async fn test_tail_skips_trailing_non_responses() -> Result<()> {
                 cli_version: "test_version".into(),
                 source: SessionSource::VSCode,
                 model_provider: Some("test-provider".into()),
+                base_instructions: None,
+                dynamic_tools: None,
             },
             git: None,
         }),
@@ -1091,6 +1096,7 @@ async fn test_tail_skips_trailing_non_responses() -> Result<()> {
                 content: vec![ContentItem::OutputText {
                     text: format!("response-{idx}"),
                 }],
+                end_turn: None,
             }),
         };
         writeln!(file, "{}", serde_json::to_string(&response_line)?)?;

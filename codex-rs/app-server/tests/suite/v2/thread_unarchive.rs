@@ -38,7 +38,7 @@ async fn thread_unarchive_moves_rollout_back_into_sessions_directory() -> Result
     .await??;
     let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(start_resp)?;
 
-    let rollout_path = find_thread_path_by_id_str(codex_home.path(), &thread.id)
+    let _rollout_path = find_thread_path_by_id_str(codex_home.path(), &thread.id)
         .await?
         .expect("expected rollout path for thread id to exist");
 
@@ -75,10 +75,14 @@ async fn thread_unarchive_moves_rollout_back_into_sessions_directory() -> Result
     .await??;
     let _: ThreadUnarchiveResponse = to_response::<ThreadUnarchiveResponse>(unarchive_resp)?;
 
-    let rollout_path_display = rollout_path.display();
+    let restored_path = find_thread_path_by_id_str(codex_home.path(), &thread.id)
+        .await?
+        .expect("expected rollout path for thread id to be restored");
+
+    let restored_path_display = restored_path.display();
     assert!(
-        rollout_path.exists(),
-        "expected rollout path {rollout_path_display} to be restored"
+        restored_path.exists(),
+        "expected rollout path {restored_path_display} to be restored"
     );
     assert!(
         !archived_path.exists(),

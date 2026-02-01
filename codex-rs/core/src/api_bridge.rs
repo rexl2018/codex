@@ -126,7 +126,9 @@ mod tests {
     use super::*;
     use codex_api::TransportError;
     use http::HeaderMap;
+    use http::HeaderValue;
     use http::StatusCode;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn map_api_error_maps_model_cap_headers() {
@@ -152,27 +154,6 @@ mod tests {
         assert_eq!(model_cap.model, "boomslang");
         assert_eq!(model_cap.reset_after_seconds, Some(120));
     }
-}
-
-fn extract_request_id(headers: Option<&HeaderMap>) -> Option<String> {
-    headers.and_then(|map| {
-        ["cf-ray", "x-request-id", "x-oai-request-id"]
-            .iter()
-            .find_map(|name| {
-                map.get(*name)
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string)
-            })
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use http::HeaderMap;
-    use http::HeaderValue;
-    use http::StatusCode;
-    use pretty_assertions::assert_eq;
 
     #[test]
     fn generic_429_is_mapped_to_stream_error() {
@@ -204,6 +185,18 @@ mod tests {
             other => panic!("Expected stream error, got {other:?}"),
         }
     }
+}
+
+fn extract_request_id(headers: Option<&HeaderMap>) -> Option<String> {
+    headers.and_then(|map| {
+        ["cf-ray", "x-request-id", "x-oai-request-id"]
+            .iter()
+            .find_map(|name| {
+                map.get(*name)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string)
+            })
+    })
 }
 
 pub(crate) fn auth_provider_from_auth(

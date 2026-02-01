@@ -5,10 +5,12 @@
 //!   2. User-defined entries inside `~/.codex/config.toml` under the `model_providers`
 //!      key. These override or extend the defaults at runtime.
 
+use crate::auth::AuthMode;
+use crate::error::EnvVarError;
 use codex_api::Provider as ApiProvider;
 use codex_api::WireApi as ApiWireApi;
+use codex_api::is_azure_responses_wire_base_url;
 use codex_api::provider::RetryConfig as ApiRetryConfig;
-use codex_app_server_protocol::AuthMode;
 use http::HeaderMap;
 use http::header::HeaderName;
 use http::header::HeaderValue;
@@ -19,7 +21,6 @@ use std::collections::HashMap;
 use std::env::VarError;
 use std::time::Duration;
 
-use crate::error::EnvVarError;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
 const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
@@ -139,10 +140,7 @@ impl ModelProviderInfo {
         &self,
         auth_mode: Option<AuthMode>,
     ) -> crate::error::Result<ApiProvider> {
-        let default_base_url = if matches!(
-            auth_mode,
-            Some(AuthMode::ChatGPT | AuthMode::ChatgptAuthTokens)
-        ) {
+        let default_base_url = if matches!(auth_mode, Some(AuthMode::Chatgpt)) {
             "https://chatgpt.com/backend-api/codex"
         } else {
             "https://api.openai.com/v1"
@@ -183,6 +181,15 @@ impl ModelProviderInfo {
             stream_idle_timeout: self.stream_idle_timeout(),
             base_url_suffix: self.base_url_suffix.clone(),
         })
+    }
+
+    pub(crate) fn is_azure_responses_endpoint(&self) -> bool {
+        let wire = match self.wire_api {
+            WireApi::Responses => ApiWireApi::Responses,
+            WireApi::Chat => ApiWireApi::Chat,
+        };
+
+        is_azure_responses_wire_base_url(wire, &self.name, self.base_url.as_deref())
     }
 
     /// If `env_key` is Some, returns the API key for this provider if present

@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::SecondsFormat;
 use std::cmp::Reverse;
 use std::ffi::OsStr;
 use std::io::{self};
@@ -6,10 +7,6 @@ use std::num::NonZero;
 use std::ops::ControlFlow;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-
-use chrono::SecondsFormat;
 use time::OffsetDateTime;
 use time::PrimitiveDateTime;
 use time::format_description::FormatItem;
@@ -1053,22 +1050,26 @@ async fn read_head_and_tail(
                         summary.head.push(val);
                     }
                 }
-                RolloutItem::EventMsg(ref ev) => {
-                    if matches!(ev, EventMsg::UserMessage(_)) {
-                        summary.saw_user_event = true;
-                    }
-                }
                 _ => {} // Skip others for head
             }
+        }
+
+        if matches!(
+            rollout_line.item,
+            RolloutItem::EventMsg(EventMsg::UserMessage(_))
+        ) {
+            summary.saw_user_event = true;
         }
 
         if let RolloutItem::ResponseItem(ref item) = rollout_line.item
             && let Ok(val) = serde_json::to_value(item)
         {
-            if summary.tail.len() >= tail_limit {
+            if summary.tail.len() >= tail_limit && tail_limit > 0 {
                 summary.tail.remove(0);
             }
-            summary.tail.push(val);
+            if tail_limit > 0 {
+                summary.tail.push(val);
+            }
         }
     }
 
@@ -1138,31 +1139,17 @@ async fn find_thread_path_by_id_str_in_subdir(
     // This is safe because we know the values are valid.
     #[allow(clippy::unwrap_used)]
     let limit = NonZero::new(1).unwrap();
-    // This is safe because we know the values are valid.
-    #[allow(clippy::unwrap_used)]
-    let threads = NonZero::new(2).unwrap();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let exclude: Vec<String> = Vec::new();
-    let compute_indices = false;
-
-    let results = file_search::run(
-        id_str,
+    let options = file_search::FileSearchOptions {
         limit,
-        &root,
-        Vec::new(),
-        exclude,
-        threads,
-        cancel,
-        compute_indices,
-        false,
-    )
-    .map_err(|e| io::Error::other(format!("file search failed: {e}")))?;
+        compute_indices: false,
+        respect_gitignore: false,
+        ..Default::default()
+    };
 
-    let found = results
-        .matches
-        .into_iter()
-        .next()
-        .map(|m| root.join(m.path));
+    let results = file_search::run(id_str, vec![root], options, None)
+        .map_err(|e| io::Error::other(format!("file search failed: {e}")))?;
+
+    let found = results.matches.into_iter().next().map(|m| m.full_path());
 
     // Checking if DB is at parity.
     // TODO(jif): sqlite migration phase 1

@@ -1,6 +1,8 @@
+use crate::config_loader::ResidencyRequirement;
 use crate::spawn::CODEX_SANDBOX_ENV_VAR;
 use codex_client::CodexHttpClient;
 pub use codex_client::CodexRequestBuilder;
+use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -25,6 +27,7 @@ use std::time::Duration;
 pub static USER_AGENT_SUFFIX: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 pub const DEFAULT_ORIGINATOR: &str = "codex_cli_rs";
 pub const CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR: &str = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE";
+pub const RESIDENCY_HEADER_NAME: &str = "x-openai-internal-codex-residency";
 
 #[derive(Debug, Clone)]
 pub struct Originator {
@@ -32,6 +35,8 @@ pub struct Originator {
     pub header_value: HeaderValue,
 }
 static ORIGINATOR: LazyLock<RwLock<Option<Originator>>> = LazyLock::new(|| RwLock::new(None));
+static REQUIREMENTS_RESIDENCY: LazyLock<RwLock<Option<ResidencyRequirement>>> =
+    LazyLock::new(|| RwLock::new(None));
 
 #[derive(Debug)]
 pub enum SetOriginatorError {
@@ -73,6 +78,14 @@ pub fn set_default_originator(value: String) -> Result<(), SetOriginatorError> {
     }
     *guard = Some(originator);
     Ok(())
+}
+
+pub fn set_default_client_residency_requirement(enforce_residency: Option<ResidencyRequirement>) {
+    let Ok(mut guard) = REQUIREMENTS_RESIDENCY.write() else {
+        tracing::warn!("Failed to acquire requirements residency lock");
+        return;
+    };
+    *guard = enforce_residency;
 }
 
 pub fn originator() -> Originator {
@@ -167,10 +180,17 @@ pub fn create_client() -> CodexHttpClient {
 }
 
 pub fn build_reqwest_client() -> reqwest::Client {
-    use reqwest::header::HeaderMap;
-
     let mut headers = HeaderMap::new();
     headers.insert("originator", originator().header_value);
+    if let Ok(guard) = REQUIREMENTS_RESIDENCY.read()
+        && let Some(requirement) = guard.as_ref()
+        && !headers.contains_key(RESIDENCY_HEADER_NAME)
+    {
+        let value = match requirement {
+            ResidencyRequirement::Us => HeaderValue::from_static("us"),
+        };
+        headers.insert(RESIDENCY_HEADER_NAME, value);
+    }
     let ua = get_codex_user_agent();
 
     let mut builder = reqwest::Client::builder()
@@ -219,6 +239,8 @@ mod tests {
     async fn test_create_client_sets_default_headers() {
         skip_if_no_network!();
 
+        set_default_client_residency_requirement(Some(ResidencyRequirement::Us));
+
         use wiremock::Mock;
         use wiremock::MockServer;
         use wiremock::ResponseTemplate;
@@ -261,6 +283,13 @@ mod tests {
             .get("user-agent")
             .expect("user-agent header missing");
         assert_eq!(ua_header.to_str().unwrap(), expected_ua);
+
+        let residency_header = headers
+            .get(RESIDENCY_HEADER_NAME)
+            .expect("residency header missing");
+        assert_eq!(residency_header.to_str().unwrap(), "us");
+
+        set_default_client_residency_requirement(None);
     }
 
     #[test]

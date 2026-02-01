@@ -409,6 +409,7 @@ mod tests {
             id: None,
             role: "user".into(),
             content: Vec::new(),
+            end_turn: None,
         }];
         let tools = vec![serde_json::json!({"type": "function", "function": {"name": "foo"}})];
 
@@ -435,6 +436,7 @@ mod tests {
             id: None,
             role: "user".into(),
             content: Vec::new(),
+            end_turn: None,
         }];
 
         // Case 1: No previous_response_id -> tool_choice should be present
@@ -458,6 +460,7 @@ mod tests {
             id: None,
             role: "user".into(),
             content: Vec::new(),
+            end_turn: None,
         }];
 
         // Case 1: No previous_response_id -> parallel_tool_calls should be present

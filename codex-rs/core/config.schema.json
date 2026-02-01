@@ -134,6 +134,9 @@
         "chatgpt_base_url": {
           "type": "string"
         },
+        "conversation_build_strategy": {
+          "$ref": "#/definitions/ConversationBuildStrategy"
+        },
         "experimental_compact_prompt_file": {
           "$ref": "#/definitions/AbsolutePathBuf"
         },
@@ -187,7 +190,13 @@
             "experimental_windows_sandbox": {
               "type": "boolean"
             },
+            "freeform_as_function": {
+              "type": "boolean"
+            },
             "include_apply_patch_tool": {
+              "type": "boolean"
+            },
+            "parallel_tool_calls": {
               "type": "boolean"
             },
             "personality": {
@@ -208,6 +217,9 @@
             "responses_websockets": {
               "type": "boolean"
             },
+            "runtime_metrics": {
+              "type": "boolean"
+            },
             "shell_snapshot": {
               "type": "boolean"
             },
@@ -218,6 +230,9 @@
               "type": "boolean"
             },
             "skill_mcp_dependency_install": {
+              "type": "boolean"
+            },
+            "skills": {
               "type": "boolean"
             },
             "sqlite": {
@@ -258,6 +273,10 @@
           ],
           "description": "Optional path to a file containing model instructions."
         },
+        "model_max_output_tokens": {
+          "format": "int64",
+          "type": "integer"
+        },
         "model_personality": {
           "$ref": "#/definitions/Personality"
         },
@@ -291,6 +310,25 @@
         }
       },
       "type": "object"
+    },
+    "ConversationBuildStrategy": {
+      "description": "Determines how Codex should build the conversation payload that gets sent to a model provider. Different providers have subtly different requirements, so we centralize that logic here instead of scattering feature flags.",
+      "oneOf": [
+        {
+          "description": "Sends the full conversation history along with the standard `instructions` field that OpenAI's Responses API expects.",
+          "enum": [
+            "full_history"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Uses `previous_response_id` to anchor the provider's context cache and only sends the delta since that response. Instructions are moved into the first system message because some providers reject the dedicated `instructions` field when caching is enabled.",
+          "enum": [
+            "previous_response_id"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "FeedbackConfigToml": {
       "additionalProperties": false,
@@ -388,6 +426,10 @@
       "properties": {
         "base_url": {
           "description": "Base URL for the provider's OpenAI-compatible API.",
+          "type": "string"
+        },
+        "base_url_suffix": {
+          "description": "Optional suffix to append to the base URL (e.g. for custom paths vs default \"/chat/completions\").",
           "type": "string"
         },
         "env_http_headers": {
@@ -1150,6 +1192,14 @@
       "description": "Compact prompt used for history compaction.",
       "type": "string"
     },
+    "conversation_build_strategy": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/ConversationBuildStrategy"
+        }
+      ],
+      "description": "Strategy for constructing the conversation payload sent to the provider."
+    },
     "developer_instructions": {
       "default": null,
       "description": "Developer instructions inserted as a `developer` role message.",
@@ -1212,7 +1262,13 @@
         "experimental_windows_sandbox": {
           "type": "boolean"
         },
+        "freeform_as_function": {
+          "type": "boolean"
+        },
         "include_apply_patch_tool": {
+          "type": "boolean"
+        },
+        "parallel_tool_calls": {
           "type": "boolean"
         },
         "personality": {
@@ -1233,6 +1289,9 @@
         "responses_websockets": {
           "type": "boolean"
         },
+        "runtime_metrics": {
+          "type": "boolean"
+        },
         "shell_snapshot": {
           "type": "boolean"
         },
@@ -1243,6 +1302,9 @@
           "type": "boolean"
         },
         "skill_mcp_dependency_install": {
+          "type": "boolean"
+        },
+        "skills": {
           "type": "boolean"
         },
         "sqlite": {
@@ -1370,6 +1432,11 @@
       ],
       "description": "Optional path to a file containing model instructions that will override the built-in instructions for the selected model. Users are STRONGLY DISCOURAGED from using this field, as deviating from the instructions sanctioned by Codex will likely degrade model performance."
     },
+    "model_max_output_tokens": {
+      "description": "Optional max output tokens limit for Responses API.",
+      "format": "int64",
+      "type": "integer"
+    },
     "model_personality": {
       "allOf": [
         {
@@ -1477,6 +1544,10 @@
     },
     "review_model": {
       "description": "Review model override used by the `/review` feature.",
+      "type": "string"
+    },
+    "review_profile": {
+      "description": "Profile name to use for review sessions.\n\nWhen set, review sessions use the configuration resolved from this profile (model/provider/reasoning/token limits/etc) instead of the primary session configuration.",
       "type": "string"
     },
     "sandbox_mode": {

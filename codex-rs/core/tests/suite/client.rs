@@ -1,4 +1,3 @@
-use codex_app_server_protocol::AuthMode;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::ContentItem;
@@ -322,7 +321,7 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
         .expect("prior assistant message");
     let pos_permissions = messages
         .iter()
-        .position(|(role, text)| role == "developer" && text.contains("`approval_policy`"))
+        .position(|(role, text)| role == "developer" && text.contains("<permissions instructions>"))
         .expect("permissions message");
     let pos_user_instructions = messages
         .iter()
@@ -1219,6 +1218,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         status: Some("completed".into()),
         action: Some(WebSearchAction::Search {
             query: Some("weather".into()),
+            queries: None,
         }),
     });
     prompt.input.push(ResponseItem::FunctionCall {
@@ -1964,6 +1964,7 @@ async fn request_includes_previous_response_id_when_configured() {
         stream_idle_timeout_ms: Some(5_000),
         base_url_suffix: None,
         requires_openai_auth: false,
+        supports_websockets: false,
     };
 
     let codex_home = TempDir::new().unwrap();
@@ -1979,13 +1980,14 @@ async fn request_includes_previous_response_id_when_configured() {
     let model_info = ModelsManager::construct_model_info_offline(model.as_str(), &config);
 
     let conversation_id = ThreadId::new();
+    let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
     let otel_manager = OtelManager::new(
         conversation_id,
         model.as_str(),
         model_info.slug.as_str(),
         None,
         Some("test@test.com".to_string()),
-        Some(AuthMode::ChatGPT),
+        auth_manager.get_auth_mode(),
         false,
         "test".to_string(),
         SessionSource::Exec,
@@ -2001,6 +2003,7 @@ async fn request_includes_previous_response_id_when_configured() {
         summary,
         conversation_id,
         SessionSource::Exec,
+        TransportManager::new(),
     );
 
     let mut prompt = Prompt::default();
@@ -2011,11 +2014,13 @@ async fn request_includes_previous_response_id_when_configured() {
         content: vec![ContentItem::OutputText {
             text: "prev".into(),
         }],
+        end_turn: None,
     });
     prompt.input.push(ResponseItem::Message {
         id: None,
         role: "user".into(),
         content: vec![ContentItem::InputText { text: "new".into() }],
+        end_turn: None,
     });
 
     let mut session = client.new_session();

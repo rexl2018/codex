@@ -82,7 +82,11 @@ async fn deleting_history_persists_across_resume() {
         SessionSource::Exec,
     );
     let resumed = resumed_manager
-        .resume_thread_from_rollout(config.clone(), rollout_path, resume_auth)
+        .resume_thread_from_rollout(
+            config.clone(),
+            rollout_path.expect("rollout path"),
+            resume_auth,
+        )
         .await
         .expect("resume thread")
         .thread;
@@ -163,7 +167,11 @@ async fn undo_history_range_persists_across_resume() {
         SessionSource::Exec,
     );
     let resumed = resumed_manager
-        .resume_thread_from_rollout(config.clone(), rollout_path, resume_auth)
+        .resume_thread_from_rollout(
+            config.clone(),
+            rollout_path.expect("rollout path"),
+            resume_auth,
+        )
         .await
         .expect("resume thread")
         .thread;
