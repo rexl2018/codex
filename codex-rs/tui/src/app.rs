@@ -2133,7 +2133,7 @@ impl App {
                 let profile = self.active_profile.as_deref();
                 match ConfigEditsBuilder::new(&self.config.codex_home)
                     .with_profile(profile)
-                    .set_model_personality(Some(personality))
+                    .set_personality(Some(personality))
                     .apply()
                     .await
                 {
@@ -2586,7 +2586,7 @@ impl App {
     }
 
     fn on_update_personality(&mut self, personality: Personality) {
-        self.config.model_personality = Some(personality);
+        self.config.personality = Some(personality);
         self.chat_widget.set_personality(personality);
     }
 

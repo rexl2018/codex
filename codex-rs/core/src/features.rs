@@ -539,11 +539,7 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::PowershellUtf8,
         key: "powershell_utf8",
         #[cfg(windows)]
-        stage: Stage::Experimental {
-            name: "Powershell UTF-8 support",
-            menu_description: "Enable UTF-8 output in Powershell.",
-            announcement: "Codex now supports UTF-8 output in Powershell. If you are seeing problems, disable in /experimental.",
-        },
+        stage: Stage::Stable,
         #[cfg(windows)]
         default_enabled: true,
         #[cfg(not(windows))]
@@ -598,18 +594,14 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::CollaborationModes,
         key: "collaboration_modes",
-        stage: Stage::UnderDevelopment,
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::Personality,
         key: "personality",
-        stage: Stage::Experimental {
-            name: "Personality",
-            menu_description: "Choose a communication style for Codex.",
-            announcement: "NEW: Pick a personality for Codex. Enable in /experimental!",
-        },
-        default_enabled: false,
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::ResponsesWebsockets,

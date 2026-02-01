@@ -39,21 +39,22 @@ use wiremock::MockServer;
 
 const LOCAL_FRIENDLY_TEMPLATE: &str =
     "You optimize for team morale and being a supportive teammate as much as code quality.";
+const LOCAL_PRAGMATIC_TEMPLATE: &str = "You are a deeply pragmatic, effective software engineer.";
 
 fn sse_completed(id: &str) -> String {
     sse(vec![ev_response_created(id), ev_completed(id)])
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn model_personality_does_not_mutate_base_instructions_without_template() {
+async fn personality_does_not_mutate_base_instructions_without_template() {
     let codex_home = TempDir::new().expect("create temp dir");
     let mut config = load_default_config_for_test(&codex_home).await;
     config.features.enable(Feature::Personality);
-    config.model_personality = Some(Personality::Friendly);
+    config.personality = Some(Personality::Friendly);
 
     let model_info = ModelsManager::construct_model_info_offline("gpt-5.1", &config);
     assert_eq!(
-        model_info.get_model_instructions(config.model_personality),
+        model_info.get_model_instructions(config.personality),
         model_info.base_instructions
     );
 }
@@ -63,14 +64,14 @@ async fn base_instructions_override_disables_personality_template() {
     let codex_home = TempDir::new().expect("create temp dir");
     let mut config = load_default_config_for_test(&codex_home).await;
     config.features.enable(Feature::Personality);
-    config.model_personality = Some(Personality::Friendly);
+    config.personality = Some(Personality::Friendly);
     config.base_instructions = Some("override instructions".to_string());
 
     let model_info = ModelsManager::construct_model_info_offline("gpt-5.2-codex", &config);
 
     assert_eq!(model_info.base_instructions, "override instructions");
     assert_eq!(
-        model_info.get_model_instructions(config.model_personality),
+        model_info.get_model_instructions(config.personality),
         "override instructions"
     );
 }
@@ -132,7 +133,7 @@ async fn config_personality_some_sets_instructions_template() -> anyhow::Result<
         .with_config(|config| {
             config.features.disable(Feature::RemoteModels);
             config.features.enable(Feature::Personality);
-            config.model_personality = Some(Personality::Friendly);
+            config.personality = Some(Personality::Friendly);
         });
     let test = builder.build(&server).await?;
 
@@ -223,7 +224,7 @@ async fn user_turn_personality_some_adds_update_message() -> anyhow::Result<()> 
             effort: None,
             summary: None,
             collaboration_mode: None,
-            personality: Some(Personality::Friendly),
+            personality: Some(Personality::Pragmatic),
         })
         .await?;
 
@@ -264,8 +265,8 @@ async fn user_turn_personality_some_adds_update_message() -> anyhow::Result<()> 
         "expected personality update preamble, got {personality_text:?}"
     );
     assert!(
-        personality_text.contains(LOCAL_FRIENDLY_TEMPLATE),
-        "expected personality update to include the local friendly template, got: {personality_text:?}"
+        personality_text.contains(LOCAL_PRAGMATIC_TEMPLATE),
+        "expected personality update to include the local pragmatic template, got: {personality_text:?}"
     );
 
     Ok(())
@@ -276,11 +277,11 @@ async fn instructions_uses_base_if_feature_disabled() -> anyhow::Result<()> {
     let codex_home = TempDir::new().expect("create temp dir");
     let mut config = load_default_config_for_test(&codex_home).await;
     config.features.disable(Feature::Personality);
-    config.model_personality = Some(Personality::Friendly);
+    config.personality = Some(Personality::Friendly);
 
     let model_info = ModelsManager::construct_model_info_offline("gpt-5.2-codex", &config);
     assert_eq!(
-        model_info.get_model_instructions(config.model_personality),
+        model_info.get_model_instructions(config.personality),
         model_info.base_instructions
     );
 
@@ -335,7 +336,7 @@ async fn user_turn_personality_skips_if_feature_disabled() -> anyhow::Result<()>
             effort: None,
             summary: None,
             collaboration_mode: None,
-            personality: Some(Personality::Friendly),
+            personality: Some(Personality::Pragmatic),
         })
         .await?;
 
@@ -377,7 +378,7 @@ async fn user_turn_personality_skips_if_feature_disabled() -> anyhow::Result<()>
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn ignores_remote_model_personality_if_remote_models_disabled() -> anyhow::Result<()> {
+async fn ignores_remote_personality_if_remote_models_disabled() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::builder()
@@ -403,9 +404,7 @@ async fn ignores_remote_model_personality_if_remote_models_disabled() -> anyhow:
         upgrade: None,
         base_instructions: "base instructions".to_string(),
         model_messages: Some(ModelMessages {
-            instructions_template: Some(
-                "Base instructions\n{{ personality_message }}\n".to_string(),
-            ),
+            instructions_template: Some("Base instructions\n{{ personality }}\n".to_string()),
             instructions_variables: Some(ModelInstructionsVariables {
                 personality_default: None,
                 personality_friendly: Some(remote_personality_message.to_string()),
@@ -440,7 +439,7 @@ async fn ignores_remote_model_personality_if_remote_models_disabled() -> anyhow:
             config.features.disable(Feature::RemoteModels);
             config.features.enable(Feature::Personality);
             config.model = Some(remote_slug.to_string());
-            config.model_personality = Some(Personality::Friendly);
+            config.personality = Some(Personality::Friendly);
         });
     let test = builder.build(&server).await?;
 
@@ -485,7 +484,7 @@ async fn ignores_remote_model_personality_if_remote_models_disabled() -> anyhow:
         "expected instructions to include the local friendly personality template, got: {instructions_text:?}"
     );
     assert!(
-        !instructions_text.contains("{{ personality_message }}"),
+        !instructions_text.contains("{{ personality }}"),
         "expected legacy personality placeholder to be replaced, got: {instructions_text:?}"
     );
 
@@ -493,7 +492,7 @@ async fn ignores_remote_model_personality_if_remote_models_disabled() -> anyhow:
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_model_default_personality_instructions_with_feature() -> anyhow::Result<()> {
+async fn remote_model_friendly_personality_instructions_with_feature() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::builder()
@@ -503,6 +502,7 @@ async fn remote_model_default_personality_instructions_with_feature() -> anyhow:
 
     let remote_slug = "codex-remote-default-personality";
     let default_personality_message = "Default from remote template";
+    let friendly_personality_message = "Friendly variant";
     let remote_model = ModelInfo {
         slug: remote_slug.to_string(),
         display_name: "Remote default personality test".to_string(),
@@ -522,7 +522,7 @@ async fn remote_model_default_personality_instructions_with_feature() -> anyhow:
             instructions_template: Some("Base instructions\n{{ personality }}\n".to_string()),
             instructions_variables: Some(ModelInstructionsVariables {
                 personality_default: Some(default_personality_message.to_string()),
-                personality_friendly: Some("Friendly variant".to_string()),
+                personality_friendly: Some(friendly_personality_message.to_string()),
                 personality_pragmatic: Some("Pragmatic variant".to_string()),
             }),
         }),
@@ -554,6 +554,7 @@ async fn remote_model_default_personality_instructions_with_feature() -> anyhow:
             config.features.enable(Feature::RemoteModels);
             config.features.enable(Feature::Personality);
             config.model = Some(remote_slug.to_string());
+            config.personality = Some(Personality::Friendly);
         });
     let test = builder.build(&server).await?;
 
@@ -578,7 +579,7 @@ async fn remote_model_default_personality_instructions_with_feature() -> anyhow:
             effort: test.config.model_reasoning_effort,
             summary: ReasoningSummary::Auto,
             collaboration_mode: None,
-            personality: None,
+            personality: Some(Personality::Friendly),
         })
         .await?;
 
@@ -588,8 +589,12 @@ async fn remote_model_default_personality_instructions_with_feature() -> anyhow:
     let instructions_text = request.instructions_text();
 
     assert!(
-        instructions_text.contains(default_personality_message),
-        "expected instructions to include the remote default personality template, got: {instructions_text:?}"
+        instructions_text.contains(friendly_personality_message),
+        "expected instructions to include the remote friendly personality template, got: {instructions_text:?}"
+    );
+    assert!(
+        !instructions_text.contains(default_personality_message),
+        "expected instructions to skip the remote default personality template, got: {instructions_text:?}"
     );
 
     Ok(())
@@ -606,7 +611,8 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         .await;
 
     let remote_slug = "codex-remote-personality";
-    let remote_personality_message = "Friendly from remote template";
+    let remote_friendly_message = "Friendly from remote template";
+    let remote_pragmatic_message = "Pragmatic from remote template";
     let remote_model = ModelInfo {
         slug: remote_slug.to_string(),
         display_name: "Remote personality test".to_string(),
@@ -623,13 +629,11 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         upgrade: None,
         base_instructions: "base instructions".to_string(),
         model_messages: Some(ModelMessages {
-            instructions_template: Some(
-                "Base instructions\n{{ personality_message }}\n".to_string(),
-            ),
+            instructions_template: Some("Base instructions\n{{ personality }}\n".to_string()),
             instructions_variables: Some(ModelInstructionsVariables {
                 personality_default: None,
-                personality_friendly: Some(remote_personality_message.to_string()),
-                personality_pragmatic: None,
+                personality_friendly: Some(remote_friendly_message.to_string()),
+                personality_pragmatic: Some(remote_pragmatic_message.to_string()),
             }),
         }),
         supports_reasoning_summaries: false,
@@ -704,7 +708,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
             effort: None,
             summary: None,
             collaboration_mode: None,
-            personality: Some(Personality::Friendly),
+            personality: Some(Personality::Pragmatic),
         })
         .await?;
 
@@ -744,7 +748,7 @@ async fn user_turn_personality_remote_model_template_includes_update_message() -
         "expected personality update preamble, got {personality_text:?}"
     );
     assert!(
-        personality_text.contains(remote_personality_message),
+        personality_text.contains(remote_pragmatic_message),
         "expected personality update to include remote template, got: {personality_text:?}"
     );
 

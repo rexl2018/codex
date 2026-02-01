@@ -3668,7 +3668,7 @@ impl ChatWidget {
         };
         let personality = self
             .config
-            .model_personality
+            .personality
             .filter(|_| self.config.features.enabled(Feature::Personality))
             .filter(|_| self.current_model_supports_personality());
         let op = Op::UserTurn {
@@ -4307,10 +4307,7 @@ impl ChatWidget {
     }
 
     fn open_personality_popup_for_current_model(&mut self) {
-        let current_personality = self
-            .config
-            .model_personality
-            .unwrap_or(Personality::Friendly);
+        let current_personality = self.config.personality.unwrap_or(Personality::Friendly);
         let personalities = [Personality::Friendly, Personality::Pragmatic];
         let supports_personality = self.current_model_supports_personality();
 
@@ -5611,7 +5608,7 @@ impl ChatWidget {
 
     /// Set the personality in the widget's config copy.
     pub(crate) fn set_personality(&mut self, personality: Personality) {
-        self.config.model_personality = Some(personality);
+        self.config.personality = Some(personality);
     }
 
     /// Set the model in the widget's config copy and stored collaboration mode.

@@ -277,9 +277,6 @@
           "format": "int64",
           "type": "integer"
         },
-        "model_personality": {
-          "$ref": "#/definitions/Personality"
-        },
         "model_provider": {
           "description": "The key in the `model_providers` map identifying the [`ModelProviderInfo`] to use.",
           "type": "string"
@@ -295,6 +292,9 @@
         },
         "oss_provider": {
           "type": "string"
+        },
+        "personality": {
+          "$ref": "#/definitions/Personality"
         },
         "sandbox_mode": {
           "$ref": "#/definitions/SandboxMode"
@@ -1437,14 +1437,6 @@
       "format": "int64",
       "type": "integer"
     },
-    "model_personality": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/Personality"
-        }
-      ],
-      "description": "EXPERIMENTAL Optionally specify a personality for the model"
-    },
     "model_provider": {
       "description": "Provider to use from the model_providers map.",
       "type": "string"
@@ -1502,6 +1494,14 @@
         }
       ],
       "description": "OTEL configuration."
+    },
+    "personality": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Personality"
+        }
+      ],
+      "description": "Optionally specify a personality for the model"
     },
     "profile": {
       "description": "Profile to use from the `profiles` map.",
